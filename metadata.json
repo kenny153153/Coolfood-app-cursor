@@ -1,0 +1,7 @@
+{
+  "name": "Fridge-Link Grocer",
+  "description": "A premium Hong Kong frozen meat e-commerce system with member loyalty, SF Express cold chain integration, and an advanced operations command center.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
