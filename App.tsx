@@ -290,6 +290,9 @@ const App: React.FC = () => {
   const [showAddressDropdown, setShowAddressDropdown] = useState(false);
   const [showCheckoutAddressForm, setShowCheckoutAddressForm] = useState(false);
   const [checkoutAddressDraft, setCheckoutAddressDraft] = useState<UserAddress | null>(null);
+  const [checkoutSelectedAddressId, setCheckoutSelectedAddressId] = useState<string | null>(null);
+  const [isChangingAddress, setIsChangingAddress] = useState(false);
+  const [checkoutSaveNewAddressAsDefault, setCheckoutSaveNewAddressAsDefault] = useState(true);
   const [isLocatingAddress, setIsLocatingAddress] = useState(false);
 
   // Slideshow (store-front ad carousel)
@@ -580,13 +583,14 @@ const App: React.FC = () => {
     showToast('已設為預設地址');
   };
 
-  const handleSaveAddress = (ownerId: string, address: UserAddress, isNew: boolean) => {
+  const handleSaveAddress = (ownerId: string, address: UserAddress, isNew: boolean, setAsDefault?: boolean) => {
     const updateMember = (m: UserType) => {
       if (m.id !== ownerId) return m;
       let addresses = [...(m.addresses || [])];
       if (isNew) {
-        if (addresses.length === 0) address.isDefault = true;
-        addresses.push(address);
+        const newAddr = setAsDefault ? { ...address, isDefault: true } : { ...address, isDefault: addresses.length === 0 };
+        if (setAsDefault) addresses = addresses.map(a => ({ ...a, isDefault: false }));
+        addresses.push(newAddr);
       } else {
         addresses = addresses.map(a => a.id === address.id ? address : a);
       }
@@ -886,7 +890,8 @@ const App: React.FC = () => {
 
   // Attach Google Places Autocomplete to street input when checkout address form is visible (flexible: suggestions only; floor/flat untouched).
   useEffect(() => {
-    if (!showCheckoutAddressForm) {
+    const formVisible = showCheckoutAddressForm || (isChangingAddress && !!checkoutAddressDraft);
+    if (!formVisible) {
       placesAutocompleteRef.current = null;
       return;
     }
@@ -932,7 +937,18 @@ const App: React.FC = () => {
     return () => {
       placesAutocompleteRef.current = null;
     };
-  }, [showCheckoutAddressForm]);
+  }, [showCheckoutAddressForm, isChangingAddress, checkoutAddressDraft]);
+
+  /** Resolves the delivery address for checkout: draft if complete, else selected/default saved address for member. */
+  const getCheckoutDeliveryAddress = (): UserAddress | null => {
+    if (deliveryMethod !== 'home') return null;
+    if (checkoutAddressDraft && isAddressCompleteForOrder(checkoutAddressDraft)) return checkoutAddressDraft;
+    const addrs = user?.addresses;
+    if (!addrs?.length) return null;
+    const selected = checkoutSelectedAddressId ? addrs.find(a => a.id === checkoutSelectedAddressId) : null;
+    const fallback = addrs.find(a => a.isDefault) || addrs[0];
+    return selected || fallback || null;
+  };
 
   const handleSubmitOrder = async () => {
     if (cart.length === 0) {
@@ -951,13 +967,13 @@ const App: React.FC = () => {
       return { product_id: item.id, name: item.name, unit_price: unitPrice, qty: item.qty, line_total: lineTotal };
     });
 
-    const defaultAddress = user?.addresses?.find(a => a.isDefault);
+    const deliveryAddress = getCheckoutDeliveryAddress();
     const useDraft = deliveryMethod === 'home' && checkoutAddressDraft && isAddressCompleteForOrder(checkoutAddressDraft);
     const deliveryAddr = deliveryMethod === 'sf_locker'
       ? selectedLocker.address
-      : (useDraft ? formatAddressLine(checkoutAddressDraft) : defaultAddress ? formatAddressLine(defaultAddress) : null);
-    const contactName = useDraft ? checkoutAddressDraft!.contactName : (defaultAddress?.contactName ?? (user?.name ?? null));
-    const customerPhone = useDraft ? checkoutAddressDraft!.phone : (user?.phoneNumber ?? defaultAddress?.phone ?? null);
+      : (deliveryAddress ? formatAddressLine(deliveryAddress) : null);
+    const contactName = deliveryAddress?.contactName ?? (user?.name ?? null);
+    const customerPhone = deliveryAddress?.phone ?? (user?.phoneNumber ?? null);
     const customerName = user?.name ?? '訪客';
 
     const newOrder: Order = {
@@ -984,13 +1000,12 @@ const App: React.FC = () => {
       delivery_address: deliveryAddr,
       contact_name: contactName
     };
-    if (deliveryMethod === 'home' && (useDraft ? checkoutAddressDraft : defaultAddress)) {
-      const a = useDraft ? checkoutAddressDraft! : defaultAddress!;
-      insertRow.delivery_district = a.district ?? null;
-      insertRow.delivery_street = a.street ?? null;
-      insertRow.delivery_building = a.building ?? null;
-      insertRow.delivery_floor = a.floor ?? null;
-      insertRow.delivery_flat = a.flat ?? null;
+    if (deliveryMethod === 'home' && deliveryAddress) {
+      insertRow.delivery_district = deliveryAddress.district ?? null;
+      insertRow.delivery_street = deliveryAddress.street ?? null;
+      insertRow.delivery_building = deliveryAddress.building ?? null;
+      insertRow.delivery_floor = deliveryAddress.floor ?? null;
+      insertRow.delivery_flat = deliveryAddress.flat ?? null;
     }
 
     const { error } = await supabase.from('orders').insert(insertRow);
@@ -1000,8 +1015,15 @@ const App: React.FC = () => {
       return;
     }
 
+    if (user && useDraft && checkoutSaveNewAddressAsDefault && checkoutAddressDraft) {
+      handleSaveAddress(user.id, checkoutAddressDraft, true, true);
+    }
+
     setOrders(prev => [...prev, newOrder]);
     setCart([]);
+    setShowCheckoutAddressForm(false);
+    setCheckoutAddressDraft(null);
+    setIsChangingAddress(false);
     showToast('訂單已提交！正在轉接支付接口...');
     setView('orders');
   };
@@ -1917,51 +1939,122 @@ const App: React.FC = () => {
             ) : (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-2"><button onClick={() => setDeliveryMethod('home')} className="py-3 px-4 bg-blue-600 rounded-2xl text-xs font-black text-white shadow-lg">送貨上門</button><button onClick={() => setDeliveryMethod('sf_locker')} className="py-3 px-4 border border-slate-100 rounded-2xl text-xs font-bold text-slate-400">順豐自提櫃</button></div>
-                {!showCheckoutAddressForm && user?.addresses && user.addresses.length > 0 && user.addresses.some(a => a.isDefault) ? (
-                  <div className="space-y-2">
-                    <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                      <p className="text-xs font-black text-slate-900">{user.addresses.find(a => a.isDefault)?.label || '預設地址'}</p>
-                      <p className="text-[11px] text-slate-500 font-bold mt-1">{formatAddressLine(user.addresses.find(a => a.isDefault)!)}</p>
-                      <p className="text-[11px] text-slate-500 font-bold mt-0.5">{user.addresses.find(a => a.isDefault)?.contactName} · {user.addresses.find(a => a.isDefault)?.phone}</p>
+                {isChangingAddress && user ? (
+                  <div className="space-y-5 animate-fade-in">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-black text-slate-700">改用其他地址／填寫新地址</p>
+                      <button type="button" onClick={() => { setIsChangingAddress(false); setCheckoutAddressDraft(null); }} className="py-2 px-4 border border-slate-200 rounded-xl text-slate-500 text-xs font-black min-h-[44px]">返回</button>
                     </div>
-                    <button onClick={() => { setShowCheckoutAddressForm(true); setCheckoutAddressDraft({ ...emptyAddress(), contactName: user?.name || '', phone: user?.phoneNumber || '' }); }} className="w-full py-3 border border-slate-200 rounded-2xl text-slate-500 text-xs font-black">改用其他地址 / 填寫新地址</button>
+                    {user.addresses && user.addresses.length > 0 ? (
+                      <div className="space-y-3">
+                        <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">已儲存地址</p>
+                        <div className="space-y-3 divide-y divide-slate-100">
+                          {user.addresses.map(addr => {
+                            const isSelected = (checkoutSelectedAddressId ?? user.addresses!.find(a => a.isDefault)?.id) === addr.id;
+                            return (
+                              <button type="button" key={addr.id} onClick={() => { setCheckoutSelectedAddressId(addr.id); setIsChangingAddress(false); }} className={`w-full p-4 rounded-2xl border-2 text-left transition-all min-h-[56px] flex items-center justify-between active:scale-[0.99] -mt-px first:mt-0 pt-4 ${isSelected ? 'border-blue-500 bg-blue-50/50' : 'border-slate-100 bg-white hover:border-slate-200 shadow-sm'}`}>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-xs font-black text-slate-900">{addr.label || (addr.isDefault ? '預設地址' : '其他地址')}</p>
+                                  <p className="text-[11px] text-slate-600 font-bold mt-1 leading-relaxed">{formatAddressLine(addr)}</p>
+                                  <p className="text-[10px] text-slate-400 font-bold mt-1">{addr.contactName} · {addr.phone}</p>
+                                </div>
+                                {isSelected && <span className="flex-shrink-0 ml-2 text-blue-600 font-black text-sm">✓</span>}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className="pt-2 border-t border-slate-100">
+                      <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-3">新增地址</p>
+                      <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
+                        {checkoutAddressDraft ? (
+                          <>
+                            <input value={checkoutAddressDraft.label} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, label: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="地址標籤（選填，如：屋企、公司）" />
+                            <div className="flex gap-2 items-center">
+                              <input value={checkoutAddressDraft.district ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, district: e.target.value })} className="flex-1 p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="地區（如：九龍、旺角）" />
+                              <button type="button" onClick={handleLocateMe} disabled={isLocatingAddress} title="以目前位置自動填入地址" className="flex-shrink-0 w-12 h-12 flex items-center justify-center bg-white border border-slate-100 rounded-xl font-bold text-slate-600 hover:bg-slate-50 hover:border-slate-200 disabled:opacity-50 transition-all" aria-label="定位填入地址">
+                                {isLocatingAddress ? <RefreshCw size={20} className="animate-spin text-blue-600" /> : <Crosshair size={20} />}
+                              </button>
+                            </div>
+                            <input ref={streetInputRef} value={checkoutAddressDraft.street ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, street: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="街道／門牌" autoComplete="off" />
+                            <input value={checkoutAddressDraft.building ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, building: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="大廈名稱" />
+                            <div className="grid grid-cols-2 gap-2">
+                              <input value={checkoutAddressDraft.floor ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, floor: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="樓層" />
+                              <input value={checkoutAddressDraft.flat ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, flat: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="室／單位" />
+                            </div>
+                            <input value={checkoutAddressDraft.contactName} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, contactName: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="聯絡人姓名 *" />
+                            <input type="tel" value={checkoutAddressDraft.phone} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, phone: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="聯絡電話 *" />
+                            <label className="flex items-center gap-3 min-h-[44px] cursor-pointer">
+                              <input type="checkbox" checked={checkoutSaveNewAddressAsDefault} onChange={e => setCheckoutSaveNewAddressAsDefault(e.target.checked)} className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                              <span className="text-xs font-bold text-slate-700">下次結帳時設為預設地址</span>
+                            </label>
+                            <button type="button" onClick={() => { if (!isAddressCompleteForOrder(checkoutAddressDraft)) { showToast('請填寫聯絡人、電話及至少一項地址', 'error'); return; } handleSaveAddress(user.id, checkoutAddressDraft, true, checkoutSaveNewAddressAsDefault); setCheckoutSelectedAddressId(checkoutAddressDraft.id); setIsChangingAddress(false); setCheckoutAddressDraft(null); showToast('已保存地址'); }} className="w-full py-3 bg-slate-800 text-white rounded-xl font-black text-sm min-h-[48px]">保存並使用</button>
+                          </>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                ) : showCheckoutAddressForm && checkoutAddressDraft ? (
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3 animate-fade-in">
+                    {!user && (
+                      <p className="text-[11px] text-slate-500 font-bold">
+                        註冊會員可以記錄預設地址，下次結帳更快捷。
+                        <button type="button" onClick={() => setView('profile')} className="text-blue-600 underline ml-1 hover:text-blue-700">前往會員頁</button>
+                      </p>
+                    )}
+                    <input value={checkoutAddressDraft.label} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, label: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="地址標籤（選填，如：屋企、公司）" />
+                    <div className="flex gap-2 items-center">
+                      <input value={checkoutAddressDraft.district ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, district: e.target.value })} className="flex-1 p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="地區（如：九龍、旺角）" />
+                      <button type="button" onClick={handleLocateMe} disabled={isLocatingAddress} title="以目前位置自動填入地址" className="flex-shrink-0 w-12 h-12 flex items-center justify-center bg-white border border-slate-100 rounded-xl font-bold text-slate-600 hover:bg-slate-50 hover:border-slate-200 disabled:opacity-50 transition-all" aria-label="定位填入地址">
+                        {isLocatingAddress ? <RefreshCw size={20} className="animate-spin text-blue-600" /> : <Crosshair size={20} />}
+                      </button>
+                    </div>
+                    <input ref={streetInputRef} value={checkoutAddressDraft.street ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, street: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="街道／門牌" autoComplete="off" />
+                    <input value={checkoutAddressDraft.building ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, building: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="大廈名稱" />
+                    <div className="grid grid-cols-2 gap-2">
+                      <input value={checkoutAddressDraft.floor ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, floor: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="樓層" />
+                      <input value={checkoutAddressDraft.flat ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, flat: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="室／單位" />
+                    </div>
+                    <input value={checkoutAddressDraft.contactName} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, contactName: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="聯絡人姓名 *" />
+                    <input type="tel" value={checkoutAddressDraft.phone} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, phone: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="聯絡電話 *" />
+                    {user && (
+                      <label className="flex items-center gap-3 min-h-[44px] cursor-pointer">
+                        <input type="checkbox" checked={checkoutSaveNewAddressAsDefault} onChange={e => setCheckoutSaveNewAddressAsDefault(e.target.checked)} className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                        <span className="text-xs font-bold text-slate-700">下次結帳時設為預設地址</span>
+                      </label>
+                    )}
+                    <div className="flex gap-2">
+                      <button type="button" onClick={() => { setShowCheckoutAddressForm(false); setCheckoutAddressDraft(null); }} className="flex-1 py-3 border border-slate-200 rounded-xl font-black text-xs text-slate-500 min-h-[44px]">取消</button>
+                      {user ? (
+                        <button type="button" onClick={() => { if (!isAddressCompleteForOrder(checkoutAddressDraft)) { showToast('請填寫聯絡人、電話及至少一項地址', 'error'); return; } handleSaveAddress(user.id, checkoutAddressDraft, true, checkoutSaveNewAddressAsDefault); setCheckoutSelectedAddressId(checkoutAddressDraft.id); setShowCheckoutAddressForm(false); setCheckoutAddressDraft(null); showToast('已保存地址'); }} className="flex-1 py-3 bg-slate-800 text-white rounded-xl font-black text-xs min-h-[44px]">保存並使用</button>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : user?.addresses && user.addresses.length > 0 ? (
+                  <div className="space-y-3">
+                    <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                      {(() => {
+                        const addr = getCheckoutDeliveryAddress();
+                        if (!addr) return null;
+                        return (
+                          <>
+                            <p className="text-xs font-black text-slate-900">{addr.label || (addr.isDefault ? '預設地址' : '收貨地址')}</p>
+                            <p className="text-[11px] text-slate-500 font-bold mt-1">{formatAddressLine(addr)}</p>
+                            <p className="text-[11px] text-slate-500 font-bold mt-0.5">{addr.contactName} · {addr.phone}</p>
+                          </>
+                        );
+                      })()}
+                    </div>
+                    <button type="button" onClick={() => { setIsChangingAddress(true); setCheckoutAddressDraft({ ...emptyAddress(), contactName: user?.name || '', phone: user?.phoneNumber || '' }); }} className="w-full min-h-[52px] py-4 border-2 border-slate-200 rounded-2xl text-slate-600 text-sm font-black flex items-center justify-center gap-2 active:scale-[0.98] transition-transform">
+                      改用其他地址／填寫新地址
+                    </button>
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {!showCheckoutAddressForm && (
-                      <button onClick={() => { setShowCheckoutAddressForm(true); setCheckoutAddressDraft({ ...emptyAddress(), contactName: user?.name || '', phone: user?.phoneNumber || '' }); }} className="w-full py-4 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400 text-xs font-black flex items-center justify-center gap-2">
-                        填寫收貨地址 <ChevronDown size={14} />
-                      </button>
-                    )}
-                    {showCheckoutAddressForm && checkoutAddressDraft && (
-                      <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3 animate-fade-in">
-                        <p className="text-[11px] text-slate-500 font-bold">
-                          註冊會員可以記錄預設地址，下次結帳更快捷。
-                          <button type="button" onClick={() => setView('profile')} className="text-blue-600 underline ml-1 hover:text-blue-700">前往會員頁</button>
-                        </p>
-                        <input value={checkoutAddressDraft.label} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, label: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="地址標籤（選填，如：屋企、公司）" />
-                        <div className="flex gap-2 items-center">
-                          <input value={checkoutAddressDraft.district ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, district: e.target.value })} className="flex-1 p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="地區（如：九龍、旺角）" />
-                          <button type="button" onClick={handleLocateMe} disabled={isLocatingAddress} title="以目前位置自動填入地址" className="flex-shrink-0 w-12 h-12 flex items-center justify-center bg-white border border-slate-100 rounded-xl font-bold text-slate-600 hover:bg-slate-50 hover:border-slate-200 disabled:opacity-50 transition-all" aria-label="定位填入地址">
-                            {isLocatingAddress ? <RefreshCw size={20} className="animate-spin text-blue-600" /> : <Crosshair size={20} />}
-                          </button>
-                        </div>
-                        <input ref={streetInputRef} value={checkoutAddressDraft.street ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, street: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="街道／門牌" autoComplete="off" />
-                        <input value={checkoutAddressDraft.building ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, building: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="大廈名稱" />
-                        <div className="grid grid-cols-2 gap-2">
-                          <input value={checkoutAddressDraft.floor ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, floor: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="樓層" />
-                          <input value={checkoutAddressDraft.flat ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, flat: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="室／單位" />
-                        </div>
-                        <input value={checkoutAddressDraft.contactName} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, contactName: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="聯絡人姓名 *" />
-                        <input type="tel" value={checkoutAddressDraft.phone} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, phone: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="聯絡電話 *" />
-                        <div className="flex gap-2">
-                          <button onClick={() => { setShowCheckoutAddressForm(false); setCheckoutAddressDraft(null); }} className="flex-1 py-3 border border-slate-200 rounded-xl font-black text-xs text-slate-500">取消</button>
-                          {user ? (
-                            <button onClick={() => { if (!isAddressCompleteForOrder(checkoutAddressDraft)) { showToast('請填寫聯絡人、電話及至少一項地址', 'error'); return; } handleSaveAddress(user.id, checkoutAddressDraft, true); setShowCheckoutAddressForm(false); setCheckoutAddressDraft(null); showToast('已保存地址'); }} className="flex-1 py-3 bg-slate-800 text-white rounded-xl font-black text-xs">保存並使用</button>
-                          ) : null}
-                        </div>
-                      </div>
-                    )}
+                    <button type="button" onClick={() => { setShowCheckoutAddressForm(true); setCheckoutAddressDraft({ ...emptyAddress(), contactName: user?.name || '', phone: user?.phoneNumber || '' }); }} className="w-full min-h-[52px] py-4 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400 text-xs font-black flex items-center justify-center gap-2">
+                      填寫收貨地址 <ChevronDown size={14} />
+                    </button>
                   </div>
                 )}
               </div>
@@ -1996,7 +2089,7 @@ const App: React.FC = () => {
               {deliveryFee === 0 && <p className="text-[9px] text-emerald-400 font-black tracking-widest uppercase">已享全單免運優惠 ✨</p>}
               <div className="pt-4 border-t border-white/10 flex justify-between items-end"><span className="text-sm font-black uppercase tracking-widest">總金額</span><span className="text-4xl font-black text-blue-400">${total}</span></div>
             </div>
-            <button disabled={deliveryMethod === 'home' && !(user?.addresses?.find(a => a.isDefault) || (checkoutAddressDraft && isAddressCompleteForOrder(checkoutAddressDraft)))} onClick={handleSubmitOrder} className="w-full py-5 bg-blue-600 rounded-[2rem] font-black text-lg shadow-xl active:scale-95 transition-all disabled:opacity-30 flex items-center justify-center gap-3"><CreditCard size={20}/> 立即支付</button>
+            <button disabled={deliveryMethod === 'home' && !getCheckoutDeliveryAddress()} onClick={handleSubmitOrder} className="w-full py-5 bg-blue-600 rounded-[2rem] font-black text-lg shadow-xl active:scale-95 transition-all disabled:opacity-30 flex items-center justify-center gap-3"><CreditCard size={20}/> 立即支付</button>
           </section>
         </div>
       </div>
