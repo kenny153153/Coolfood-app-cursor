@@ -219,7 +219,10 @@ const App: React.FC = () => {
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [adminLoginForm, setAdminLoginForm] = useState({ username: '', password: '' });
   
-  const [view, setView] = useState<'store' | 'orders' | 'profile' | 'checkout'>('store');
+  const [view, setView] = useState<'store' | 'orders' | 'profile' | 'checkout' | 'success'>(
+    () => (typeof window !== 'undefined' && (window.location.pathname === '/success' || window.location.hash === '#success') ? 'success' : 'store')
+  );
+  const [isRedirectingToPayment, setIsRedirectingToPayment] = useState(false);
   const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'settings'>('dashboard');
   const [inventorySubTab, setInventorySubTab] = useState<'products' | 'categories' | 'rules'>('products');
   const [ordersStatusFilter, setOrdersStatusFilter] = useState<'all' | OrderStatus>('all');
@@ -309,11 +312,21 @@ const App: React.FC = () => {
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => setToast({ message, type });
 
-  // Handle Hash Navigation
+  // Handle Hash / path navigation (admin, success)
   useEffect(() => {
-    const handleHash = () => setIsAdminRoute(window.location.hash === '#admin');
-    window.addEventListener('hashchange', handleHash);
-    return () => window.removeEventListener('hashchange', handleHash);
+    const syncViewFromUrl = () => {
+      const hash = window.location.hash;
+      const path = window.location.pathname;
+      setIsAdminRoute(hash === '#admin');
+      if (path === '/success' || hash === '#success') setView('success');
+    };
+    syncViewFromUrl();
+    window.addEventListener('hashchange', syncViewFromUrl);
+    window.addEventListener('popstate', syncViewFromUrl);
+    return () => {
+      window.removeEventListener('hashchange', syncViewFromUrl);
+      window.removeEventListener('popstate', syncViewFromUrl);
+    };
   }, []);
 
   // Update browser tab title when route changes
@@ -955,6 +968,7 @@ const App: React.FC = () => {
       showToast('購物車是空的', 'error');
       return;
     }
+    if (isRedirectingToPayment) return;
     const { subtotal, deliveryFee, total } = pricingData;
     const orderIdNum = Date.now();
     const orderIdDisplay = `ORD-${orderIdNum}`;
@@ -1008,9 +1022,65 @@ const App: React.FC = () => {
       insertRow.delivery_flat = deliveryAddress.flat ?? null;
     }
 
-    const { error } = await supabase.from('orders').insert(insertRow);
+    setIsRedirectingToPayment(true);
+    const apiBase = typeof window !== 'undefined' ? window.location.origin : '';
+    let intentRes: Response;
+    try {
+      intentRes = await fetch(`${apiBase}/api/airwallex-create-intent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: total, merchant_order_id: orderIdDisplay }),
+      });
+    } catch {
+      setIsRedirectingToPayment(false);
+      showToast('Payment system is currently busy, please try again in a moment.', 'error');
+      return;
+    }
+    if (!intentRes.ok) {
+      setIsRedirectingToPayment(false);
+      let errMsg = 'Payment system is currently busy, please try again in a moment.';
+      try {
+        const contentType = intentRes.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const errBody = await intentRes.json() as { error?: string; details?: string; code?: string };
+          if (typeof errBody?.error === 'string' && errBody.error) errMsg = errBody.error;
+          // Helpful for debugging when Vercel returns upstream error text
+          if (typeof errBody?.details === 'string' && errBody.details) {
+            console.error('Airwallex API error details', errBody.code, errBody.details);
+          } else if (typeof errBody?.code === 'string' && errBody.code) {
+            console.error('Airwallex API error code', errBody.code);
+          }
+        } else {
+          const errText = await intentRes.text();
+          console.error('Airwallex API non-JSON error', intentRes.status, errText.slice(0, 500));
+          if (intentRes.status === 404) {
+            errMsg = 'Payment API not found. Please redeploy and ensure the Vercel Function /api/airwallex-create-intent is enabled.';
+          }
+        }
+      } catch {
+        /* use default errMsg */
+      }
+      showToast(errMsg, 'error');
+      return;
+    }
+    let intentData: { intent_id?: string; client_secret?: string; currency?: string; country_code?: string };
+    try {
+      intentData = await intentRes.json();
+    } catch {
+      setIsRedirectingToPayment(false);
+      showToast('Payment system is currently busy, please try again in a moment.', 'error');
+      return;
+    }
+    const { intent_id, client_secret, currency = 'HKD', country_code = 'HK' } = intentData;
+    if (!intent_id || !client_secret) {
+      setIsRedirectingToPayment(false);
+      showToast('Payment system is currently busy, please try again in a moment.', 'error');
+      return;
+    }
 
+    const { error } = await supabase.from('orders').insert(insertRow);
     if (error) {
+      setIsRedirectingToPayment(false);
       showToast(error.message || '訂單提交失敗', 'error');
       return;
     }
@@ -1025,7 +1095,27 @@ const App: React.FC = () => {
     setCheckoutAddressDraft(null);
     setIsChangingAddress(false);
     showToast('訂單已提交！正在轉接支付接口...');
-    setView('orders');
+
+    const successUrl = 'https://coolfood-app-cursor.vercel.app/success';
+    try {
+      const { init, redirectToCheckout } = await import('@airwallex/components-sdk');
+      const airwallexEnv = (import.meta.env.VITE_AIRWALLEX_ENV as string) || 'demo';
+      if (airwallexEnv === 'demo') console.log('Airwallex Sandbox Mode Active');
+      const { payments } = await init({ env: airwallexEnv as 'demo' | 'prod', enabledElements: ['payments'] });
+      payments.redirectToCheckout({
+        intent_id,
+        client_secret,
+        currency,
+        country_code,
+        successUrl,
+        methods: ['card', 'fps'],
+      });
+    } catch (e) {
+      setIsRedirectingToPayment(false);
+      console.error('Airwallex redirectToCheckout failed', e);
+      const msg = e instanceof Error ? e.message : '';
+      showToast(msg ? `Payment error: ${msg}` : 'Payment system is currently busy, please try again in a moment.', 'error');
+    }
   };
 
   // --- Admin Logic ---
@@ -2089,7 +2179,7 @@ const App: React.FC = () => {
               {deliveryFee === 0 && <p className="text-[9px] text-emerald-400 font-black tracking-widest uppercase">已享全單免運優惠 ✨</p>}
               <div className="pt-4 border-t border-white/10 flex justify-between items-end"><span className="text-sm font-black uppercase tracking-widest">總金額</span><span className="text-4xl font-black text-blue-400">${total}</span></div>
             </div>
-            <button disabled={deliveryMethod === 'home' && !getCheckoutDeliveryAddress()} onClick={handleSubmitOrder} className="w-full py-5 bg-blue-600 rounded-[2rem] font-black text-lg shadow-xl active:scale-95 transition-all disabled:opacity-30 flex items-center justify-center gap-3"><CreditCard size={20}/> 立即支付</button>
+            <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || isRedirectingToPayment} onClick={handleSubmitOrder} className="w-full py-5 bg-blue-600 rounded-[2rem] font-black text-lg shadow-xl active:scale-95 transition-all disabled:opacity-30 flex items-center justify-center gap-3">{isRedirectingToPayment ? <RefreshCw size={20} className="animate-spin" /> : <CreditCard size={20}/>} {isRedirectingToPayment ? '轉接中...' : '立即支付'}</button>
           </section>
         </div>
       </div>
@@ -2260,6 +2350,16 @@ const App: React.FC = () => {
         <>
           {view === 'store' && renderStoreView()}
           {view === 'checkout' && renderCheckoutView()}
+          {view === 'success' && (
+            <div className="flex-1 bg-slate-50 min-h-screen flex flex-col items-center justify-center p-6 pb-24 animate-fade-in">
+              <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-lg p-10 max-w-md w-full text-center space-y-6">
+                <div className="w-20 h-20 mx-auto rounded-full bg-emerald-100 flex items-center justify-center"><CheckCircle className="w-12 h-12 text-emerald-600" /></div>
+                <h2 className="text-2xl font-black text-slate-900">多謝惠顧</h2>
+                <p className="text-slate-500 font-bold text-sm">您的訂單已提交，完成支付後我們會盡快為您處理。</p>
+                <button type="button" onClick={() => { if (window.history.replaceState) window.history.replaceState({}, '', '/'); setView('store'); }} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm">返回商店</button>
+              </div>
+            </div>
+          )}
           {view === 'orders' && (
              <div className="flex-1 bg-slate-50 p-6 space-y-4 overflow-y-auto pb-24">
                 <h2 className="text-2xl font-black text-slate-900 mb-6 tracking-tight">我的訂單記錄</h2>
