@@ -298,6 +298,9 @@ const App: React.FC = () => {
   const [checkoutSaveNewAddressAsDefault, setCheckoutSaveNewAddressAsDefault] = useState(true);
   const [isLocatingAddress, setIsLocatingAddress] = useState(false);
 
+  // Highlight the order card on 記錄 after payment success
+  const [highlightOrderId, setHighlightOrderId] = useState<string | null>(null);
+
   // Slideshow (store-front ad carousel)
   const [slideshowIndex, setSlideshowIndex] = useState(0);
 
@@ -312,13 +315,25 @@ const App: React.FC = () => {
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => setToast({ message, type });
 
-  // Handle Hash / path navigation (admin, success)
+  // Handle Hash / path navigation (admin, success → 記錄 with highlight)
   useEffect(() => {
     const syncViewFromUrl = () => {
       const hash = window.location.hash;
       const path = window.location.pathname;
+      const search = window.location.search || '';
       setIsAdminRoute(hash === '#admin');
-      if (path === '/success' || hash === '#success') setView('success');
+      if (path === '/success' || hash === '#success') {
+        const params = new URLSearchParams(search);
+        const orderId = params.get('order');
+        if (orderId) {
+          setView('orders');
+          setHighlightOrderId(orderId);
+          setToast({ message: '多謝惠顧', type: 'success' });
+          if (window.history.replaceState) window.history.replaceState({}, '', window.location.pathname === '/success' ? '/' : window.location.pathname);
+        } else {
+          setView('success');
+        }
+      }
     };
     syncViewFromUrl();
     window.addEventListener('hashchange', syncViewFromUrl);
@@ -328,6 +343,13 @@ const App: React.FC = () => {
       window.removeEventListener('popstate', syncViewFromUrl);
     };
   }, []);
+
+  // Clear order highlight after a few seconds
+  useEffect(() => {
+    if (!highlightOrderId) return;
+    const t = setTimeout(() => setHighlightOrderId(null), 4000);
+    return () => clearTimeout(t);
+  }, [highlightOrderId]);
 
   // Update browser tab title when route changes
   useEffect(() => {
@@ -388,6 +410,19 @@ const App: React.FC = () => {
     const t = setInterval(() => setSlideshowIndex(i => (i + 1) % slideshowItems.length), 5000);
     return () => clearInterval(t);
   }, [slideshowItems.length]);
+
+  // Restore member login from localStorage after page load (e.g. after return from payment)
+  useEffect(() => {
+    let storedId: string | null = null;
+    try { storedId = localStorage.getItem('coolfood_member_id'); } catch { /* ignore */ }
+    if (!storedId) return;
+    const restoreUser = async () => {
+      const { data, error } = await supabase.from('members').select('*').eq('id', storedId).maybeSingle();
+      if (error || !data) return;
+      setUser(mapMemberRowToUser(data as SupabaseMemberRow));
+    };
+    restoreUser();
+  }, []);
 
   // Load orders from Supabase on mount
   useEffect(() => {
@@ -523,7 +558,9 @@ const App: React.FC = () => {
       showToast('密碼錯誤', 'error');
       return;
     }
-    setUser(mapMemberRowToUser(row));
+    const u = mapMemberRowToUser(row);
+    setUser(u);
+    try { localStorage.setItem('coolfood_member_id', u.id); } catch { /* ignore */ }
     setShowAuthModal(false);
     setAuthForm({ email: '', password: '', name: '', phone: '' });
     setView('profile');
@@ -573,8 +610,10 @@ const App: React.FC = () => {
       showToast(error.message || '註冊失敗', 'error');
       return;
     }
-    setUser(mapMemberRowToUser(data as SupabaseMemberRow));
-    setMembers(prev => [...prev, mapMemberRowToUser(data as SupabaseMemberRow)]);
+    const u = mapMemberRowToUser(data as SupabaseMemberRow);
+    setUser(u);
+    try { localStorage.setItem('coolfood_member_id', u.id); } catch { /* ignore */ }
+    setMembers(prev => [...prev, u]);
     setShowAuthModal(false);
     setAuthForm({ email: '', password: '', name: '', phone: '' });
     setView('profile');
@@ -1029,7 +1068,7 @@ const App: React.FC = () => {
       intentRes = await fetch(`${apiBase}/api/airwallex-create-intent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount: total, merchant_order_id: orderIdDisplay }),
+        body: JSON.stringify({ amount: total, merchant_order_id: orderIdDisplay, success_origin: typeof window !== 'undefined' ? window.location.origin : '' }),
       });
     } catch {
       setIsRedirectingToPayment(false);
@@ -1096,7 +1135,7 @@ const App: React.FC = () => {
     setIsChangingAddress(false);
     showToast('訂單已提交！正在轉接支付接口...');
 
-    const successUrl = 'https://coolfood-app-cursor.vercel.app/success';
+    const successUrl = typeof window !== 'undefined' ? `${window.location.origin}/success?order=${encodeURIComponent(orderIdDisplay)}` : 'https://coolfood-app-cursor.vercel.app/success';
     try {
       const { init, redirectToCheckout } = await import('@airwallex/components-sdk');
       const airwallexEnv = (import.meta.env.VITE_AIRWALLEX_ENV as string) || 'demo';
@@ -2356,7 +2395,7 @@ const App: React.FC = () => {
                 <div className="w-20 h-20 mx-auto rounded-full bg-emerald-100 flex items-center justify-center"><CheckCircle className="w-12 h-12 text-emerald-600" /></div>
                 <h2 className="text-2xl font-black text-slate-900">多謝惠顧</h2>
                 <p className="text-slate-500 font-bold text-sm">您的訂單已提交，完成支付後我們會盡快為您處理。</p>
-                <button type="button" onClick={() => { if (window.history.replaceState) window.history.replaceState({}, '', '/'); setView('store'); }} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm">返回商店</button>
+                <button type="button" onClick={() => { if (window.history.replaceState) window.history.replaceState({}, '', '/'); setView('orders'); const latestId = orders.length > 0 ? orders[0].id : null; if (latestId) setHighlightOrderId(latestId); }} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm">查看記錄</button>
               </div>
             </div>
           )}
@@ -2369,7 +2408,10 @@ const App: React.FC = () => {
                    </div>
                 )}
                 {orders.map(o => (
-                   <div key={o.id} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm space-y-4 hover:shadow-md transition-shadow">
+                   <div
+                     key={o.id}
+                     className={`bg-white p-6 rounded-3xl border shadow-sm space-y-4 hover:shadow-md transition-all duration-300 ${highlightOrderId === o.id ? 'border-emerald-400 ring-2 ring-emerald-200 shadow-lg animate-order-pop' : 'border-slate-100'}`}
+                   >
                       <div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest"><span>#{o.id} • {o.date}</span><span className="text-blue-600 px-2 py-0.5 bg-blue-50 rounded-md">{o.status}</span></div>
                       <div className="flex justify-between items-center"><p className="text-2xl font-black text-slate-900">${o.total}</p><button onClick={() => handleTrackOrder(o)} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all"><Truck size={14} className="inline mr-2"/> 追蹤物流</button></div>
                    </div>
@@ -2461,7 +2503,7 @@ const App: React.FC = () => {
                   </div>
                   <button onClick={() => window.location.hash = 'admin'} className="w-full flex justify-between items-center p-6 bg-slate-900 rounded-[2.5rem] text-white font-bold shadow-xl active:scale-95 transition-all"><div className="flex items-center gap-3"><ShieldCheck size={20} className="text-blue-400"/> 開啟管理後台</div><ArrowUpRight size={18} className="text-slate-400"/></button>
                 </div>
-                <button onClick={() => { setUser(null); setView('store'); showToast('已成功登出'); }} className="w-full py-5 bg-white text-rose-500 rounded-[2rem] font-black border border-rose-50 shadow-sm active:scale-95 transition-all hover:bg-rose-50">退出登入</button>
+                <button onClick={() => { setUser(null); try { localStorage.removeItem('coolfood_member_id'); } catch { /* ignore */ } setView('store'); showToast('已成功登出'); }} className="w-full py-5 bg-white text-rose-500 rounded-[2rem] font-black border border-rose-50 shadow-sm active:scale-95 transition-all hover:bg-rose-50">退出登入</button>
              </div>
           )}
           {!isAdminRoute && (

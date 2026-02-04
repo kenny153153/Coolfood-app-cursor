@@ -35,9 +35,10 @@ export default async function handler(req: { method?: string; body?: { amount?: 
     });
   }
 
-  const body = req.body as { amount?: number; merchant_order_id?: string };
+  const body = req.body as { amount?: number; merchant_order_id?: string; success_origin?: string };
   const amount = typeof body?.amount === 'number' ? body.amount : undefined;
   const merchantOrderId = typeof body?.merchant_order_id === 'string' ? body.merchant_order_id : undefined;
+  const successOrigin = typeof body?.success_origin === 'string' && body.success_origin ? body.success_origin : 'https://coolfood-app-cursor.vercel.app';
 
   if (amount == null || amount <= 0 || !merchantOrderId) {
     return res.status(400).json({
@@ -46,7 +47,7 @@ export default async function handler(req: { method?: string; body?: { amount?: 
     });
   }
 
-  const successUrl = 'https://coolfood-app-cursor.vercel.app/success';
+  const successUrl = `${successOrigin.replace(/\/$/, '')}/success?order=${encodeURIComponent(merchantOrderId)}`;
   const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
 
   try {
