@@ -6,10 +6,18 @@ export default defineConfig(({ mode }) => {
     const root = path.resolve(__dirname);
     const fileEnv = loadEnv(mode, root, '');
     const env = { ...fileEnv, ...process.env };
+    const apiTarget = env.VITE_API_PROXY_TARGET || 'https://coolfood-app-cursor.vercel.app';
     return {
       server: {
         port: 3000,
         host: '0.0.0.0',
+        proxy: {
+          '/api': {
+            target: apiTarget.startsWith('http') ? apiTarget : `https://${apiTarget}`,
+            changeOrigin: true,
+            secure: true,
+          },
+        },
       },
       plugins: [react()],
       define: {

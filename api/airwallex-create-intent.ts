@@ -1,5 +1,5 @@
-const AIRWALLEX_DEMO = 'https://api-demo.airwallex.com';
-const AIRWALLEX_PROD = 'https://api.airwallex.com';
+const AIRWALLEX_DEMO_BASE = 'https://api-demo.airwallex.com';
+const AIRWALLEX_PROD_BASE = 'https://api.airwallex.com';
 
 export default async function handler(req: { method?: string; body?: { amount?: number; merchant_order_id?: string } }, res: { setHeader: (k: string, v: string) => void; status: (n: number) => { json: (o: object) => void }; json: (o: object) => void }) {
   if (req.method !== 'POST') {
@@ -7,12 +7,17 @@ export default async function handler(req: { method?: string; body?: { amount?: 
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const clientId = process.env.AIRWALLEX_CLIENT_ID ?? process.env.VITE_AIRWALLEX_CLIENT_ID;
-  const apiKey = process.env.AIRWALLEX_API_KEY ?? process.env.VITE_AIRWALLEX_API_KEY;
-  const envRaw = process.env.AIRWALLEX_ENV ?? process.env.VITE_AIRWALLEX_ENV;
-  // Only use demo when explicitly set to 'demo'; otherwise use production
-  const useDemo = envRaw === 'demo';
-  const baseUrl = useDemo ? AIRWALLEX_DEMO : AIRWALLEX_PROD;
+  const rawClientId = process.env.AIRWALLEX_CLIENT_ID ?? process.env.VITE_AIRWALLEX_CLIENT_ID ?? '';
+  const rawApiKey = process.env.AIRWALLEX_API_KEY ?? process.env.VITE_AIRWALLEX_API_KEY ?? '';
+  const clientId = rawClientId.trim();
+  const apiKey = rawApiKey.trim();
+  const envRaw = (process.env.AIRWALLEX_ENV ?? process.env.VITE_AIRWALLEX_ENV ?? '').trim();
+  // Conditional URL: use https://api-demo.airwallex.com when VITE_AIRWALLEX_ENV (or AIRWALLEX_ENV) is 'demo' or unset; otherwise prod
+  const useDemo = envRaw !== 'prod';
+  const baseUrl = useDemo ? AIRWALLEX_DEMO_BASE : AIRWALLEX_PROD_BASE;
+  const authUrl = useDemo
+    ? 'https://api-demo.airwallex.com/api/v1/authentication/login'
+    : 'https://api.airwallex.com/api/v1/authentication/login';
 
   if (useDemo) {
     console.log('Airwallex Sandbox Mode Active');
@@ -40,21 +45,40 @@ export default async function handler(req: { method?: string; body?: { amount?: 
   const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
 
   try {
-    const authRes = await fetch(`${baseUrl}/api/v1/authentication/login`, {
+    // Debug: log full auth URL with keys masked so we can verify demo vs prod
+    console.log('Airwallex auth URL (keys masked):', authUrl, '| env:', envRaw || '(unset)', '| x-client-id length:', clientId.length, '| x-api-key length:', apiKey.length);
+
+    // Token logic: we never use VITE_AIRWALLEX_API_KEY as Bearer. We send client id + api key
+    // only in headers x-client-id and x-api-key to the login endpoint to obtain a fresh access_token.
+    const authRes = await fetch(authUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-client-id': clientId,
         'x-api-key': apiKey,
       },
-      body: JSON.stringify({}),
+      body: '{}',
     });
 
     if (!authRes.ok) {
       const errText = await authRes.text();
-      console.error('Airwallex auth failed', authRes.status, errText);
+      console.error('Airwallex auth failed', authRes.status, baseUrl, errText);
+      let airwallexMsg = '';
+      try {
+        const errJson = JSON.parse(errText) as { message?: string; error?: string; code?: string };
+        airwallexMsg = errJson.message ?? errJson.error ?? '';
+        if (errJson.code) airwallexMsg = (airwallexMsg ? `${errJson.code}: ${airwallexMsg}` : errJson.code);
+      } catch {
+        airwallexMsg = errText.slice(0, 120);
+      }
+      const hint = useDemo
+        ? ' Use sandbox Client ID and API key from Airwallex Demo (Settings > Developer > API keys at demo.airwallex.com). In Vercel set AIRWALLEX_ENV=demo or leave unset.'
+        : ' Use production Client ID and API key and AIRWALLEX_ENV=prod.';
+      const mainMsg = airwallexMsg
+        ? `Payment auth failed: ${airwallexMsg}.${hint}`
+        : `Payment auth failed. Check Client ID and API key.${hint}`;
       return res.status(502).json({
-        error: 'Payment auth failed. Check Client ID and API key (use sandbox credentials with demo env).',
+        error: mainMsg,
         code: 'AUTH_FAILED',
         details: errText.slice(0, 200),
       });
@@ -70,6 +94,7 @@ export default async function handler(req: { method?: string; body?: { amount?: 
       });
     }
 
+    // Use only the access_token from login; never use VITE_AIRWALLEX_API_KEY as Bearer
     const createRes = await fetch(`${baseUrl}/api/v1/pa/payment_intents/create`, {
       method: 'POST',
       headers: {
