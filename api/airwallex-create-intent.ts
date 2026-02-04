@@ -12,20 +12,19 @@ export default async function handler(req: { method?: string; body?: { amount?: 
   const apiKey = (process.env.AIRWALLEX_API_KEY ?? process.env.VITE_AIRWALLEX_API_KEY ?? '').trim();
   const envRaw = (process.env.AIRWALLEX_ENV ?? process.env.VITE_AIRWALLEX_ENV ?? '').trim();
 
-  // 變數檢查：印出 VITE_AIRWALLEX_ENV
-  console.log('process.env.VITE_AIRWALLEX_ENV =', JSON.stringify(process.env.VITE_AIRWALLEX_ENV));
-
-  // 硬編碼測試（僅限除錯）：強制 demo 端點
-  const isDemo = true;
-  const baseUrl = isDemo ? AIRWALLEX_DEMO_BASE : AIRWALLEX_PROD_BASE;
-  const authUrl = isDemo
+  // 依 env 決定 demo / prod（demo 時用 api-demo.airwallex.com）
+  const useDemo = envRaw !== 'prod';
+  const baseUrl = useDemo ? AIRWALLEX_DEMO_BASE : AIRWALLEX_PROD_BASE;
+  const authUrl = useDemo
     ? 'https://api-demo.airwallex.com/api/v1/authentication/login'
     : 'https://api.airwallex.com/api/v1/authentication/login';
 
-  // 強制網址：明確印出目前正在訪問的網址
+  // Debug：確認網址與 env（不印出金鑰）
   console.log('目前正在訪問的網址是: ' + authUrl);
+  console.log('process.env.VITE_AIRWALLEX_ENV =', JSON.stringify(process.env.VITE_AIRWALLEX_ENV), '| AIRWALLEX_ENV =', JSON.stringify(process.env.AIRWALLEX_ENV));
+  console.log('clientId length:', clientId.length, '| apiKey length:', apiKey.length);
 
-  if (isDemo) {
+  if (useDemo) {
     console.log('Airwallex Sandbox Mode Active');
   }
 
@@ -77,7 +76,7 @@ export default async function handler(req: { method?: string; body?: { amount?: 
       } catch {
         airwallexMsg = errText.slice(0, 120);
       }
-      const hint = isDemo
+      const hint = useDemo
         ? ' Use sandbox Client ID and API key from Airwallex Demo (Settings > Developer > API keys at demo.airwallex.com). In Vercel set AIRWALLEX_ENV=demo or leave unset.'
         : ' Use production Client ID and API key and AIRWALLEX_ENV=prod.';
       const mainMsg = airwallexMsg
