@@ -91,6 +91,8 @@ export interface OrderLineItem {
   unit_price: number;
   qty: number;
   line_total: number;
+  /** Product image URL/base64 for display in order details */
+  image?: string | null;
 }
 
 /** Supabase public.orders table – column names must match exactly (snake_case). id may be bigint (number) or text. */

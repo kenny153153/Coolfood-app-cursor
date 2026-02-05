@@ -1017,7 +1017,7 @@ const App: React.FC = () => {
     const lineItems: OrderLineItem[] = cart.map(item => {
       const unitPrice = getEffectiveUnitPrice(item, item.qty, !!isUsingWallet);
       const lineTotal = unitPrice * item.qty;
-      return { product_id: item.id, name: item.name, unit_price: unitPrice, qty: item.qty, line_total: lineTotal };
+      return { product_id: item.id, name: item.name, unit_price: unitPrice, qty: item.qty, line_total: lineTotal, image: item.image ?? null };
     });
 
     const deliveryAddress = getCheckoutDeliveryAddress();
@@ -1958,74 +1958,85 @@ const App: React.FC = () => {
                     <div className="text-center text-slate-400 font-bold">載入中...</div>
                   ) : (
                     <>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="bg-slate-50 rounded-2xl p-4">
-                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">客戶</p>
-                          <p className="text-sm font-bold text-slate-900">{inspectingOrderDetails.customer_name}</p>
-                          <p className="text-xs text-slate-500 font-bold mt-1">{inspectingOrderDetails.customer_phone || '未提供電話'}</p>
-                        </div>
-                        <div className="bg-slate-50 rounded-2xl p-4">
-                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">配送方式</p>
-                          <p className="text-sm font-bold text-slate-900">{inspectingOrderDetails.delivery_method || '未設定'}</p>
-                          {(inspectingOrderDetails.delivery_district || inspectingOrderDetails.delivery_street || inspectingOrderDetails.delivery_building || inspectingOrderDetails.delivery_address) ? (
-                            <div className="text-xs text-slate-500 font-bold mt-1 space-y-0.5">
-                              {inspectingOrderDetails.delivery_address && <p>{inspectingOrderDetails.delivery_address}</p>}
-                              {(inspectingOrderDetails.delivery_district || inspectingOrderDetails.delivery_street || inspectingOrderDetails.delivery_building) && (
-                                <p className="text-slate-600">
-                                  {[inspectingOrderDetails.delivery_district, inspectingOrderDetails.delivery_street, inspectingOrderDetails.delivery_building].filter(Boolean).join(' · ')}
-                                  {(inspectingOrderDetails.delivery_floor || inspectingOrderDetails.delivery_flat) && ` · ${inspectingOrderDetails.delivery_floor || ''}${inspectingOrderDetails.delivery_floor && inspectingOrderDetails.delivery_flat ? '樓 ' : ''}${inspectingOrderDetails.delivery_flat || ''}`}
-                                </p>
-                              )}
-                            </div>
-                          ) : (
-                            <p className="text-xs text-slate-500 font-bold mt-1">{inspectingOrderDetails.delivery_address || '未提供地址'}</p>
-                          )}
-                        </div>
-                        <div className="bg-slate-50 rounded-2xl p-4">
-                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">金額</p>
-                          <p className="text-sm font-bold text-slate-900">小計 ${inspectingOrderDetails.subtotal ?? inspectingOrder.total}</p>
-                          <p className="text-xs text-slate-500 font-bold mt-1">運費 ${inspectingOrderDetails.delivery_fee ?? 0}</p>
-                          <p className="text-xs text-slate-700 font-black mt-1">總計 ${inspectingOrderDetails.total}</p>
-                        </div>
-                        <div className="bg-slate-50 rounded-2xl p-4">
-                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">聯絡人</p>
-                          <p className="text-sm font-bold text-slate-900">{inspectingOrderDetails.contact_name || '未提供'}</p>
-                        </div>
-                      </div>
-
+                      {/* 1. 商品明細 — 最高 */}
                       <div className="bg-white border border-slate-100 rounded-2xl p-4">
                         <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">商品明細</p>
-                        <div className="space-y-2">
+                        <div className="space-y-3">
                           {(inspectingOrderDetails.line_items || []).length === 0 && (
                             <p className="text-xs text-slate-400 font-bold">沒有商品明細</p>
                           )}
                           {(inspectingOrderDetails.line_items || []).map(item => (
-                            <div key={`${item.product_id}-${item.name}`} className="flex justify-between text-sm font-bold text-slate-700">
-                              <span>{item.name} x {item.qty}</span>
-                              <span>${item.line_total}</span>
+                            <div key={`${item.product_id}-${item.name}`} className="flex items-center gap-3 text-sm font-bold text-slate-700">
+                              <div className="w-14 h-14 rounded-xl bg-slate-100 overflow-hidden flex-shrink-0 border border-slate-100">
+                                {item.image ? (
+                                  <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-slate-300 text-xs">無圖</div>
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <span>{item.name} x {item.qty}</span>
+                              </div>
+                              <span className="flex-shrink-0">${item.line_total}</span>
                             </div>
                           ))}
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">訂單狀態</label>
-                          <select value={orderStatusDraft || inspectingOrder.status} onChange={e => setOrderStatusDraft(e.target.value as OrderStatus)} className="w-full p-3 bg-slate-50 rounded-2xl font-bold">
-                            {Object.values(OrderStatus).map(s => (<option key={s} value={s}>{s}</option>))}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">物流編號</label>
-                          <input value={trackingDraft} onChange={e => setTrackingDraft(e.target.value)} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" placeholder="輸入物流編號" />
-                        </div>
+                      {/* 2. 配送方式及聯絡人 — 合在一起，地址只顯示一次 */}
+                      <div className="bg-slate-50 rounded-2xl p-4 space-y-3">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">配送方式及聯絡人</p>
+                        <p className="text-sm font-bold text-slate-900">{inspectingOrderDetails.delivery_method || '未設定'}</p>
+                        {(inspectingOrderDetails.delivery_district || inspectingOrderDetails.delivery_street || inspectingOrderDetails.delivery_building || inspectingOrderDetails.delivery_address) ? (
+                          <p className="text-xs text-slate-600 font-bold">
+                            {(inspectingOrderDetails.delivery_district || inspectingOrderDetails.delivery_street || inspectingOrderDetails.delivery_building)
+                              ? [inspectingOrderDetails.delivery_district, inspectingOrderDetails.delivery_street, inspectingOrderDetails.delivery_building].filter(Boolean).join(' · ') +
+                                ((inspectingOrderDetails.delivery_floor || inspectingOrderDetails.delivery_flat) ? ` · ${inspectingOrderDetails.delivery_floor || ''}${inspectingOrderDetails.delivery_floor && inspectingOrderDetails.delivery_flat ? '樓 ' : ''}${inspectingOrderDetails.delivery_flat || ''}${inspectingOrderDetails.delivery_flat ? '室' : ''}` : '')
+                              : (inspectingOrderDetails.delivery_address || '')}
+                          </p>
+                        ) : (
+                          <p className="text-xs text-slate-500 font-bold">未提供地址</p>
+                        )}
+                        <p className="text-sm font-bold text-slate-900 pt-1 border-t border-slate-200">聯絡人：{inspectingOrderDetails.contact_name || '未提供'}</p>
                       </div>
+
+                      {/* 3. 金額明細 */}
+                      <div className="bg-slate-50 rounded-2xl p-4">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">金額明細</p>
+                        <p className="text-sm font-bold text-slate-900">小計 ${inspectingOrderDetails.subtotal ?? inspectingOrder.total}</p>
+                        <p className="text-xs text-slate-500 font-bold mt-1">運費 ${inspectingOrderDetails.delivery_fee ?? 0}</p>
+                        <p className="text-xs text-slate-700 font-black mt-1">總計 ${inspectingOrderDetails.total}</p>
+                      </div>
+
+                      {/* 4. 客戶 */}
+                      <div className="bg-slate-50 rounded-2xl p-4">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">客戶</p>
+                        <p className="text-sm font-bold text-slate-900">{inspectingOrderDetails.customer_name}</p>
+                        <p className="text-xs text-slate-500 font-bold mt-1">{inspectingOrderDetails.customer_phone || '未提供電話'}</p>
+                      </div>
+
+                      {isAdminRoute && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">訂單狀態</label>
+                            <select value={orderStatusDraft || inspectingOrder.status} onChange={e => setOrderStatusDraft(e.target.value as OrderStatus)} className="w-full p-3 bg-slate-50 rounded-2xl font-bold">
+                              {Object.values(OrderStatus).map(s => (<option key={s} value={s}>{s}</option>))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">物流編號</label>
+                            <input value={trackingDraft} onChange={e => setTrackingDraft(e.target.value)} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" placeholder="輸入物流編號" />
+                          </div>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
                 <div className="p-10 bg-slate-50 border-t border-slate-100 flex justify-between items-center">
                   <button onClick={() => setInspectingOrder(null)} className="px-8 py-3 bg-white border border-slate-200 rounded-2xl font-black text-xs">關閉</button>
-                  <button onClick={() => updateOrderFields(inspectingOrder.id, { status: orderStatusDraft || inspectingOrder.status, tracking_number: trackingDraft || null })} className="px-8 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs">更新訂單</button>
+                  {isAdminRoute && (
+                    <button onClick={() => updateOrderFields(inspectingOrder.id, { status: orderStatusDraft || inspectingOrder.status, tracking_number: trackingDraft || null })} className="px-8 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs">更新訂單</button>
+                  )}
                 </div>
              </div>
           </div>
@@ -2413,7 +2424,13 @@ const App: React.FC = () => {
                      className={`bg-white p-6 rounded-3xl border shadow-sm space-y-4 hover:shadow-md transition-all duration-300 ${highlightOrderId === o.id ? 'border-emerald-400 ring-2 ring-emerald-200 shadow-lg animate-order-pop' : 'border-slate-100'}`}
                    >
                       <div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest"><span>#{o.id} • {o.date}</span><span className="text-blue-600 px-2 py-0.5 bg-blue-50 rounded-md">{o.status}</span></div>
-                      <div className="flex justify-between items-center"><p className="text-2xl font-black text-slate-900">${o.total}</p><button onClick={() => handleTrackOrder(o)} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all"><Truck size={14} className="inline mr-2"/> 追蹤物流</button></div>
+                      <div className="flex justify-between items-center flex-wrap gap-2">
+                        <p className="text-2xl font-black text-slate-900">${o.total}</p>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => setInspectingOrder(o)} className="px-4 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all border border-slate-200 hover:bg-slate-200">查看訂單</button>
+                          <button onClick={() => handleTrackOrder(o)} className="px-4 py-2.5 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all"><Truck size={14} className="inline mr-2"/> 追蹤物流</button>
+                        </div>
+                      </div>
                    </div>
                 ))}
              </div>
