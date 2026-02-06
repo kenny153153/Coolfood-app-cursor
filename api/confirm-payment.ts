@@ -87,7 +87,7 @@ export default async function handler(
     const supabaseUrl = safeTrim(process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? '');
     const serviceRoleKey = safeTrim(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '');
     if (serviceRoleKey) console.log('[confirm-payment] Using SUPABASE_SERVICE_ROLE_KEY for update');
-    console.log('API 使用的網址:', process.env.SUPABASE_URL);
+    console.log('Supabase URL:', process.env.SUPABASE_URL);
     if (!supabaseUrl || !serviceRoleKey) {
       console.error('[confirm-payment] Missing Supabase config');
       return res.status(500).json({ error: 'Server config missing', code: 'CONFIG_MISSING' });
@@ -97,7 +97,9 @@ export default async function handler(
       return res.status(500).json({ error: 'SUPABASE_URL must be a public URL (not localhost)', code: 'SUPABASE_URL_INVALID' });
     }
     console.log('[confirm-payment] Supabase URL host:', maskUrl(supabaseUrl));
-    const supabaseClient = createClient(supabaseUrl, serviceRoleKey);
+    const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
 
     if (paymentIntentId) {
       console.log('[confirm-payment] payment_intent_id detected:', paymentIntentId);
@@ -146,7 +148,7 @@ export default async function handler(
 
     const dbId = getOrderDbId(orderId);
     console.log('[confirm-payment] Resolve orderId:', orderId, '=> dbId:', dbId);
-    const { data: orderByDbId, error: orderByDbError } = await supabaseClient
+    const { data: orderByDbId, error: orderByDbError } = await supabaseAdmin
       .from('orders')
       .select('id,status,tracking_number,waybill_no')
       .eq('id', dbId)
@@ -158,7 +160,7 @@ export default async function handler(
     let order = orderByDbId ?? null;
     if (!order && String(dbId) !== orderId) {
       console.warn('[confirm-payment] Order not found by dbId, retry with orderId:', orderId);
-      const { data: orderByOrderId, error: orderByOrderError } = await supabaseClient
+      const { data: orderByOrderId, error: orderByOrderError } = await supabaseAdmin
         .from('orders')
         .select('id,status,tracking_number,waybill_no')
         .eq('id', orderId)
@@ -175,40 +177,29 @@ export default async function handler(
     }
     console.log('[confirm-payment] Order loaded:', JSON.stringify(order));
 
-    const alreadySuccess = order.status === 'success';
-    let canTriggerSf = false;
-    if (alreadySuccess) {
-      console.log('[confirm-payment] Order already success, skip update');
-      canTriggerSf = true;
-    } else {
-      const updateId = order.id ?? dbId;
-      console.log('[confirm-payment] Updating Supabase status to success');
-      const { error: updateError } = await supabaseClient
-        .from('orders')
-        .update({ status: 'success' })
-        .eq('id', updateId);
-      if (updateError) {
-        console.error('[confirm-payment] Update status failed', updateError.message);
-        return res.status(502).json({ error: 'Failed to update order status', code: 'UPDATE_FAILED', details: updateError.message });
-      }
-      console.log('✅ Supabase 狀態已更新為 success');
-      canTriggerSf = true;
+    const updateId = order.id ?? dbId;
+    console.log('[confirm-payment] Step A: Update status to success');
+    const { data: statusUpdated, error: updateError } = await supabaseAdmin
+      .from('orders')
+      .update({ status: 'success' })
+      .eq('id', updateId)
+      .select('id,status,tracking_number,waybill_no')
+      .maybeSingle();
+    if (updateError) {
+      console.error('[confirm-payment] Update status failed', updateError.message);
+      return res.status(502).json({ error: 'Failed to update order status', code: 'UPDATE_FAILED', details: updateError.message });
     }
+    const updatedOrder = statusUpdated ?? order;
+    console.log('✅ Supabase 狀態已更新為 success');
 
-    const existingWaybill = order.waybill_no ?? order.tracking_number ?? null;
+    const existingWaybill = updatedOrder.waybill_no ?? updatedOrder.tracking_number ?? null;
     if (existingWaybill) {
       console.log('[confirm-payment] waybill exists, skip SF API:', existingWaybill);
       console.log('--- [流程結束] ---');
       return res.status(200).json({ success: true, orderId, waybillNo: existingWaybill, waybill_no: existingWaybill, confirmed: true });
     }
 
-    if (!canTriggerSf) {
-      console.log('[confirm-payment] Skip SF: status not updated to success');
-      console.log('--- [流程結束] ---');
-      return res.status(200).json({ success: true, orderId, waybillNo: null, waybill_no: null, confirmed: true, sfPending: true });
-    }
-
-    // 3. 呼叫順豐前
+    // Step B: 呼叫順豐
     console.log('準備呼叫順豐 API...');
     try {
       const sfRes = await fetch(`${origin}/api/sf-order`, {
@@ -227,9 +218,8 @@ export default async function handler(
 
       console.log('--- [流程結束] ---');
       if (!sfRes.ok) {
-        const updateId = order.id ?? dbId;
         const sfErrorPayload = { status: sfRes.status, body: sfJson ?? sfText, at: new Date().toISOString() };
-        const { error: sfStoreError } = await supabaseClient
+        const { error: sfStoreError } = await supabaseAdmin
           .from('orders')
           .update({ sf_responses: sfErrorPayload })
           .eq('id', updateId);
@@ -239,11 +229,12 @@ export default async function handler(
         return res.status(200).json({ success: true, orderId, waybillNo: null, waybill_no: null, confirmed: true, sfPending: true });
       }
       const waybill = sfJson?.waybill_no ?? sfJson?.waybillNo ?? null;
-      const updateId = order.id ?? dbId;
+      // Step C: 儲存單號 + 原始回應
+      const sfSuccessPayload = { status: sfRes.status, body: sfJson ?? sfText, at: new Date().toISOString() };
       if (waybill) {
-        const { error: wbError } = await supabaseClient
+        const { error: wbError } = await supabaseAdmin
           .from('orders')
-          .update({ waybill_no: waybill, sf_responses: null })
+          .update({ waybill_no: waybill, sf_responses: sfSuccessPayload })
           .eq('id', updateId);
         if (wbError) {
           console.error('[confirm-payment] Failed to store waybill_no', wbError.message);
@@ -252,7 +243,7 @@ export default async function handler(
         }
       } else {
         const sfErrorPayload = { status: sfRes.status, body: sfJson ?? sfText, at: new Date().toISOString() };
-        const { error: sfStoreError } = await supabaseClient
+        const { error: sfStoreError } = await supabaseAdmin
           .from('orders')
           .update({ sf_responses: sfErrorPayload })
           .eq('id', updateId);
@@ -265,9 +256,8 @@ export default async function handler(
       const msg = sfErr instanceof Error ? sfErr.message : String(sfErr);
       console.error('[confirm-payment] SF fetch failed, mark pending:', msg);
       console.log('--- [流程結束] ---');
-      const updateId = order.id ?? dbId;
       const sfErrorPayload = { status: 0, body: msg, at: new Date().toISOString() };
-      const { error: sfStoreError } = await supabaseClient
+      const { error: sfStoreError } = await supabaseAdmin
         .from('orders')
         .update({ sf_responses: sfErrorPayload })
         .eq('id', updateId);
