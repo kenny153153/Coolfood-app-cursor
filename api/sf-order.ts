@@ -26,6 +26,7 @@ type SfOrderPayload = {
 };
 
 function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: string; address: string }) {
+  const custid = (process.env.SF_MONTHLY_CARD ?? process.env.SF_PARTNER_ID ?? '').trim();
   const addr = [
     payload.delivery_district,
     payload.delivery_address,
@@ -36,7 +37,17 @@ function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: 
     .join(' ');
   return {
     orderId: payload.orderId,
-    cargoName: '冷凍食品',
+    language: 'zh-CN',
+    expressType: 1,
+    payMethod: 1,
+    custid,
+    cargoDetails: [
+      {
+        name: '冷凍食品',
+        count: 1,
+        unit: 'pcs',
+      }
+    ],
     consignorContact: sender.name,
     consignorTel: sender.phone,
     consignorAddress: sender.address,
@@ -48,6 +59,17 @@ function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: 
 
 function validateSfRequiredFields(msgData: ReturnType<typeof buildSfMsgData>) {
   const missing: string[] = [];
+  if (!msgData.expressType) missing.push('expressType');
+  if (!msgData.payMethod) missing.push('payMethod');
+  if (!msgData.custid?.trim()) missing.push('custid');
+  if (!Array.isArray(msgData.cargoDetails) || msgData.cargoDetails.length === 0) missing.push('cargoDetails');
+  if (Array.isArray(msgData.cargoDetails)) {
+    msgData.cargoDetails.forEach((item, idx) => {
+      if (!item?.name?.trim()) missing.push(`cargoDetails[${idx}].name`);
+      if (!item?.count) missing.push(`cargoDetails[${idx}].count`);
+      if (!item?.unit?.trim()) missing.push(`cargoDetails[${idx}].unit`);
+    });
+  }
   if (!msgData.consignorContact?.trim()) missing.push('consignorContact');
   if (!msgData.consignorTel?.trim()) missing.push('consignorTel');
   if (!msgData.consignorAddress?.trim()) missing.push('consignorAddress');
@@ -152,6 +174,7 @@ export default async function handler(
       msgData,
       msgDigest,
     };
+    console.log('[SF] Final SF Request:', JSON.stringify(payload));
     console.log('[SF] Request to sandbox:', SF_SANDBOX_URL, 'requestID:', requestID);
 
     const sfRes = await fetch(SF_SANDBOX_URL, {
