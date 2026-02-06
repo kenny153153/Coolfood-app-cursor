@@ -14,6 +14,37 @@ function getOrderDbId(orderId: string): string | number {
 
 const safeTrim = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
 
+const maskUrl = (value: string): string => {
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return value ? `${value.slice(0, 6)}...` : '';
+  }
+};
+
+const isLocalhost = (value: string): boolean => {
+  return value.includes('localhost') || value.includes('127.0.0.1') || value.includes('0.0.0.0');
+};
+
+const fetchJson = async (url: string, options: RequestInit, label: string) => {
+  try {
+    const res = await fetch(url, options);
+    const text = await res.text();
+    let json: unknown = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    return { ok: res.ok, status: res.status, text, json };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[confirm-payment] ${label} fetch failed:`, msg);
+    return { ok: false, status: 0, text: msg, json: null };
+  }
+};
+
 async function getAirwallexToken(): Promise<{ token: string; baseUrl: string }> {
   const clientId = safeTrim(process.env.AIRWALLEX_CLIENT_ID ?? process.env.VITE_AIRWALLEX_CLIENT_ID ?? '');
   const apiKey = safeTrim(process.env.AIRWALLEX_API_KEY ?? process.env.VITE_AIRWALLEX_API_KEY ?? '');
@@ -78,6 +109,11 @@ export default async function handler(
       console.error('[confirm-payment] Missing Supabase config');
       return res.status(500).json({ error: 'Server config missing', code: 'CONFIG_MISSING' });
     }
+    if (isLocalhost(supabaseUrl)) {
+      console.error('[confirm-payment] SUPABASE_URL is localhost, not reachable from Vercel:', supabaseUrl);
+      return res.status(500).json({ error: 'SUPABASE_URL must be a public URL (not localhost)', code: 'SUPABASE_URL_INVALID' });
+    }
+    console.log('[confirm-payment] Supabase URL host:', maskUrl(supabaseUrl));
 
     if (paymentIntentId) {
       console.log('[confirm-payment] payment_intent_id detected:', paymentIntentId);
@@ -127,17 +163,20 @@ export default async function handler(
     const dbId = getOrderDbId(orderId);
     console.log('[confirm-payment] Resolve orderId:', orderId, '=> dbId:', dbId);
     const baseRest = `${supabaseUrl.replace(/\/$/, '')}/rest/v1/orders`;
-    let getRes = await fetch(`${baseRest}?id=eq.${dbId}&select=id,status,tracking_number`, {
-      headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` },
-    });
-    let rows = await getRes.json();
+    const headers = { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` };
+    let result = await fetchJson(`${baseRest}?id=eq.${dbId}&select=id,status,tracking_number`, { headers }, 'supabase-order-by-dbId');
+    if (!result.ok && result.status === 0) {
+      return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: result.text });
+    }
+    let rows = result.json;
     let order = Array.isArray(rows) ? rows[0] : null;
     if (!order && String(dbId) !== orderId) {
       console.warn('[confirm-payment] Order not found by dbId, retry with orderId:', orderId);
-      getRes = await fetch(`${baseRest}?id=eq.${encodeURIComponent(orderId)}&select=id,status,tracking_number`, {
-        headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` },
-      });
-      rows = await getRes.json();
+      result = await fetchJson(`${baseRest}?id=eq.${encodeURIComponent(orderId)}&select=id,status,tracking_number`, { headers }, 'supabase-order-by-orderId');
+      if (!result.ok && result.status === 0) {
+        return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: result.text });
+      }
+      rows = result.json;
       order = Array.isArray(rows) ? rows[0] : null;
     }
     if (!order) {
