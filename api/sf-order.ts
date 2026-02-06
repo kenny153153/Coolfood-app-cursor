@@ -249,7 +249,31 @@ export default async function handler(
       });
     }
 
-    const waybillNo = (json as { apiResultData?: { waybillNo?: string }; waybillNo?: string }).apiResultData?.waybillNo
+    const apiResultData = (json as { apiResultData?: string | Record<string, unknown> }).apiResultData;
+    let apiResultParsed: Record<string, unknown> | null = null;
+    if (typeof apiResultData === 'string') {
+      try {
+        apiResultParsed = JSON.parse(apiResultData) as Record<string, unknown>;
+      } catch {
+        apiResultParsed = null;
+      }
+    } else if (apiResultData && typeof apiResultData === 'object') {
+      apiResultParsed = apiResultData as Record<string, unknown>;
+    }
+
+    const innerMsgData = (() => {
+      const raw = apiResultParsed?.msgData;
+      if (typeof raw === 'string') {
+        try { return JSON.parse(raw) as Record<string, unknown>; } catch { return null; }
+      }
+      if (raw && typeof raw === 'object') return raw as Record<string, unknown>;
+      return null;
+    })();
+
+    const waybillNo = (apiResultParsed as { waybillNo?: string } | null)?.waybillNo
+      ?? (apiResultParsed as { waybillList?: { waybillNo?: string }[] } | null)?.waybillList?.[0]?.waybillNo
+      ?? (innerMsgData as { waybillNo?: string } | null)?.waybillNo
+      ?? (innerMsgData as { waybillList?: { waybillNo?: string }[] } | null)?.waybillList?.[0]?.waybillNo
       ?? (json as { waybillNo?: string }).waybillNo
       ?? (json as { msgData?: string })?.msgData
       ? (() => { try { const m = JSON.parse((json as { msgData?: string }).msgData as string); return m?.waybillNo ?? m?.waybillList?.[0]?.waybillNo; } catch { return null; } })()
