@@ -127,6 +127,7 @@ export default async function handler(
   }
 
   const msgDataObj = buildSfMsgData(payload, { name: senderName, phone: senderPhone, address: senderAddress });
+  console.log('[SF] msgData preview:', msgDataObj);
   const missingFields = validateSfRequiredFields(msgDataObj);
   if (missingFields.length > 0) {
     console.error('[SF] Missing required fields:', missingFields, msgDataObj);
@@ -167,6 +168,7 @@ export default async function handler(
         error: '順豐下單請求失敗',
         code: 'SF_REQUEST_FAILED',
         details: resText.slice(0, 300),
+        msgData: msgDataObj,
       });
     }
 
@@ -178,6 +180,7 @@ export default async function handler(
         error: '順豐回傳非 JSON',
         code: 'SF_INVALID_RESPONSE',
         details: resText.slice(0, 200),
+        msgData: msgDataObj,
       });
     }
 
@@ -215,6 +218,7 @@ export default async function handler(
       orderId,
       waybillNo: waybillNoStr,
       raw: json,
+      msgData: msgDataObj,
     });
   } catch (e) {
     console.error('[SF] Error', e);
@@ -223,6 +227,7 @@ export default async function handler(
       error: '順豐下單系統錯誤',
       code: 'SF_ERROR',
       details: errMsg.slice(0, 200),
+      msgData: msgDataObj,
     });
   }
 }
