@@ -2,7 +2,10 @@
 export enum OrderStatus {
   PENDING_PAYMENT = 'pending_payment',
   TO_PACK = 'to_pack',
+  PROCESSING = 'processing',
+  READY_FOR_PICKUP = 'ready_for_pickup',
   SHIPPING = 'shipping',
+  WAITING_PICKUP = 'waiting_pickup',
   COMPLETED = 'completed',
   ABNORMAL = 'abnormal'
 }

@@ -176,13 +176,30 @@ const getEffectiveUnitPrice = (p: Product, qty: number, isWallet: boolean) => {
   return base;
 };
 
+const getOrderStatusLabel = (status: OrderStatus | string) => {
+  const labels: Record<string, string> = {
+    [OrderStatus.PENDING_PAYMENT]: '待付款',
+    [OrderStatus.TO_PACK]: '待包裝',
+    [OrderStatus.PROCESSING]: '處理中',
+    [OrderStatus.READY_FOR_PICKUP]: '等待收件',
+    [OrderStatus.SHIPPING]: '運輸中',
+    [OrderStatus.WAITING_PICKUP]: '等待取件',
+    [OrderStatus.COMPLETED]: '已完成',
+    [OrderStatus.ABNORMAL]: '異常',
+  };
+  return labels[status] ?? String(status);
+};
+
 const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
   const configs = {
-    [OrderStatus.PENDING_PAYMENT]: { label: '待付款', color: 'bg-amber-50 text-amber-600 border-amber-100' },
-    [OrderStatus.TO_PACK]: { label: '待包裝', color: 'bg-blue-50 text-blue-600 border-blue-100' },
-    [OrderStatus.SHIPPING]: { label: '配送中', color: 'bg-indigo-50 text-indigo-600 border-indigo-100' },
-    [OrderStatus.COMPLETED]: { label: '已完成', color: 'bg-emerald-50 text-emerald-600 border-emerald-100' },
-    [OrderStatus.ABNORMAL]: { label: '異常', color: 'bg-rose-50 text-rose-600 border-rose-100' },
+    [OrderStatus.PENDING_PAYMENT]: { label: getOrderStatusLabel(OrderStatus.PENDING_PAYMENT), color: 'bg-slate-50 text-slate-600 border-slate-100' },
+    [OrderStatus.TO_PACK]: { label: getOrderStatusLabel(OrderStatus.TO_PACK), color: 'bg-blue-50 text-blue-700 border-blue-100' },
+    [OrderStatus.PROCESSING]: { label: getOrderStatusLabel(OrderStatus.PROCESSING), color: 'bg-slate-100 text-slate-700 border-slate-200' },
+    [OrderStatus.READY_FOR_PICKUP]: { label: getOrderStatusLabel(OrderStatus.READY_FOR_PICKUP), color: 'bg-amber-50 text-amber-700 border-amber-100' },
+    [OrderStatus.SHIPPING]: { label: getOrderStatusLabel(OrderStatus.SHIPPING), color: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
+    [OrderStatus.WAITING_PICKUP]: { label: getOrderStatusLabel(OrderStatus.WAITING_PICKUP), color: 'bg-slate-100 text-slate-700 border-slate-200' },
+    [OrderStatus.COMPLETED]: { label: getOrderStatusLabel(OrderStatus.COMPLETED), color: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
+    [OrderStatus.ABNORMAL]: { label: getOrderStatusLabel(OrderStatus.ABNORMAL), color: 'bg-rose-50 text-rose-700 border-rose-100' },
   };
   const config = configs[status];
   return (
@@ -190,6 +207,19 @@ const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
       {config.label}
     </span>
   );
+};
+
+const ORDER_TIMELINE = [
+  OrderStatus.PROCESSING,
+  OrderStatus.READY_FOR_PICKUP,
+  OrderStatus.SHIPPING,
+  OrderStatus.WAITING_PICKUP,
+  OrderStatus.COMPLETED,
+];
+
+const getTimelineIndex = (status: OrderStatus | string) => {
+  const idx = ORDER_TIMELINE.indexOf(status as OrderStatus);
+  return idx === -1 ? -1 : idx;
 };
 
 const TierBadge: React.FC<{ tier: string }> = ({ tier }) => {
@@ -1684,7 +1714,7 @@ const App: React.FC = () => {
                 <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0">
                    {['all', ...Object.values(OrderStatus)].map(s => (
                       <button key={s} onClick={() => setOrdersStatusFilter(s as any)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap ${ordersStatusFilter === s ? 'bg-slate-900 text-white shadow-lg' : 'bg-white border border-slate-100 text-slate-400'}`}>
-                        {s === 'all' ? '全部' : s}
+                        {s === 'all' ? '全部' : getOrderStatusLabel(s)}
                       </button>
                    ))}
                 </div>
@@ -2199,7 +2229,7 @@ const App: React.FC = () => {
                       <div className="bg-slate-50 rounded-2xl p-4 space-y-2">
                         <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">物流資訊</p>
                         <p className="text-xs font-bold text-slate-700">物流公司：順豐速運</p>
-                        <p className="text-xs font-bold text-slate-700">物流狀態：{inspectingOrderDetails.status}</p>
+                        <p className="text-xs font-bold text-slate-700">物流狀態：{getOrderStatusLabel(inspectingOrderDetails.status)}</p>
                         <p className="text-xs font-bold text-slate-700">單號：{inspectingOrderDetails.waybill_no ?? inspectingOrderDetails.tracking_number ?? '未提供'}</p>
                         <p className="text-[10px] text-slate-500 font-bold">最後更新：{inspectingOrderDetails.order_date}</p>
                       </div>
@@ -2209,7 +2239,7 @@ const App: React.FC = () => {
                           <div>
                             <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">訂單狀態</label>
                             <select value={orderStatusDraft || inspectingOrder.status} onChange={e => setOrderStatusDraft(e.target.value as OrderStatus)} className="w-full p-3 bg-slate-50 rounded-2xl font-bold">
-                              {Object.values(OrderStatus).map(s => (<option key={s} value={s}>{s}</option>))}
+                              {Object.values(OrderStatus).map(s => (<option key={s} value={s}>{getOrderStatusLabel(s)}</option>))}
                             </select>
                           </div>
                           <div>
@@ -2621,7 +2651,7 @@ const App: React.FC = () => {
                       <div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                         <span>#{o.id} • {o.date}</span>
                         <div className="flex items-center gap-2">
-                          <span className="text-blue-600 px-2 py-0.5 bg-blue-50 rounded-md">{o.status}</span>
+                          <StatusBadge status={o.status as OrderStatus} />
                           {!o.trackingNumber && (
                             <span className="text-rose-600 px-2 py-0.5 bg-rose-50 rounded-md">沒有物流編號</span>
                           )}
@@ -2636,8 +2666,26 @@ const App: React.FC = () => {
                       </div>
                       <div className="flex flex-wrap items-center gap-3 text-xs font-bold text-slate-600">
                         <span>物流公司：順豐速運</span>
-                        <span>物流狀態：{o.status}</span>
+                        <span>物流狀態：{getOrderStatusLabel(o.status)}</span>
                         {o.trackingNumber && <span>單號：{o.trackingNumber}</span>}
+                      </div>
+                      <div className="bg-slate-50 rounded-2xl p-3 border border-slate-100">
+                        <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                          <span>處理進度</span>
+                          <span>{getOrderStatusLabel(o.status)}</span>
+                        </div>
+                        <div className="mt-3 grid grid-cols-5 gap-2">
+                          {ORDER_TIMELINE.map((step, idx) => {
+                            const currentIdx = getTimelineIndex(o.status);
+                            const isActive = currentIdx >= idx;
+                            return (
+                              <div key={step} className="flex flex-col items-center gap-2 text-[9px] font-bold text-slate-500">
+                                <div className={`w-full h-1 rounded-full ${isActive ? 'bg-slate-900' : 'bg-slate-200'}`} />
+                                <span className={`${isActive ? 'text-slate-700' : 'text-slate-400'}`}>{getOrderStatusLabel(step)}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                    </div>
                 ))}
