@@ -115,6 +115,8 @@ export interface SupabaseOrderRow {
   delivery_floor?: string | null;
   delivery_flat?: string | null;
   contact_name?: string | null;
+  delivery_alt_contact_name?: string | null;
+  delivery_alt_contact_phone?: string | null;
   waybill_no?: string | null;
   tracking_number?: string | null;
   sf_responses?: unknown | null;

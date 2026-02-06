@@ -28,13 +28,12 @@ type SfOrderPayload = {
 function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: string; address: string }) {
   const addr = [
     payload.delivery_district,
-    payload.delivery_street,
-    payload.delivery_building,
+    payload.delivery_address,
     payload.delivery_floor ? `${payload.delivery_floor}樓` : '',
     payload.delivery_flat ? `${payload.delivery_flat}室` : '',
   ]
     .filter(Boolean)
-    .join(' ') || payload.delivery_address || '';
+    .join(' ');
   return {
     orderId: payload.orderId,
     cargoName: '冷凍食品',

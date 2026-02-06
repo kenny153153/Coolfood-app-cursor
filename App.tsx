@@ -13,7 +13,7 @@ import {
   Layers, Percent, Globe, Crosshair
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
-import { SF_LOCKERS } from './constants';
+import { HK_DISTRICTS, SF_LOCKERS } from './constants';
 import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem } from './types';
 import { supabase } from './supabaseClient';
 import {
@@ -30,24 +30,24 @@ import {
 } from './supabaseMappers';
 import { hashPassword, verifyPassword } from './authHelpers';
 
-/** Format detailed address for display. Falls back to detail if no structured fields. */
+/** Format address for display using new required fields. */
 const formatAddressLine = (addr: UserAddress): string => {
   const parts = [
     addr.district,
-    addr.street,
-    addr.building,
+    addr.detail,
     addr.floor ? (addr.floor + '樓') : '',
-    addr.flat
+    addr.flat ? (addr.flat + '室') : '',
   ].filter(Boolean);
-  if (parts.length) return parts.join(' ');
-  return addr.detail ?? '';
+  return parts.join(' ');
 };
 
-/** True if address has enough to place order (contact + phone + some address). */
+/** True if address meets SF requirement (contact + phone + district + address + floor/flat). */
 const isAddressCompleteForOrder = (a: UserAddress): boolean => {
   if (!a.contactName?.trim() || !a.phone?.trim()) return false;
-  const hasLocation = !!(a.detail?.trim() || a.district?.trim() || a.street?.trim() || a.building?.trim());
-  return hasLocation;
+  if (!a.district?.trim()) return false;
+  if (!a.detail?.trim()) return false;
+  if (!a.floor?.trim() || !a.flat?.trim()) return false;
+  return true;
 };
 
 /** Empty address with all detailed fields for forms. */
@@ -56,12 +56,12 @@ const emptyAddress = (): UserAddress => ({
   label: '',
   detail: '',
   district: '',
-  street: '',
-  building: '',
   floor: '',
   flat: '',
   contactName: '',
   phone: '',
+  altContactName: '',
+  altPhone: '',
   isDefault: false
 });
 
@@ -1072,8 +1072,9 @@ const App: React.FC = () => {
               return;
             }
             const { district, street, building } = parseReverseGeocodeResults(results);
-            setCheckoutAddressDraft(prev => prev ? { ...prev, district: district || prev.district, street: street || prev.street, building: building || prev.building } : prev);
-            if (district || street || building) showToast('已填入地址，請補上樓層及室號');
+            const detail = [street, building].filter(Boolean).join(' ');
+            setCheckoutAddressDraft(prev => prev ? { ...prev, district: district || prev.district, detail: detail || prev.detail } : prev);
+            if (district || detail) showToast('已填入地址，請補上樓層及室號');
           });
         } catch {
           clearTimeout(timeoutId);
@@ -1132,7 +1133,8 @@ const App: React.FC = () => {
           service.getDetails({ placeId }, (detail, status) => {
             if (status !== 'OK' || !detail?.address_components?.length) return;
             const { district, street, building } = parseAddressComponents(detail.address_components);
-            setCheckoutAddressDraft(prev => prev ? { ...prev, district: district || prev.district, street: street || prev.street, building: building || prev.building } : prev);
+            const detailLine = [street, building].filter(Boolean).join(' ');
+            setCheckoutAddressDraft(prev => prev ? { ...prev, district: district || prev.district, detail: detailLine || prev.detail } : prev);
           });
         });
       })
@@ -1175,9 +1177,11 @@ const App: React.FC = () => {
     const useDraft = deliveryMethod === 'home' && checkoutAddressDraft && isAddressCompleteForOrder(checkoutAddressDraft);
     const deliveryAddr = deliveryMethod === 'sf_locker'
       ? selectedLocker.address
-      : (deliveryAddress ? formatAddressLine(deliveryAddress) : null);
+      : (deliveryAddress ? deliveryAddress.detail ?? null : null);
     const contactName = deliveryAddress?.contactName ?? (user?.name ?? null);
     const customerPhone = deliveryAddress?.phone ?? (user?.phoneNumber ?? null);
+    const altContactName = deliveryAddress?.altContactName ?? null;
+    const altContactPhone = deliveryAddress?.altPhone ?? null;
     const customerName = user?.name ?? '訪客';
 
     const newOrder: Order = {
@@ -1203,11 +1207,11 @@ const App: React.FC = () => {
       delivery_method: deliveryMethod,
       delivery_address: deliveryAddr,
       contact_name: contactName
+      , delivery_alt_contact_name: altContactName
+      , delivery_alt_contact_phone: altContactPhone
     };
     if (deliveryMethod === 'home' && deliveryAddress) {
       insertRow.delivery_district = deliveryAddress.district ?? null;
-      insertRow.delivery_street = deliveryAddress.street ?? null;
-      insertRow.delivery_building = deliveryAddress.building ?? null;
       insertRow.delivery_floor = deliveryAddress.floor ?? null;
       insertRow.delivery_flat = deliveryAddress.flat ?? null;
     }
@@ -2003,35 +2007,44 @@ const App: React.FC = () => {
                 <input value={addressEditor.address.label} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, label: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" placeholder="如：屋企、公司" />
               </div>
               <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">地區</label>
-                <input value={addressEditor.address.district ?? ''} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, district: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" placeholder="如：九龍、旺角" />
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">地區 *</label>
+                <select value={addressEditor.address.district ?? ''} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, district: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold">
+                  <option value="">請選擇地區</option>
+                  {HK_DISTRICTS.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
               </div>
               <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">街道／門牌</label>
-                <input value={addressEditor.address.street ?? ''} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, street: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
-              </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">大廈名稱</label>
-                <input value={addressEditor.address.building ?? ''} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, building: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">地址 *</label>
+                <input value={addressEditor.address.detail ?? ''} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, detail: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" placeholder="街道／門牌／村屋等" />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">樓層</label>
-                  <input value={addressEditor.address.floor ?? ''} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, floor: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">樓層 *</label>
+                  <input value={addressEditor.address.floor ?? ''} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, floor: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" placeholder="如：3" />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">室／單位</label>
-                  <input value={addressEditor.address.flat ?? ''} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, flat: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">室／單位 *</label>
+                  <input value={addressEditor.address.flat ?? ''} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, flat: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" placeholder="如：B" />
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">聯絡人</label>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">收件人名稱 *</label>
                   <input value={addressEditor.address.contactName} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, contactName: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">電話</label>
-                  <input value={addressEditor.address.phone} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, phone: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">手機號碼 *</label>
+                  <input type="tel" value={addressEditor.address.phone} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, phone: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">後備收件人</label>
+                  <input value={addressEditor.address.altContactName ?? ''} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, altContactName: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">後備收件人手機號碼</label>
+                  <input type="tel" value={addressEditor.address.altPhone ?? ''} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, altPhone: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
                 </div>
               </div>
               <label className="flex items-center gap-2 text-xs font-bold text-slate-500">
@@ -2042,7 +2055,7 @@ const App: React.FC = () => {
             <div className="p-8 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
               <button onClick={() => setAddressEditor(null)} className="px-6 py-3 bg-white border border-slate-200 rounded-2xl font-black text-xs">取消</button>
               <button onClick={() => {
-                if (!isAddressCompleteForOrder(addressEditor.address)) { showToast('請填寫聯絡人、電話及至少一項地址（地區/街道/大廈）', 'error'); return; }
+                if (!isAddressCompleteForOrder(addressEditor.address)) { showToast('請填寫地區、地址、樓層、單位、收件人及手機號碼', 'error'); return; }
                 handleSaveAddress(addressEditor.ownerId, addressEditor.address, addressEditor.isNew);
               }} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs">保存</button>
             </div>
@@ -2143,12 +2156,12 @@ const App: React.FC = () => {
                       <div className="bg-slate-50 rounded-2xl p-4 space-y-3">
                         <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">配送方式及聯絡人</p>
                         <p className="text-sm font-bold text-slate-900">{inspectingOrderDetails.delivery_method || '未設定'}</p>
-                        {(inspectingOrderDetails.delivery_district || inspectingOrderDetails.delivery_street || inspectingOrderDetails.delivery_building || inspectingOrderDetails.delivery_address) ? (
+                        {(inspectingOrderDetails.delivery_district || inspectingOrderDetails.delivery_address) ? (
                           <p className="text-xs text-slate-600 font-bold">
-                            {(inspectingOrderDetails.delivery_district || inspectingOrderDetails.delivery_street || inspectingOrderDetails.delivery_building)
-                              ? [inspectingOrderDetails.delivery_district, inspectingOrderDetails.delivery_street, inspectingOrderDetails.delivery_building].filter(Boolean).join(' · ') +
-                                ((inspectingOrderDetails.delivery_floor || inspectingOrderDetails.delivery_flat) ? ` · ${inspectingOrderDetails.delivery_floor || ''}${inspectingOrderDetails.delivery_floor && inspectingOrderDetails.delivery_flat ? '樓 ' : ''}${inspectingOrderDetails.delivery_flat || ''}${inspectingOrderDetails.delivery_flat ? '室' : ''}` : '')
-                              : (inspectingOrderDetails.delivery_address || '')}
+                            {[inspectingOrderDetails.delivery_district, inspectingOrderDetails.delivery_address].filter(Boolean).join(' · ') +
+                              ((inspectingOrderDetails.delivery_floor || inspectingOrderDetails.delivery_flat)
+                                ? ` · ${inspectingOrderDetails.delivery_floor || ''}${inspectingOrderDetails.delivery_floor ? '樓' : ''}${inspectingOrderDetails.delivery_flat ? (inspectingOrderDetails.delivery_floor ? ' ' : '') + inspectingOrderDetails.delivery_flat + '室' : ''}`
+                                : '')}
                           </p>
                         ) : (
                           <p className="text-xs text-slate-500 font-bold">未提供地址</p>
@@ -2268,24 +2281,28 @@ const App: React.FC = () => {
                           <>
                             <input value={checkoutAddressDraft.label} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, label: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="地址標籤（選填，如：屋企、公司）" />
                             <div className="flex gap-2 items-center">
-                              <input value={checkoutAddressDraft.district ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, district: e.target.value })} className="flex-1 p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="地區（如：九龍、旺角）" />
+                              <select value={checkoutAddressDraft.district ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, district: e.target.value })} className="flex-1 p-3 bg-white rounded-xl font-bold text-sm border border-slate-100">
+                                <option value="">選擇地區 *</option>
+                                {HK_DISTRICTS.map(d => <option key={d} value={d}>{d}</option>)}
+                              </select>
                               <button type="button" onClick={handleLocateMe} disabled={isLocatingAddress} title="以目前位置自動填入地址" className="flex-shrink-0 w-12 h-12 flex items-center justify-center bg-white border border-slate-100 rounded-xl font-bold text-slate-600 hover:bg-slate-50 hover:border-slate-200 disabled:opacity-50 transition-all" aria-label="定位填入地址">
                                 {isLocatingAddress ? <RefreshCw size={20} className="animate-spin text-blue-600" /> : <Crosshair size={20} />}
                               </button>
                             </div>
-                            <input ref={streetInputRef} value={checkoutAddressDraft.street ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, street: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="街道／門牌" autoComplete="off" />
-                            <input value={checkoutAddressDraft.building ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, building: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="大廈名稱" />
+                            <input value={checkoutAddressDraft.detail ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, detail: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="地址 *（街道／門牌／村屋等）" />
                             <div className="grid grid-cols-2 gap-2">
-                              <input value={checkoutAddressDraft.floor ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, floor: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="樓層" />
-                              <input value={checkoutAddressDraft.flat ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, flat: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="室／單位" />
+                              <input value={checkoutAddressDraft.floor ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, floor: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="樓層 *" />
+                              <input value={checkoutAddressDraft.flat ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, flat: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="室／單位 *" />
                             </div>
-                            <input value={checkoutAddressDraft.contactName} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, contactName: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="聯絡人姓名 *" />
-                            <input type="tel" value={checkoutAddressDraft.phone} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, phone: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="聯絡電話 *" />
+                            <input value={checkoutAddressDraft.contactName} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, contactName: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="收件人名稱 *" />
+                            <input type="tel" value={checkoutAddressDraft.phone} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, phone: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="手機號碼 *" />
+                            <input value={checkoutAddressDraft.altContactName ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, altContactName: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="後備收件人（選填）" />
+                            <input type="tel" value={checkoutAddressDraft.altPhone ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, altPhone: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="後備收件人手機號碼（選填）" />
                             <label className="flex items-center gap-3 min-h-[44px] cursor-pointer">
                               <input type="checkbox" checked={checkoutSaveNewAddressAsDefault} onChange={e => setCheckoutSaveNewAddressAsDefault(e.target.checked)} className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
                               <span className="text-xs font-bold text-slate-700">下次結帳時設為預設地址</span>
                             </label>
-                            <button type="button" onClick={() => { if (!isAddressCompleteForOrder(checkoutAddressDraft)) { showToast('請填寫聯絡人、電話及至少一項地址', 'error'); return; } handleSaveAddress(user.id, checkoutAddressDraft, true, checkoutSaveNewAddressAsDefault); setCheckoutSelectedAddressId(checkoutAddressDraft.id); setIsChangingAddress(false); setCheckoutAddressDraft(null); showToast('已保存地址'); }} className="w-full py-3 bg-slate-800 text-white rounded-xl font-black text-sm min-h-[48px]">保存並使用</button>
+                            <button type="button" onClick={() => { if (!isAddressCompleteForOrder(checkoutAddressDraft)) { showToast('請填寫地區、地址、樓層、單位、收件人及手機號碼', 'error'); return; } handleSaveAddress(user.id, checkoutAddressDraft, true, checkoutSaveNewAddressAsDefault); setCheckoutSelectedAddressId(checkoutAddressDraft.id); setIsChangingAddress(false); setCheckoutAddressDraft(null); showToast('已保存地址'); }} className="w-full py-3 bg-slate-800 text-white rounded-xl font-black text-sm min-h-[48px]">保存並使用</button>
                           </>
                         ) : null}
                       </div>

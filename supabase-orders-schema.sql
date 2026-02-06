@@ -61,11 +61,13 @@ ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS line_items JSONB DEFAULT '[]'
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_method TEXT;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_address TEXT;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_district TEXT;
-ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_street TEXT;
-ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_building TEXT;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_floor TEXT;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_flat TEXT;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS contact_name TEXT;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_alt_contact_name TEXT;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_alt_contact_phone TEXT;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS waybill_no TEXT;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS sf_responses JSONB;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS tracking_number TEXT;
 
 -- 5) RLS and policy so app can read/insert
