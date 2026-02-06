@@ -88,11 +88,22 @@ export const mapUserToMemberRow = (user: User, passwordHash?: string | null): Su
   return row;
 };
 
+export const normalizeOrderStatus = (status: string | null | undefined): OrderStatus => {
+  const normalized = String(status ?? '').toLowerCase();
+  if ((Object.values(OrderStatus) as string[]).includes(normalized)) {
+    return normalized as OrderStatus;
+  }
+  if (normalized === 'paid' || normalized === 'success') {
+    return OrderStatus.TO_PACK;
+  }
+  return OrderStatus.PENDING_PAYMENT;
+};
+
 export const mapOrderRowToOrder = (row: SupabaseOrderRow): Order => ({
   id: typeof row.id === 'number' ? `ORD-${row.id}` : row.id,
   customerName: row.customer_name,
   total: row.total,
-  status: row.status as OrderStatus,
+  status: normalizeOrderStatus(row.status),
   date: row.order_date,
   items: row.items_count,
   trackingNumber: row.tracking_number

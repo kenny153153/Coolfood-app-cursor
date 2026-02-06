@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   ShoppingBag, Package, Truck, CreditCard, Settings, CheckCircle,
   AlertTriangle, X, ChevronRight, LogOut, Edit, Plus, Minus,
@@ -25,7 +25,8 @@ import {
   mapCategoryToRow,
   mapUserToMemberRow,
   mapSlideshowRowToItem,
-  mapSlideshowItemToRow
+  mapSlideshowItemToRow,
+  normalizeOrderStatus
 } from './supabaseMappers';
 import { hashPassword, verifyPassword } from './authHelpers';
 
@@ -205,6 +206,115 @@ const TierBadge: React.FC<{ tier: string }> = ({ tier }) => {
   );
 };
 
+/** 第四部分：/success 頁面 — 抓取 URL 參數、發送確認請求、同步狀態、支援重整與手動重試 */
+const SuccessView: React.FC<{
+  successWaybill: string | null;
+  successWaybillLoading: boolean;
+  setSuccessWaybill: (v: string | null) => void;
+  setSuccessWaybillLoading: (v: boolean) => void;
+  highlightOrderId: string | null;
+  orders: Order[];
+  onViewOrders: () => void;
+}> = ({ successWaybill, successWaybillLoading, setSuccessWaybill, setSuccessWaybillLoading, onViewOrders }) => {
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [confirmSuccess, setConfirmSuccess] = useState(false);
+
+  const runConfirmPayment = useCallback(() => {
+    const win = typeof window !== 'undefined' ? window : null;
+    if (!win) return;
+    const params = new URLSearchParams(win.location.search);
+    const orderIdFromUrl = params.get('order')?.trim() ?? '';
+    const paymentIntentId = params.get('payment_intent_id') ?? params.get('intent_id') ?? win.sessionStorage?.getItem?.('airwallex_payment_intent_id') ?? null;
+    const orderId = orderIdFromUrl || null;
+    if (!orderId && !paymentIntentId) {
+      setConfirmError('缺少訂單或支付參數，請從「記錄」進入或重新結帳。');
+      setSuccessWaybillLoading(false);
+      return;
+    }
+    setConfirmError(null);
+    setSuccessWaybillLoading(true);
+    const apiUrl = `${win.location.origin}/api/confirm-payment`;
+    fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderId, payment_intent_id: paymentIntentId ?? null }),
+    })
+      .then(async (response) => {
+        const text = await response.text();
+        if (!response.ok) {
+          setSuccessWaybillLoading(false);
+          setConfirmError(`錯誤 ${response.status}${text ? `: ${text.slice(0, 100)}` : ''}`);
+          setConfirmSuccess(false);
+          return;
+        }
+        let data: { success?: boolean; waybillNo?: string; error?: string; code?: string };
+        try {
+          data = text ? JSON.parse(text) : {};
+        } catch {
+          setSuccessWaybillLoading(false);
+          setConfirmError(`後端回傳非 JSON (${response.status})`);
+          setConfirmSuccess(false);
+          return;
+        }
+        setSuccessWaybillLoading(false);
+        if (data.success) {
+          setConfirmSuccess(true);
+          setSuccessWaybill(data.waybillNo ?? null);
+          setConfirmError(null);
+          if (paymentIntentId) try { win.sessionStorage?.removeItem?.('airwallex_payment_intent_id'); } catch { /* ignore */ }
+        } else {
+          setConfirmError(data.error ?? '確認付款時發生錯誤');
+          setConfirmSuccess(false);
+        }
+      })
+      .catch(e => {
+        setSuccessWaybillLoading(false);
+        setConfirmError(e?.message ?? '網路錯誤，請稍後再試');
+        setConfirmSuccess(false);
+      });
+  }, [setSuccessWaybill, setSuccessWaybillLoading]);
+
+  useEffect(() => {
+    runConfirmPayment();
+  }, [runConfirmPayment]);
+
+  return (
+    <div className="flex-1 bg-slate-50 min-h-screen flex flex-col items-center justify-center p-6 pb-24 animate-fade-in">
+      <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-lg p-10 max-w-md w-full text-center space-y-6">
+        <div className="w-20 h-20 mx-auto rounded-full bg-emerald-100 flex items-center justify-center"><CheckCircle className="w-12 h-12 text-emerald-600" /></div>
+        <h2 className="text-2xl font-black text-slate-900">付款已確認！</h2>
+        <p className="text-slate-600 font-bold text-sm">順豐單號正自動生成中...</p>
+
+        {successWaybillLoading && (
+          <p className="text-slate-600 text-sm font-bold">正在與 Airwallex 核實付款紀錄...</p>
+        )}
+
+        {!successWaybillLoading && confirmSuccess && successWaybill && (
+          <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">順豐單號</p>
+            <p className="text-lg font-black text-slate-900 tracking-wide">{successWaybill}</p>
+          </div>
+        )}
+
+        {!successWaybillLoading && confirmSuccess && !successWaybill && (
+          <p className="text-slate-400 text-xs">單號生成後會顯示於「記錄」頁面。</p>
+        )}
+
+        {!successWaybillLoading && confirmError && (
+          <div className="space-y-3">
+            <p className="text-rose-600 text-sm font-bold">{confirmError}</p>
+            <button type="button" onClick={runConfirmPayment} className="w-full py-3 bg-rose-50 text-rose-700 rounded-2xl font-black text-sm border border-rose-200 hover:bg-rose-100">
+              手動重試
+            </button>
+          </div>
+        )}
+
+        <button type="button" onClick={onViewOrders} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm">查看記錄</button>
+      </div>
+    </div>
+  );
+};
+
 // Default advertisement slideshow when Supabase has no data
 const DEFAULT_SLIDESHOW: SlideshowItem[] = [
   { id: 'slide-1', type: 'image', url: 'https://placehold.co/800x320/slate-800/white?text=歡迎光臨+冷凍肉專門店', title: '歡迎光臨', sortOrder: 0 },
@@ -300,6 +410,9 @@ const App: React.FC = () => {
 
   // Highlight the order card on 記錄 after payment success
   const [highlightOrderId, setHighlightOrderId] = useState<string | null>(null);
+  // Success page: 順豐單號（從 confirm-payment 取得）
+  const [successWaybill, setSuccessWaybill] = useState<string | null>(null);
+  const [successWaybillLoading, setSuccessWaybillLoading] = useState(false);
 
   // Slideshow (store-front ad carousel)
   const [slideshowIndex, setSlideshowIndex] = useState(0);
@@ -325,13 +438,10 @@ const App: React.FC = () => {
       if (path === '/success' || hash === '#success') {
         const params = new URLSearchParams(search);
         const orderId = params.get('order');
+        setView('success');
         if (orderId) {
-          setView('orders');
           setHighlightOrderId(orderId);
           setToast({ message: '多謝惠顧', type: 'success' });
-          if (window.history.replaceState) window.history.replaceState({}, '', window.location.pathname === '/success' ? '/' : window.location.pathname);
-        } else {
-          setView('success');
         }
       }
     };
@@ -429,7 +539,9 @@ const App: React.FC = () => {
     const loadOrders = async () => {
       const { data, error } = await supabase.from('orders').select('id, customer_name, total, status, order_date, items_count, tracking_number').order('order_date', { ascending: false });
       if (error) {
-        showToast('訂單資料載入失敗', 'error');
+        if (!handleSchemaError(error, 'orders')) {
+          showToast('訂單資料載入失敗', 'error');
+        }
         return;
       }
       if (data?.length) {
@@ -456,7 +568,7 @@ const App: React.FC = () => {
       }
       const details = data as SupabaseOrderRow;
       setInspectingOrderDetails(details);
-      setOrderStatusDraft(details.status as OrderStatus);
+      setOrderStatusDraft(normalizeOrderStatus(details.status));
       setTrackingDraft(details.tracking_number ?? '');
     };
     loadOrderDetails();
@@ -688,6 +800,9 @@ const App: React.FC = () => {
     if (message.includes('schema cache') || message.includes(`public.${tableName}`)) {
       const hints: Record<string, string> = {
         members: '請在 Supabase SQL Editor 執行 supabase-members-schema.sql 建立 members 表',
+        products: '請在 Supabase SQL Editor 執行 supabase-products-schema.sql 建立 products 表',
+        categories: '請在 Supabase SQL Editor 執行 supabase-categories-schema.sql 建立 categories 表',
+        orders: '請在 Supabase SQL Editor 執行 supabase-orders-schema.sql 建立 orders 表',
         slideshow: '請在 Supabase SQL Editor 執行 supabase-slideshow-schema.sql 建立 slideshow 表',
       };
       const hint = hints[tableName] || `請先在 Supabase 建立 ${tableName} 表`;
@@ -1135,8 +1250,13 @@ const App: React.FC = () => {
     setIsChangingAddress(false);
     showToast('訂單已提交！正在轉接支付接口...');
 
-    const successUrl = typeof window !== 'undefined' ? `${window.location.origin}/success?order=${encodeURIComponent(orderIdDisplay)}` : 'https://coolfood-app-cursor.vercel.app/success';
+    const successUrl = typeof window !== 'undefined'
+      ? `${window.location.origin}/success?order=${encodeURIComponent(orderIdDisplay)}${intent_id ? `&payment_intent_id=${encodeURIComponent(intent_id)}` : ''}`
+      : 'https://coolfood-app-cursor.vercel.app/success';
     try {
+      if (typeof window !== 'undefined' && intent_id) {
+        try { window.sessionStorage.setItem('airwallex_payment_intent_id', intent_id); } catch { /* ignore */ }
+      }
       const { init, redirectToCheckout } = await import('@airwallex/components-sdk');
       const airwallexEnv = (import.meta.env.VITE_AIRWALLEX_ENV as string) || 'demo';
       if (airwallexEnv === 'demo') console.log('Airwallex Sandbox Mode Active');
@@ -2401,14 +2521,15 @@ const App: React.FC = () => {
           {view === 'store' && renderStoreView()}
           {view === 'checkout' && renderCheckoutView()}
           {view === 'success' && (
-            <div className="flex-1 bg-slate-50 min-h-screen flex flex-col items-center justify-center p-6 pb-24 animate-fade-in">
-              <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-lg p-10 max-w-md w-full text-center space-y-6">
-                <div className="w-20 h-20 mx-auto rounded-full bg-emerald-100 flex items-center justify-center"><CheckCircle className="w-12 h-12 text-emerald-600" /></div>
-                <h2 className="text-2xl font-black text-slate-900">多謝惠顧</h2>
-                <p className="text-slate-500 font-bold text-sm">您的訂單已提交，完成支付後我們會盡快為您處理。</p>
-                <button type="button" onClick={() => { if (window.history.replaceState) window.history.replaceState({}, '', '/'); setView('orders'); const latestId = orders.length > 0 ? orders[0].id : null; if (latestId) setHighlightOrderId(latestId); }} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm">查看記錄</button>
-              </div>
-            </div>
+            <SuccessView
+              successWaybill={successWaybill}
+              successWaybillLoading={successWaybillLoading}
+              setSuccessWaybill={setSuccessWaybill}
+              setSuccessWaybillLoading={setSuccessWaybillLoading}
+              highlightOrderId={highlightOrderId}
+              orders={orders}
+              onViewOrders={() => { if (window.history.replaceState) window.history.replaceState({}, '', '/'); setView('orders'); const latestId = orders.length > 0 ? orders[0].id : null; if (latestId) setHighlightOrderId(latestId); }}
+            />
           )}
           {view === 'orders' && (
              <div className="flex-1 bg-slate-50 p-6 space-y-4 overflow-y-auto pb-24">

@@ -1,3 +1,4 @@
+// 第一部分：Airwallex 支付對接 — 沙箱使用 https://api-demo.airwallex.com/api/v1
 const AIRWALLEX_DEMO_BASE = 'https://api-demo.airwallex.com';
 const AIRWALLEX_PROD_BASE = 'https://api.airwallex.com';
 
@@ -51,11 +52,8 @@ export default async function handler(req: { method?: string; body?: { amount?: 
   const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
 
   try {
-    // Debug: log full auth URL with keys masked
-    console.log('Airwallex auth URL (keys masked):', authUrl, '| env:', envRaw || '(unset)', '| x-client-id length:', clientId.length, '| x-api-key length:', apiKey.length);
-
-    // Token logic: we never use VITE_AIRWALLEX_API_KEY as Bearer. We send client id + api key
-    // only in headers x-client-id and x-api-key to the login endpoint to obtain a fresh access_token.
+    // 獲取 Access Token（登入）
+    console.log('[Airwallex] Auth URL:', authUrl, '| successUrl:', successUrl);
     const authRes = await fetch(authUrl, {
       method: 'POST',
       headers: {
@@ -93,14 +91,15 @@ export default async function handler(req: { method?: string; body?: { amount?: 
     const authData = (await authRes.json()) as { access_token?: string; token?: string };
     const token = authData.access_token ?? authData.token;
     if (!token) {
-      console.error('Airwallex auth: no token in response', authData);
+      console.error('[Airwallex] Auth: no token in response', authData);
       return res.status(502).json({
         error: 'Payment auth failed (no token). Check credentials and environment (demo vs prod).',
         code: 'AUTH_NO_TOKEN',
       });
     }
+    console.log('[Airwallex] Access token obtained, creating Payment Intent (card + fps, return_url=/success)');
 
-    // Use only the access_token from login; never use VITE_AIRWALLEX_API_KEY as Bearer
+    // 建立 Payment Intent（開啟 card、fps，付款成功導回 /success）
     const createRes = await fetch(`${baseUrl}/api/v1/pa/payment_intents/create`, {
       method: 'POST',
       headers: {
@@ -118,7 +117,7 @@ export default async function handler(req: { method?: string; body?: { amount?: 
 
     if (!createRes.ok) {
       const errText = await createRes.text();
-      console.error('Airwallex create intent failed', createRes.status, errText);
+      console.error('[Airwallex] Create intent failed', createRes.status, errText);
       return res.status(502).json({
         error: 'Payment intent failed. See Vercel function logs for details.',
         code: 'INTENT_FAILED',
@@ -138,6 +137,7 @@ export default async function handler(req: { method?: string; body?: { amount?: 
       });
     }
 
+    console.log('[Airwallex] Payment Intent created:', intentId);
     return res.status(200).json({
       intent_id: intentId,
       client_secret: clientSecret,
@@ -145,7 +145,7 @@ export default async function handler(req: { method?: string; body?: { amount?: 
       country_code: 'HK',
     });
   } catch (e) {
-    console.error('Airwallex API error', e);
+    console.error('[Airwallex] API error', e);
     const errMsg = e instanceof Error ? e.message : String(e);
     return res.status(502).json({
       error: 'Payment system error. Check Vercel function logs.',
