@@ -166,7 +166,7 @@ export default async function handler(
 
   try {
     const msgDigest = computeMsgDigest(msgData, timestamp, checkword);
-    const payload = {
+    const finalPayload = {
       partnerID,
       requestID,
       serviceCode: 'COM_RECE_CLOUD_PRINT_WAYBILLS',
@@ -174,13 +174,13 @@ export default async function handler(
       msgData,
       msgDigest,
     };
-    console.log('[SF] Final SF Request:', JSON.stringify(payload));
+    console.log('Sending to SF:', JSON.stringify(finalPayload));
     console.log('[SF] Request to sandbox:', SF_SANDBOX_URL, 'requestID:', requestID);
 
     const sfRes = await fetch(SF_SANDBOX_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(finalPayload),
     });
 
     const resText = await sfRes.text();
