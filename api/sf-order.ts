@@ -35,30 +35,49 @@ function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: 
   ]
     .filter(Boolean)
     .join(' ');
+  const receiverContact = payload.contact_name || payload.customer_name || '收件人';
+  const receiverPhone = payload.customer_phone || '';
+  const receiverDistrict = payload.delivery_district || '香港';
   return {
     orderId: payload.orderId,
-    language: 'zh-CN',
+    language: 'Zh-CN',
     monthlyCard,
     expressType: 1,
     payMethod: 1,
-    contactInfoList: [
-      {
-        contactType: 1,
-        contact: sender.name,
-        tel: sender.phone,
-        address: sender.address,
-      },
-      {
-        contactType: 2,
-        contact: payload.contact_name || payload.customer_name || '收件人',
-        tel: payload.customer_phone || '',
-        address: addr || '收件地址',
-      },
-    ],
+    parcelQty: 1,
+    totalWeight: 1,
     cargoDetails: [
       {
         name: '冷凍食品',
         count: 1,
+        unit: 'pcs',
+        weight: 0.1,
+        volume: 1,
+        amount: 0,
+      },
+    ],
+    contactinfoList: [
+      {
+        contactType: 1,
+        contact: sender.name,
+        tel: sender.phone,
+        mobile: sender.phone,
+        address: sender.address,
+        province: '香港',
+        city: '香港',
+        county: '',
+        company: sender.name,
+      },
+      {
+        contactType: 2,
+        contact: receiverContact,
+        tel: receiverPhone,
+        mobile: receiverPhone,
+        address: addr || '收件地址',
+        province: '香港',
+        city: receiverDistrict,
+        county: receiverDistrict,
+        company: '',
       },
     ],
   };
@@ -71,13 +90,17 @@ function validateSfRequiredFields(msgData: ReturnType<typeof buildSfMsgData>) {
   if (!msgData.monthlyCard?.trim()) missing.push('monthlyCard');
   if (!msgData.expressType) missing.push('expressType');
   if (!msgData.payMethod) missing.push('payMethod');
-  if (!Array.isArray(msgData.contactInfoList) || msgData.contactInfoList.length < 2) missing.push('contactInfoList');
-  if (Array.isArray(msgData.contactInfoList)) {
-    msgData.contactInfoList.forEach((item, idx) => {
-      if (!item?.contactType) missing.push(`contactInfoList[${idx}].contactType`);
-      if (!item?.contact?.trim()) missing.push(`contactInfoList[${idx}].contact`);
-      if (!item?.tel?.trim()) missing.push(`contactInfoList[${idx}].tel`);
-      if (!item?.address?.trim()) missing.push(`contactInfoList[${idx}].address`);
+  if (!msgData.parcelQty) missing.push('parcelQty');
+  if (!msgData.totalWeight) missing.push('totalWeight');
+  if (!Array.isArray(msgData.contactinfoList) || msgData.contactinfoList.length < 2) missing.push('contactinfoList');
+  if (Array.isArray(msgData.contactinfoList)) {
+    msgData.contactinfoList.forEach((item, idx) => {
+      if (!item?.contactType) missing.push(`contactinfoList[${idx}].contactType`);
+      if (!item?.contact?.trim()) missing.push(`contactinfoList[${idx}].contact`);
+      if (!item?.tel?.trim() && !item?.mobile?.trim()) missing.push(`contactinfoList[${idx}].tel`);
+      if (!item?.address?.trim()) missing.push(`contactinfoList[${idx}].address`);
+      if (!item?.province?.trim()) missing.push(`contactinfoList[${idx}].province`);
+      if (!item?.city?.trim()) missing.push(`contactinfoList[${idx}].city`);
     });
   }
   if (!Array.isArray(msgData.cargoDetails) || msgData.cargoDetails.length === 0) missing.push('cargoDetails');
