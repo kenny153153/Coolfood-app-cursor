@@ -80,6 +80,7 @@ export default async function handler(
   });
 
   try {
+    console.log('[confirm-payment] Step 0: start Airwallex verification');
     if (paymentIntentId) {
       const { token, baseUrl } = await getAirwallexToken();
       const getIntentUrl = `${baseUrl}/api/v1/pa/payment_intents/${encodeURIComponent(paymentIntentId)}`;
@@ -118,6 +119,7 @@ export default async function handler(
     const dbIdValue = typeof dbId === 'string' && /^\d+$/.test(dbId) ? Number(dbId) : dbId;
     const filters = String(dbIdValue) === orderId ? `id.eq.${dbIdValue}` : `id.eq.${dbIdValue},id.eq.${orderId}`;
     console.log('[confirm-payment] Resolve orderId:', orderId, '=> dbId:', dbIdValue);
+    console.log('[confirm-payment] Step A: fetch order by filters:', filters);
 
     const { data: orderRow, error: orderError } = await supabaseAdmin
       .from('orders')
@@ -125,13 +127,17 @@ export default async function handler(
       .or(filters)
       .maybeSingle();
     if (orderError) {
+      console.error('[confirm-payment] Supabase fetch error:', orderError.message, orderError.details ?? '');
       return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: orderError.message });
     }
     if (!orderRow) {
+      console.error('[confirm-payment] Order not found for filters:', filters);
       return res.status(404).json({ error: 'Order not found', code: 'ORDER_NOT_FOUND' });
     }
+    console.log('[confirm-payment] Order found:', orderRow.id, orderRow.status);
 
     // Step A: 更新狀態
+    console.log('[confirm-payment] Step A: update status to success');
     const { data: updatedRow, error: updateError } = await supabaseAdmin
       .from('orders')
       .update({ status: 'success' })
@@ -139,9 +145,11 @@ export default async function handler(
       .select('id,status,tracking_number,waybill_no')
       .maybeSingle();
     if (updateError) {
+      console.error('[confirm-payment] Update status error:', updateError.message, updateError.details ?? '');
       return res.status(502).json({ error: 'Failed to update order status', code: 'UPDATE_FAILED', details: updateError.message });
     }
     const effectiveOrder = updatedRow ?? orderRow;
+    console.log('[confirm-payment] Status updated:', effectiveOrder.status);
 
     // Step B: 呼叫順豐
     console.log('[confirm-payment] Step B: call sf-order');
@@ -168,9 +176,11 @@ export default async function handler(
       .update(updatePayload)
       .or(filters);
     if (sfStoreError) {
+      console.error('[confirm-payment] Store SF result error:', sfStoreError.message, sfStoreError.details ?? '');
       return res.status(502).json({ error: 'Failed to store sf result', code: 'SF_STORE_FAILED', details: sfStoreError.message });
     }
 
+    console.log('[confirm-payment] Step C: sf result stored, waybill:', waybill ?? '(none)');
     return res.status(200).json({
       success: true,
       orderId,
