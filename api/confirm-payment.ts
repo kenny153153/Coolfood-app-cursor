@@ -62,10 +62,10 @@ export default async function handler(
   const fallbackOrigin = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://coolfood-app-cursor.vercel.app';
   const origin = host ? `${protocol}://${host}` : safeTrim(body?.origin ?? fallbackOrigin);
 
-  const supabaseUrl = safeTrim(process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? '');
+  const supabaseUrl = process.env.SUPABASE_URL?.trim().replace(/\/$/, '');
   const serviceRoleKey = safeTrim(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '');
   try {
-    console.log('Supabase URL:', new URL(supabaseUrl).href);
+    console.log('Supabase URL:', new URL(supabaseUrl ?? '').href);
   } catch (urlError) {
     console.error('[confirm-payment] SUPABASE_URL invalid:', supabaseUrl);
     console.error('[confirm-payment] SUPABASE_URL error:', JSON.stringify(urlError, Object.getOwnPropertyNames(urlError)));
