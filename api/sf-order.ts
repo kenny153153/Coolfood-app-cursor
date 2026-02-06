@@ -277,23 +277,34 @@ export default async function handler(
       console.log('[SF] apiResultData.msgData keys:', Object.keys(innerMsgData));
     }
 
-    const waybillNo = (apiResultParsed as { waybillNo?: string; mailNo?: string; mailno?: string } | null)?.waybillNo
+    const innerMsg = innerMsgData as Record<string, unknown> | null;
+    const waybillFromInfoList = Array.isArray(innerMsg?.waybillNoInfoList)
+      ? (innerMsg?.waybillNoInfoList as { waybillNo?: string }[])[0]?.waybillNo
+      : null;
+    if (innerMsg?.waybillNoInfoList) {
+      console.log('[SF] waybillNoInfoList sample:', (innerMsg.waybillNoInfoList as unknown[])[0]);
+    }
+    const waybillFromRoute = Array.isArray(innerMsg?.routeLabelInfo)
+      ? ((innerMsg.routeLabelInfo as { routeLabelData?: { waybillNo?: string } }[])[0]?.routeLabelData?.waybillNo ?? null)
+      : null;
+
+    const waybillNo = waybillFromInfoList
+      ?? waybillFromRoute
+      ?? (apiResultParsed as { waybillNo?: string; mailNo?: string; mailno?: string } | null)?.waybillNo
       ?? (apiResultParsed as { mailNo?: string } | null)?.mailNo
       ?? (apiResultParsed as { mailno?: string } | null)?.mailno
-      ?? (apiResultParsed as { waybillNoInfoList?: { waybillNo?: string }[] } | null)?.waybillNoInfoList?.[0]?.waybillNo
       ?? (apiResultParsed as { waybillNoList?: { waybillNo?: string }[] } | null)?.waybillNoList?.[0]?.waybillNo
       ?? (apiResultParsed as { mailNoList?: { mailNo?: string }[] } | null)?.mailNoList?.[0]?.mailNo
       ?? (apiResultParsed as { waybillList?: { waybillNo?: string }[] } | null)?.waybillList?.[0]?.waybillNo
-      ?? (innerMsgData as { waybillNo?: string; mailNo?: string; mailno?: string } | null)?.waybillNo
-      ?? (innerMsgData as { mailNo?: string } | null)?.mailNo
-      ?? (innerMsgData as { mailno?: string } | null)?.mailno
-      ?? (innerMsgData as { waybillNoInfoList?: { waybillNo?: string }[] } | null)?.waybillNoInfoList?.[0]?.waybillNo
-      ?? (innerMsgData as { waybillNoList?: { waybillNo?: string }[] } | null)?.waybillNoList?.[0]?.waybillNo
-      ?? (innerMsgData as { mailNoList?: { mailNo?: string }[] } | null)?.mailNoList?.[0]?.mailNo
-      ?? (innerMsgData as { waybillList?: { waybillNo?: string }[] } | null)?.waybillList?.[0]?.waybillNo
+      ?? (innerMsg as { waybillNo?: string; mailNo?: string; mailno?: string } | null)?.waybillNo
+      ?? (innerMsg as { mailNo?: string } | null)?.mailNo
+      ?? (innerMsg as { mailno?: string } | null)?.mailno
+      ?? (innerMsg as { waybillNoList?: { waybillNo?: string }[] } | null)?.waybillNoList?.[0]?.waybillNo
+      ?? (innerMsg as { mailNoList?: { mailNo?: string }[] } | null)?.mailNoList?.[0]?.mailNo
+      ?? (innerMsg as { waybillList?: { waybillNo?: string }[] } | null)?.waybillList?.[0]?.waybillNo
       ?? (json as { waybillNo?: string }).waybillNo
       ?? (json as { msgData?: string })?.msgData
-      ? (() => { try { const m = JSON.parse((json as { msgData?: string }).msgData as string); return m?.waybillNo ?? m?.waybillList?.[0]?.waybillNo; } catch { return null; } })()
+      ? (() => { try { const m = JSON.parse((json as { msgData?: string }).msgData as string); return m?.waybillNo ?? m?.waybillNoInfoList?.[0]?.waybillNo ?? m?.routeLabelInfo?.[0]?.routeLabelData?.waybillNo ?? m?.waybillList?.[0]?.waybillNo; } catch { return null; } })()
       : null;
 
     const waybillNoStr = waybillNo != null ? String(waybillNo) : null;
