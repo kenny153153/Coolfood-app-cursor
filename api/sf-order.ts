@@ -249,66 +249,17 @@ export default async function handler(
       });
     }
 
-    const apiResultData = (json as { apiResultData?: string | Record<string, unknown> }).apiResultData;
-    let apiResultParsed: Record<string, unknown> | null = null;
-    if (typeof apiResultData === 'string') {
-      try {
-        apiResultParsed = JSON.parse(apiResultData) as Record<string, unknown>;
-      } catch {
-        apiResultParsed = null;
-      }
-    } else if (apiResultData && typeof apiResultData === 'object') {
-      apiResultParsed = apiResultData as Record<string, unknown>;
-    }
-
-    const innerMsgData = (() => {
-      const raw = apiResultParsed?.msgData;
-      if (typeof raw === 'string') {
-        try { return JSON.parse(raw) as Record<string, unknown>; } catch { return null; }
-      }
-      if (raw && typeof raw === 'object') return raw as Record<string, unknown>;
-      return null;
-    })();
-
-    if (apiResultParsed) {
-      console.log('[SF] apiResultData keys:', Object.keys(apiResultParsed));
-    }
-    if (innerMsgData) {
-      console.log('[SF] apiResultData.msgData keys:', Object.keys(innerMsgData));
-    }
-
-    const innerMsg = innerMsgData as Record<string, unknown> | null;
-    const waybillFromInfoList = Array.isArray(innerMsg?.waybillNoInfoList)
-      ? (innerMsg?.waybillNoInfoList as { waybillNo?: string }[])[0]?.waybillNo
-      : null;
-    if (innerMsg?.waybillNoInfoList) {
-      console.log('[SF] waybillNoInfoList sample:', (innerMsg.waybillNoInfoList as unknown[])[0]);
-    }
-    const waybillFromRoute = Array.isArray(innerMsg?.routeLabelInfo)
-      ? ((innerMsg.routeLabelInfo as { routeLabelData?: { waybillNo?: string } }[])[0]?.routeLabelData?.waybillNo ?? null)
-      : null;
-
-    const waybillNo = waybillFromInfoList
-      ?? waybillFromRoute
-      ?? (apiResultParsed as { waybillNo?: string; mailNo?: string; mailno?: string } | null)?.waybillNo
-      ?? (apiResultParsed as { mailNo?: string } | null)?.mailNo
-      ?? (apiResultParsed as { mailno?: string } | null)?.mailno
-      ?? (apiResultParsed as { waybillNoList?: { waybillNo?: string }[] } | null)?.waybillNoList?.[0]?.waybillNo
-      ?? (apiResultParsed as { mailNoList?: { mailNo?: string }[] } | null)?.mailNoList?.[0]?.mailNo
-      ?? (apiResultParsed as { waybillList?: { waybillNo?: string }[] } | null)?.waybillList?.[0]?.waybillNo
-      ?? (innerMsg as { waybillNo?: string; mailNo?: string; mailno?: string } | null)?.waybillNo
-      ?? (innerMsg as { mailNo?: string } | null)?.mailNo
-      ?? (innerMsg as { mailno?: string } | null)?.mailno
-      ?? (innerMsg as { waybillNoList?: { waybillNo?: string }[] } | null)?.waybillNoList?.[0]?.waybillNo
-      ?? (innerMsg as { mailNoList?: { mailNo?: string }[] } | null)?.mailNoList?.[0]?.mailNo
-      ?? (innerMsg as { waybillList?: { waybillNo?: string }[] } | null)?.waybillList?.[0]?.waybillNo
-      ?? (json as { waybillNo?: string }).waybillNo
-      ?? (json as { msgData?: string })?.msgData
-      ? (() => { try { const m = JSON.parse((json as { msgData?: string }).msgData as string); return m?.waybillNo ?? m?.waybillNoInfoList?.[0]?.waybillNo ?? m?.routeLabelInfo?.[0]?.routeLabelData?.waybillNo ?? m?.waybillList?.[0]?.waybillNo; } catch { return null; } })()
-      : null;
-
-    const waybillNoStr = waybillNo != null ? String(waybillNo) : null;
-    console.log('[SF] Parsed waybillNo:', waybillNoStr);
+    const sfResponse = json as { apiResultData?: string | Record<string, unknown> };
+    const resultData = typeof sfResponse.apiResultData === 'string'
+      ? JSON.parse(sfResponse.apiResultData)
+      : sfResponse.apiResultData;
+    const waybillNo = (resultData as { msgData?: { waybillNoInfoList?: { waybillNo?: string }[]; routeLabelInfo?: { routeLabelData?: { waybillNo?: string } }[] } } | null)
+      ?.msgData?.waybillNoInfoList?.[0]?.waybillNo
+      || (resultData as { msgData?: { routeLabelInfo?: { routeLabelData?: { waybillNo?: string } }[] } } | null)
+      ?.msgData?.routeLabelInfo?.[0]?.routeLabelData?.waybillNo
+      || null;
+    console.log('[SF] 最終成功提取的單號:', waybillNo);
+    const waybillNoStr = waybillNo ? String(waybillNo) : null;
 
     if (waybillNoStr && supabaseUrl && supabaseKey) {
       try {
@@ -321,7 +272,7 @@ export default async function handler(
             'Content-Type': 'application/json',
             Prefer: 'return=minimal',
           },
-          body: JSON.stringify({ tracking_number: waybillNoStr }),
+          body: JSON.stringify({ waybill_no: waybillNoStr, sf_responses: sfResponse }),
         });
         if (!patchRes.ok) console.error('[SF] Supabase PATCH waybill failed', patchRes.status, await patchRes.text());
         else console.log('[SF] Order updated with waybill:', orderId);
