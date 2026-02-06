@@ -587,6 +587,11 @@ const App: React.FC = () => {
     fetchOrders();
   }, [fetchOrders]);
 
+  // Refresh orders when viewing order history
+  useEffect(() => {
+    if (view === 'orders') fetchOrders();
+  }, [view, fetchOrders]);
+
   useEffect(() => {
     const loadOrderDetails = async () => {
       if (!inspectingOrder) {
@@ -2190,6 +2195,15 @@ const App: React.FC = () => {
                         <p className="text-xs text-slate-500 font-bold mt-1">{inspectingOrderDetails.customer_phone || '未提供電話'}</p>
                       </div>
 
+                      {/* 5. 物流資訊 */}
+                      <div className="bg-slate-50 rounded-2xl p-4 space-y-2">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">物流資訊</p>
+                        <p className="text-xs font-bold text-slate-700">物流公司：順豐速運</p>
+                        <p className="text-xs font-bold text-slate-700">物流狀態：{inspectingOrderDetails.status}</p>
+                        <p className="text-xs font-bold text-slate-700">單號：{inspectingOrderDetails.waybill_no ?? inspectingOrderDetails.tracking_number ?? '未提供'}</p>
+                        <p className="text-[10px] text-slate-500 font-bold">最後更新：{inspectingOrderDetails.order_date}</p>
+                      </div>
+
                       {isAdminRoute && (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div>
@@ -2604,13 +2618,26 @@ const App: React.FC = () => {
                      key={o.id}
                      className={`bg-white p-6 rounded-3xl border shadow-sm space-y-4 hover:shadow-md transition-all duration-300 ${highlightOrderId === o.id ? 'border-emerald-400 ring-2 ring-emerald-200 shadow-lg animate-order-pop' : 'border-slate-100'}`}
                    >
-                      <div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest"><span>#{o.id} • {o.date}</span><span className="text-blue-600 px-2 py-0.5 bg-blue-50 rounded-md">{o.status}</span></div>
+                      <div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                        <span>#{o.id} • {o.date}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-blue-600 px-2 py-0.5 bg-blue-50 rounded-md">{o.status}</span>
+                          {!o.trackingNumber && (
+                            <span className="text-rose-600 px-2 py-0.5 bg-rose-50 rounded-md">沒有物流編號</span>
+                          )}
+                        </div>
+                      </div>
                       <div className="flex justify-between items-center flex-wrap gap-2">
                         <p className="text-2xl font-black text-slate-900">${o.total}</p>
                         <div className="flex items-center gap-2">
                           <button onClick={() => setInspectingOrder(o)} className="px-4 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all border border-slate-200 hover:bg-slate-200">查看訂單</button>
-                          <button onClick={() => handleTrackOrder(o)} className="px-4 py-2.5 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all"><Truck size={14} className="inline mr-2"/> 追蹤物流</button>
+                          <button onClick={() => handleTrackOrder(o)} className={`px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all ${o.trackingNumber ? 'bg-slate-900 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`} disabled={!o.trackingNumber}><Truck size={14} className="inline mr-2"/> 追蹤物流</button>
                         </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3 text-xs font-bold text-slate-600">
+                        <span>物流公司：順豐速運</span>
+                        <span>物流狀態：{o.status}</span>
+                        {o.trackingNumber && <span>單號：{o.trackingNumber}</span>}
                       </div>
                    </div>
                 ))}
