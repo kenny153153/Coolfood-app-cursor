@@ -88,9 +88,18 @@ export default async function handler(
     const serviceRoleKey = safeTrim(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '');
     if (serviceRoleKey) console.log('[confirm-payment] Using SUPABASE_SERVICE_ROLE_KEY for update');
     console.log('Supabase URL:', process.env.SUPABASE_URL);
+    console.log('[confirm-payment] apikey prefix:', serviceRoleKey ? serviceRoleKey.slice(0, 5) : '(empty)');
     if (!supabaseUrl || !serviceRoleKey) {
       console.error('[confirm-payment] Missing Supabase config');
       return res.status(500).json({ error: 'Server config missing', code: 'CONFIG_MISSING' });
+    }
+    try {
+      // Validate URL format (catch hidden whitespace/formatting issues)
+      new URL(supabaseUrl);
+    } catch (urlError) {
+      console.error('[confirm-payment] SUPABASE_URL invalid:', supabaseUrl);
+      console.error('[confirm-payment] SUPABASE_URL error:', JSON.stringify(urlError, Object.getOwnPropertyNames(urlError)));
+      return res.status(500).json({ error: 'SUPABASE_URL invalid', code: 'SUPABASE_URL_INVALID' });
     }
     if (isLocalhost(supabaseUrl)) {
       console.error('[confirm-payment] SUPABASE_URL is localhost, not reachable from Vercel:', supabaseUrl);
@@ -147,29 +156,43 @@ export default async function handler(
     }
 
     const dbId = getOrderDbId(orderId);
-    console.log('[confirm-payment] Resolve orderId:', orderId, '=> dbId:', dbId);
-    const { data: orderByDbId, error: orderByDbError } = await supabaseAdmin
-      .from('orders')
-      .select('id,status,tracking_number,waybill_no')
-      .eq('id', dbId)
-      .maybeSingle();
-    if (orderByDbError) {
-      console.error('[confirm-payment] Supabase fetch failed (dbId):', orderByDbError.message);
-      return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: orderByDbError.message });
-    }
-    let order = orderByDbId ?? null;
-    if (!order && String(dbId) !== orderId) {
-      console.warn('[confirm-payment] Order not found by dbId, retry with orderId:', orderId);
-      const { data: orderByOrderId, error: orderByOrderError } = await supabaseAdmin
+    const dbIdValue = typeof dbId === 'string' && /^\d+$/.test(dbId) ? Number(dbId) : dbId;
+    console.log('[confirm-payment] Resolve orderId:', orderId, '=> dbId:', dbIdValue);
+    let order: { id?: string | number; status?: string; tracking_number?: string | null; waybill_no?: string | null } | null = null;
+    try {
+      const { data: orderByDbId, error: orderByDbError } = await supabaseAdmin
         .from('orders')
         .select('id,status,tracking_number,waybill_no')
-        .eq('id', orderId)
+        .eq('id', dbIdValue)
         .maybeSingle();
-      if (orderByOrderError) {
-        console.error('[confirm-payment] Supabase fetch failed (orderId):', orderByOrderError.message);
-        return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: orderByOrderError.message });
+      if (orderByDbError) {
+        console.error('[confirm-payment] Supabase fetch failed (dbId):', orderByDbError.message);
+        return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: orderByDbError.message });
       }
-      order = orderByOrderId ?? null;
+      order = orderByDbId ?? null;
+    } catch (fetchError) {
+      console.error('[confirm-payment] Supabase fetch exception (dbId):', JSON.stringify(fetchError, Object.getOwnPropertyNames(fetchError)));
+      console.error('底層錯誤原因 (Cause):', (fetchError as Error)?.cause);
+      return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: String(fetchError) });
+    }
+    if (!order && String(dbIdValue) !== orderId) {
+      console.warn('[confirm-payment] Order not found by dbId, retry with orderId:', orderId);
+      try {
+        const { data: orderByOrderId, error: orderByOrderError } = await supabaseAdmin
+          .from('orders')
+          .select('id,status,tracking_number,waybill_no')
+          .eq('id', orderId)
+          .maybeSingle();
+        if (orderByOrderError) {
+          console.error('[confirm-payment] Supabase fetch failed (orderId):', orderByOrderError.message);
+          return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: orderByOrderError.message });
+        }
+        order = orderByOrderId ?? null;
+      } catch (fetchError) {
+        console.error('[confirm-payment] Supabase fetch exception (orderId):', JSON.stringify(fetchError, Object.getOwnPropertyNames(fetchError)));
+        console.error('底層錯誤原因 (Cause):', (fetchError as Error)?.cause);
+        return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: String(fetchError) });
+      }
     }
     if (!order) {
       console.error('[confirm-payment] Order not found:', dbId);
@@ -177,19 +200,26 @@ export default async function handler(
     }
     console.log('[confirm-payment] Order loaded:', JSON.stringify(order));
 
-    const updateId = order.id ?? dbId;
+    const updateId = order.id ?? dbIdValue;
     console.log('[confirm-payment] Step A: Update status to success');
-    const { data: statusUpdated, error: updateError } = await supabaseAdmin
-      .from('orders')
-      .update({ status: 'success' })
-      .eq('id', updateId)
-      .select('id,status,tracking_number,waybill_no')
-      .maybeSingle();
-    if (updateError) {
-      console.error('[confirm-payment] Update status failed', updateError.message);
-      return res.status(502).json({ error: 'Failed to update order status', code: 'UPDATE_FAILED', details: updateError.message });
+    let updatedOrder = order;
+    try {
+      const { data: statusUpdated, error: updateError } = await supabaseAdmin
+        .from('orders')
+        .update({ status: 'success' })
+        .eq('id', updateId)
+        .select('id,status,tracking_number,waybill_no')
+        .maybeSingle();
+      if (updateError) {
+        console.error('[confirm-payment] Update status failed', updateError.message);
+        return res.status(502).json({ error: 'Failed to update order status', code: 'UPDATE_FAILED', details: updateError.message });
+      }
+      updatedOrder = statusUpdated ?? order;
+    } catch (updateErr) {
+      console.error('[confirm-payment] Update exception:', JSON.stringify(updateErr, Object.getOwnPropertyNames(updateErr)));
+      console.error('底層錯誤原因 (Cause):', (updateErr as Error)?.cause);
+      return res.status(502).json({ error: 'Failed to update order status', code: 'UPDATE_FAILED', details: String(updateErr) });
     }
-    const updatedOrder = statusUpdated ?? order;
     console.log('✅ Supabase 狀態已更新為 success');
 
     const existingWaybill = updatedOrder.waybill_no ?? updatedOrder.tracking_number ?? null;
@@ -219,12 +249,17 @@ export default async function handler(
       console.log('--- [流程結束] ---');
       if (!sfRes.ok) {
         const sfErrorPayload = { status: sfRes.status, body: sfJson ?? sfText, at: new Date().toISOString() };
-        const { error: sfStoreError } = await supabaseAdmin
-          .from('orders')
-          .update({ sf_responses: sfErrorPayload })
-          .eq('id', updateId);
-        if (sfStoreError) {
-          console.error('[confirm-payment] Failed to store sf_responses', sfStoreError.message);
+        try {
+          const { error: sfStoreError } = await supabaseAdmin
+            .from('orders')
+            .update({ sf_responses: sfErrorPayload })
+            .eq('id', updateId);
+          if (sfStoreError) {
+            console.error('[confirm-payment] Failed to store sf_responses', sfStoreError.message);
+          }
+        } catch (sfStoreErr) {
+          console.error('[confirm-payment] Store sf_responses exception:', JSON.stringify(sfStoreErr, Object.getOwnPropertyNames(sfStoreErr)));
+          console.error('底層錯誤原因 (Cause):', (sfStoreErr as Error)?.cause);
         }
         return res.status(200).json({ success: true, orderId, waybillNo: null, waybill_no: null, confirmed: true, sfPending: true });
       }
@@ -232,23 +267,33 @@ export default async function handler(
       // Step C: 儲存單號 + 原始回應
       const sfSuccessPayload = { status: sfRes.status, body: sfJson ?? sfText, at: new Date().toISOString() };
       if (waybill) {
-        const { error: wbError } = await supabaseAdmin
-          .from('orders')
-          .update({ waybill_no: waybill, sf_responses: sfSuccessPayload })
-          .eq('id', updateId);
-        if (wbError) {
-          console.error('[confirm-payment] Failed to store waybill_no', wbError.message);
-        } else {
-          console.log('[confirm-payment] waybill_no saved:', waybill);
+        try {
+          const { error: wbError } = await supabaseAdmin
+            .from('orders')
+            .update({ waybill_no: waybill, sf_responses: sfSuccessPayload })
+            .eq('id', updateId);
+          if (wbError) {
+            console.error('[confirm-payment] Failed to store waybill_no', wbError.message);
+          } else {
+            console.log('[confirm-payment] waybill_no saved:', waybill);
+          }
+        } catch (wbErr) {
+          console.error('[confirm-payment] Store waybill_no exception:', JSON.stringify(wbErr, Object.getOwnPropertyNames(wbErr)));
+          console.error('底層錯誤原因 (Cause):', (wbErr as Error)?.cause);
         }
       } else {
         const sfErrorPayload = { status: sfRes.status, body: sfJson ?? sfText, at: new Date().toISOString() };
-        const { error: sfStoreError } = await supabaseAdmin
-          .from('orders')
-          .update({ sf_responses: sfErrorPayload })
-          .eq('id', updateId);
-        if (sfStoreError) {
-          console.error('[confirm-payment] Failed to store sf_responses', sfStoreError.message);
+        try {
+          const { error: sfStoreError } = await supabaseAdmin
+            .from('orders')
+            .update({ sf_responses: sfErrorPayload })
+            .eq('id', updateId);
+          if (sfStoreError) {
+            console.error('[confirm-payment] Failed to store sf_responses', sfStoreError.message);
+          }
+        } catch (sfStoreErr) {
+          console.error('[confirm-payment] Store sf_responses exception:', JSON.stringify(sfStoreErr, Object.getOwnPropertyNames(sfStoreErr)));
+          console.error('底層錯誤原因 (Cause):', (sfStoreErr as Error)?.cause);
         }
       }
       return res.status(200).json({ success: true, orderId, waybillNo: waybill, waybill_no: waybill, confirmed: true });
@@ -257,12 +302,17 @@ export default async function handler(
       console.error('[confirm-payment] SF fetch failed, mark pending:', msg);
       console.log('--- [流程結束] ---');
       const sfErrorPayload = { status: 0, body: msg, at: new Date().toISOString() };
-      const { error: sfStoreError } = await supabaseAdmin
-        .from('orders')
-        .update({ sf_responses: sfErrorPayload })
-        .eq('id', updateId);
-      if (sfStoreError) {
-        console.error('[confirm-payment] Failed to store sf_responses', sfStoreError.message);
+      try {
+        const { error: sfStoreError } = await supabaseAdmin
+          .from('orders')
+          .update({ sf_responses: sfErrorPayload })
+          .eq('id', updateId);
+        if (sfStoreError) {
+          console.error('[confirm-payment] Failed to store sf_responses', sfStoreError.message);
+        }
+      } catch (sfStoreErr) {
+        console.error('[confirm-payment] Store sf_responses exception:', JSON.stringify(sfStoreErr, Object.getOwnPropertyNames(sfStoreErr)));
+        console.error('底層錯誤原因 (Cause):', (sfStoreErr as Error)?.cause);
       }
       return res.status(200).json({ success: true, orderId, waybillNo: null, waybill_no: null, confirmed: true, sfPending: true });
     }
