@@ -26,7 +26,7 @@ type SfOrderPayload = {
 };
 
 function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: string; address: string }) {
-  const custid = (process.env.SF_MONTHLY_CARD ?? process.env.SF_PARTNER_ID ?? '').trim();
+  const monthlyCard = (process.env.SF_MONTHLY_CARD ?? process.env.SF_PARTNER_ID ?? '').trim() || '7551234567';
   const addr = [
     payload.delivery_district,
     payload.delivery_address,
@@ -38,44 +38,55 @@ function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: 
   return {
     orderId: payload.orderId,
     language: 'zh-CN',
+    monthlyCard,
     expressType: 1,
     payMethod: 1,
-    custid,
+    contactInfoList: [
+      {
+        contactType: 1,
+        contact: sender.name,
+        tel: sender.phone,
+        address: sender.address,
+      },
+      {
+        contactType: 2,
+        contact: payload.contact_name || payload.customer_name || '收件人',
+        tel: payload.customer_phone || '',
+        address: addr || '收件地址',
+      },
+    ],
     cargoDetails: [
       {
         name: '冷凍食品',
         count: 1,
-        unit: 'pcs',
-      }
+      },
     ],
-    consignorContact: sender.name,
-    consignorTel: sender.phone,
-    consignorAddress: sender.address,
-    consigneeContact: payload.contact_name || payload.customer_name || '收件人',
-    consigneeTel: payload.customer_phone || '',
-    consigneeAddress: addr || '收件地址',
   };
 }
 
 function validateSfRequiredFields(msgData: ReturnType<typeof buildSfMsgData>) {
   const missing: string[] = [];
+  if (!msgData.orderId?.trim()) missing.push('orderId');
+  if (!msgData.language?.trim()) missing.push('language');
+  if (!msgData.monthlyCard?.trim()) missing.push('monthlyCard');
   if (!msgData.expressType) missing.push('expressType');
   if (!msgData.payMethod) missing.push('payMethod');
-  if (!msgData.custid?.trim()) missing.push('custid');
+  if (!Array.isArray(msgData.contactInfoList) || msgData.contactInfoList.length < 2) missing.push('contactInfoList');
+  if (Array.isArray(msgData.contactInfoList)) {
+    msgData.contactInfoList.forEach((item, idx) => {
+      if (!item?.contactType) missing.push(`contactInfoList[${idx}].contactType`);
+      if (!item?.contact?.trim()) missing.push(`contactInfoList[${idx}].contact`);
+      if (!item?.tel?.trim()) missing.push(`contactInfoList[${idx}].tel`);
+      if (!item?.address?.trim()) missing.push(`contactInfoList[${idx}].address`);
+    });
+  }
   if (!Array.isArray(msgData.cargoDetails) || msgData.cargoDetails.length === 0) missing.push('cargoDetails');
   if (Array.isArray(msgData.cargoDetails)) {
     msgData.cargoDetails.forEach((item, idx) => {
       if (!item?.name?.trim()) missing.push(`cargoDetails[${idx}].name`);
       if (!item?.count) missing.push(`cargoDetails[${idx}].count`);
-      if (!item?.unit?.trim()) missing.push(`cargoDetails[${idx}].unit`);
     });
   }
-  if (!msgData.consignorContact?.trim()) missing.push('consignorContact');
-  if (!msgData.consignorTel?.trim()) missing.push('consignorTel');
-  if (!msgData.consignorAddress?.trim()) missing.push('consignorAddress');
-  if (!msgData.consigneeContact?.trim()) missing.push('consigneeContact');
-  if (!msgData.consigneeTel?.trim()) missing.push('consigneeTel');
-  if (!msgData.consigneeAddress?.trim()) missing.push('consigneeAddress');
   return missing;
 }
 
@@ -169,7 +180,7 @@ export default async function handler(
     const finalPayload = {
       partnerID,
       requestID,
-      serviceCode: 'COM_RECE_CLOUD_PRINT_WAYBILLS',
+      serviceCode: 'EXP_RECE_CREATE_ORDER',
       timestamp,
       msgData,
       msgDigest,
