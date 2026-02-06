@@ -56,7 +56,7 @@ function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: 
         amount: 0,
       },
     ],
-    contactinfoList: [
+    contactInfoList: [
       {
         contactType: 1,
         contact: sender.name,
@@ -92,15 +92,15 @@ function validateSfRequiredFields(msgData: ReturnType<typeof buildSfMsgData>) {
   if (!msgData.payMethod) missing.push('payMethod');
   if (!msgData.parcelQty) missing.push('parcelQty');
   if (!msgData.totalWeight) missing.push('totalWeight');
-  if (!Array.isArray(msgData.contactinfoList) || msgData.contactinfoList.length < 2) missing.push('contactinfoList');
-  if (Array.isArray(msgData.contactinfoList)) {
-    msgData.contactinfoList.forEach((item, idx) => {
-      if (!item?.contactType) missing.push(`contactinfoList[${idx}].contactType`);
-      if (!item?.contact?.trim()) missing.push(`contactinfoList[${idx}].contact`);
-      if (!item?.tel?.trim() && !item?.mobile?.trim()) missing.push(`contactinfoList[${idx}].tel`);
-      if (!item?.address?.trim()) missing.push(`contactinfoList[${idx}].address`);
-      if (!item?.province?.trim()) missing.push(`contactinfoList[${idx}].province`);
-      if (!item?.city?.trim()) missing.push(`contactinfoList[${idx}].city`);
+  if (!Array.isArray(msgData.contactInfoList) || msgData.contactInfoList.length < 2) missing.push('contactInfoList');
+  if (Array.isArray(msgData.contactInfoList)) {
+    msgData.contactInfoList.forEach((item, idx) => {
+      if (!item?.contactType) missing.push(`contactInfoList[${idx}].contactType`);
+      if (!item?.contact?.trim()) missing.push(`contactInfoList[${idx}].contact`);
+      if (!item?.tel?.trim() && !item?.mobile?.trim()) missing.push(`contactInfoList[${idx}].tel`);
+      if (!item?.address?.trim()) missing.push(`contactInfoList[${idx}].address`);
+      if (!item?.province?.trim()) missing.push(`contactInfoList[${idx}].province`);
+      if (!item?.city?.trim()) missing.push(`contactInfoList[${idx}].city`);
     });
   }
   if (!Array.isArray(msgData.cargoDetails) || msgData.cargoDetails.length === 0) missing.push('cargoDetails');
