@@ -215,7 +215,8 @@ const SuccessView: React.FC<{
   highlightOrderId: string | null;
   orders: Order[];
   onViewOrders: () => void;
-}> = ({ successWaybill, successWaybillLoading, setSuccessWaybill, setSuccessWaybillLoading, onViewOrders }) => {
+  onRefreshOrders: () => void;
+}> = ({ successWaybill, successWaybillLoading, setSuccessWaybill, setSuccessWaybillLoading, onViewOrders, onRefreshOrders }) => {
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [confirmSuccess, setConfirmSuccess] = useState(false);
 
@@ -262,6 +263,7 @@ const SuccessView: React.FC<{
           setConfirmSuccess(true);
           setSuccessWaybill(data.waybillNo ?? null);
           setConfirmError(null);
+          onRefreshOrders();
           if (paymentIntentId) try { win.sessionStorage?.removeItem?.('airwallex_payment_intent_id'); } catch { /* ignore */ }
         } else {
           setConfirmError(data.error ?? '確認付款時發生錯誤');
@@ -535,22 +537,28 @@ const App: React.FC = () => {
     restoreUser();
   }, []);
 
+  const fetchOrders = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('orders')
+      .select('id, customer_name, total, status, order_date, items_count, tracking_number')
+      .order('order_date', { ascending: false });
+    if (error) {
+      if (!handleSchemaError(error, 'orders')) {
+        showToast('訂單資料載入失敗', 'error');
+      }
+      return;
+    }
+    if (data?.length) {
+      setOrders((data as SupabaseOrderRow[]).map(mapOrderRowToOrder));
+    } else {
+      setOrders([]);
+    }
+  }, []);
+
   // Load orders from Supabase on mount
   useEffect(() => {
-    const loadOrders = async () => {
-      const { data, error } = await supabase.from('orders').select('id, customer_name, total, status, order_date, items_count, tracking_number').order('order_date', { ascending: false });
-      if (error) {
-        if (!handleSchemaError(error, 'orders')) {
-          showToast('訂單資料載入失敗', 'error');
-        }
-        return;
-      }
-      if (data?.length) {
-        setOrders((data as SupabaseOrderRow[]).map(mapOrderRowToOrder));
-      }
-    };
-    loadOrders();
-  }, []);
+    fetchOrders();
+  }, [fetchOrders]);
 
   useEffect(() => {
     const loadOrderDetails = async () => {
@@ -2530,6 +2538,7 @@ const App: React.FC = () => {
               highlightOrderId={highlightOrderId}
               orders={orders}
               onViewOrders={() => { if (window.history.replaceState) window.history.replaceState({}, '', '/'); setView('orders'); const latestId = orders.length > 0 ? orders[0].id : null; if (latestId) setHighlightOrderId(latestId); }}
+              onRefreshOrders={fetchOrders}
             />
           )}
           {view === 'orders' && (

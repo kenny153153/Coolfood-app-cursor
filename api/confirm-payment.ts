@@ -81,32 +81,40 @@ export default async function handler(
 
     if (paymentIntentId) {
       console.log('[confirm-payment] payment_intent_id detected:', paymentIntentId);
-      const { token, baseUrl } = await getAirwallexToken();
-      const getIntentUrl = `${baseUrl}/api/v1/pa/payment_intents/${encodeURIComponent(paymentIntentId)}`;
-      console.log('[confirm-payment] GET intent:', getIntentUrl);
-      const intentRes = await fetch(getIntentUrl, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const intentText = await intentRes.text();
-      if (!intentRes.ok) {
-        console.error('[confirm-payment] Airwallex GET intent failed', intentRes.status, intentText.slice(0, 200));
-        return res.status(400).json({
-          error: '無法向 Airwallex 確認支付狀態',
-          code: 'INTENT_FETCH_FAILED',
-          details: intentText.slice(0, 200),
+      try {
+        const { token, baseUrl } = await getAirwallexToken();
+        const getIntentUrl = `${baseUrl}/api/v1/pa/payment_intents/${encodeURIComponent(paymentIntentId)}`;
+        console.log('[confirm-payment] GET intent:', getIntentUrl);
+        const intentRes = await fetch(getIntentUrl, {
+          headers: { Authorization: `Bearer ${token}` },
         });
+        const intentText = await intentRes.text();
+        if (!intentRes.ok) {
+          console.error('[confirm-payment] Airwallex GET intent failed', intentRes.status, intentText.slice(0, 200));
+          return res.status(400).json({
+            error: '無法向 Airwallex 確認支付狀態',
+            code: 'INTENT_FETCH_FAILED',
+            details: intentText.slice(0, 200),
+          });
+        }
+        const intent = JSON.parse(intentText) as { status?: string; merchant_order_id?: string };
+        const status = (intent.status ?? '').toUpperCase();
+        console.log('[confirm-payment] Intent status:', status, 'merchant_order_id:', intent.merchant_order_id);
+        if (status !== 'SUCCEEDED') {
+          return res.status(400).json({
+            error: '支付尚未成功',
+            code: 'PAYMENT_NOT_SUCCEEDED',
+            status: intent.status,
+          });
+        }
+        if (intent.merchant_order_id) orderId = String(intent.merchant_order_id).trim();
+      } catch (airwallexErr) {
+        const msg = airwallexErr instanceof Error ? airwallexErr.message : String(airwallexErr);
+        console.error('[confirm-payment] Airwallex verification failed, continue with orderId fallback:', msg);
+        if (!orderId) {
+          return res.status(502).json({ error: msg, code: 'AIRWALLEX_FETCH_FAILED' });
+        }
       }
-      const intent = JSON.parse(intentText) as { status?: string; merchant_order_id?: string };
-      const status = (intent.status ?? '').toUpperCase();
-      console.log('[confirm-payment] Intent status:', status, 'merchant_order_id:', intent.merchant_order_id);
-      if (status !== 'SUCCEEDED') {
-        return res.status(400).json({
-          error: '支付尚未成功',
-          code: 'PAYMENT_NOT_SUCCEEDED',
-          status: intent.status,
-        });
-      }
-      if (intent.merchant_order_id) orderId = String(intent.merchant_order_id).trim();
     } else {
       console.log('[confirm-payment] payment_intent_id is empty, skip Airwallex verification');
     }
@@ -118,11 +126,20 @@ export default async function handler(
 
     const dbId = getOrderDbId(orderId);
     console.log('[confirm-payment] Resolve orderId:', orderId, '=> dbId:', dbId);
-    const getRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/orders?id=eq.${dbId}&select=id,status,tracking_number`, {
+    const baseRest = `${supabaseUrl.replace(/\/$/, '')}/rest/v1/orders`;
+    let getRes = await fetch(`${baseRest}?id=eq.${dbId}&select=id,status,tracking_number`, {
       headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` },
     });
-    const rows = await getRes.json();
-    const order = Array.isArray(rows) ? rows[0] : null;
+    let rows = await getRes.json();
+    let order = Array.isArray(rows) ? rows[0] : null;
+    if (!order && String(dbId) !== orderId) {
+      console.warn('[confirm-payment] Order not found by dbId, retry with orderId:', orderId);
+      getRes = await fetch(`${baseRest}?id=eq.${encodeURIComponent(orderId)}&select=id,status,tracking_number`, {
+        headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` },
+      });
+      rows = await getRes.json();
+      order = Array.isArray(rows) ? rows[0] : null;
+    }
     if (!order) {
       console.error('[confirm-payment] Order not found:', dbId);
       return res.status(404).json({ error: 'Order not found', code: 'ORDER_NOT_FOUND' });
@@ -133,8 +150,9 @@ export default async function handler(
     if (alreadyPaid) {
       console.log('[confirm-payment] Order already paid/success, skip update');
     } else {
+      const updateId = order.id ?? dbId;
       console.log('[confirm-payment] Updating Supabase status to success');
-      const patchRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/orders?id=eq.${dbId}`, {
+      const patchRes = await fetch(`${baseRest}?id=eq.${encodeURIComponent(String(updateId))}`, {
         method: 'PATCH',
         headers: {
           apikey: supabaseKey,
@@ -148,7 +166,7 @@ export default async function handler(
         const errText = await patchRes.text();
         console.error('[confirm-payment] Update status failed', patchRes.status, errText);
         console.log('[confirm-payment] Fallback update to paid');
-        const fallbackRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/orders?id=eq.${dbId}`, {
+        const fallbackRes = await fetch(`${baseRest}?id=eq.${encodeURIComponent(String(updateId))}`, {
           method: 'PATCH',
           headers: {
             apikey: supabaseKey,
@@ -177,25 +195,32 @@ export default async function handler(
 
     // 3. 呼叫順豐前
     console.log('準備呼叫順豐 API...');
-    const sfRes = await fetch(`${origin}/api/sf-order`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orderId }),
-    });
-    const sfText = await sfRes.text();
-    let sfJson: { waybillNo?: string; error?: string; code?: string } | null = null;
     try {
-      sfJson = sfText ? JSON.parse(sfText) : null;
-    } catch {
-      sfJson = null;
-    }
-    console.log('[confirm-payment] SF response:', sfRes.status, sfJson ?? sfText.slice(0, 200));
+      const sfRes = await fetch(`${origin}/api/sf-order`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId }),
+      });
+      const sfText = await sfRes.text();
+      let sfJson: { waybillNo?: string; error?: string; code?: string } | null = null;
+      try {
+        sfJson = sfText ? JSON.parse(sfText) : null;
+      } catch {
+        sfJson = null;
+      }
+      console.log('[confirm-payment] SF response:', sfRes.status, sfJson ?? sfText.slice(0, 200));
 
-    console.log('--- [流程結束] ---');
-    if (!sfRes.ok) {
+      console.log('--- [流程結束] ---');
+      if (!sfRes.ok) {
+        return res.status(200).json({ success: true, orderId, waybillNo: null, confirmed: true, sfPending: true });
+      }
+      return res.status(200).json({ success: true, orderId, waybillNo: sfJson?.waybillNo ?? null, confirmed: true });
+    } catch (sfErr) {
+      const msg = sfErr instanceof Error ? sfErr.message : String(sfErr);
+      console.error('[confirm-payment] SF fetch failed, mark pending:', msg);
+      console.log('--- [流程結束] ---');
       return res.status(200).json({ success: true, orderId, waybillNo: null, confirmed: true, sfPending: true });
     }
-    return res.status(200).json({ success: true, orderId, waybillNo: sfJson?.waybillNo ?? null, confirmed: true });
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     console.error('❌ 流程崩潰:', errMsg);
