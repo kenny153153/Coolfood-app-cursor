@@ -249,17 +249,19 @@ export default async function handler(
       });
     }
 
-    const sfResponse = json as { apiResultData?: string | Record<string, unknown> };
-    const resultData = typeof sfResponse.apiResultData === 'string'
-      ? JSON.parse(sfResponse.apiResultData)
-      : sfResponse.apiResultData;
-    const waybillNo = (resultData as { msgData?: { waybillNoInfoList?: { waybillNo?: string }[]; routeLabelInfo?: { routeLabelData?: { waybillNo?: string } }[] } } | null)
-      ?.msgData?.waybillNoInfoList?.[0]?.waybillNo
-      || (resultData as { msgData?: { routeLabelInfo?: { routeLabelData?: { waybillNo?: string } }[] } } | null)
-      ?.msgData?.routeLabelInfo?.[0]?.routeLabelData?.waybillNo
-      || null;
+    const sfResponse = json as { apiResultData?: string };
+    let data: { msgData?: { waybillNoInfoList?: { waybillNo?: string }[]; routeLabelInfo?: { routeLabelData?: { waybillNo?: string } }[] } };
+    try {
+      data = JSON.parse(sfResponse.apiResultData ?? '{}');
+    } catch {
+      data = {};
+    }
+    let waybillNo = data.msgData?.waybillNoInfoList?.[0]?.waybillNo;
+    if (!waybillNo) {
+      waybillNo = data.msgData?.routeLabelInfo?.[0]?.routeLabelData?.waybillNo;
+    }
     console.log('[SF] 最終成功提取的單號:', waybillNo);
-    const waybillNoStr = waybillNo ? String(waybillNo) : null;
+    const waybillNoStr = waybillNo ? String(waybillNo).trim() : null;
 
     if (waybillNoStr && supabaseUrl && supabaseKey) {
       try {
