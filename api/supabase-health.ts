@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import dns from 'dns/promises';
 
 type HealthResponse = {
   ok: boolean;
@@ -32,6 +33,12 @@ export default async function handler(
   try {
     const urlObj = new URL(supabaseUrl);
     console.log('[supabase-health] URL host:', urlObj.host);
+    try {
+      const resolved = await dns.lookup(urlObj.hostname);
+      console.log('[supabase-health] DNS lookup:', resolved);
+    } catch (dnsErr) {
+      console.error('[supabase-health] DNS lookup failed:', JSON.stringify(dnsErr, Object.getOwnPropertyNames(dnsErr)));
+    }
   } catch (e) {
     console.error('[supabase-health] URL invalid:', JSON.stringify(e, Object.getOwnPropertyNames(e)));
     return res.status(500).json({
@@ -59,6 +66,20 @@ export default async function handler(
   });
 
   try {
+    try {
+      const pingRes = await fetch(`${supabaseUrl}/rest/v1/`, {
+        method: 'GET',
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`,
+        },
+      });
+      console.log('[supabase-health] REST ping status:', pingRes.status);
+    } catch (pingErr) {
+      console.error('[supabase-health] REST ping failed:', JSON.stringify(pingErr, Object.getOwnPropertyNames(pingErr)));
+      console.error('[supabase-health] REST ping cause:', (pingErr as Error)?.cause);
+    }
+
     const { data, error } = await supabaseAdmin
       .from('orders')
       .select('id')
