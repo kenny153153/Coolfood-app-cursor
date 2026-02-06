@@ -270,9 +270,26 @@ export default async function handler(
       return null;
     })();
 
-    const waybillNo = (apiResultParsed as { waybillNo?: string } | null)?.waybillNo
+    if (apiResultParsed) {
+      console.log('[SF] apiResultData keys:', Object.keys(apiResultParsed));
+    }
+    if (innerMsgData) {
+      console.log('[SF] apiResultData.msgData keys:', Object.keys(innerMsgData));
+    }
+
+    const waybillNo = (apiResultParsed as { waybillNo?: string; mailNo?: string; mailno?: string } | null)?.waybillNo
+      ?? (apiResultParsed as { mailNo?: string } | null)?.mailNo
+      ?? (apiResultParsed as { mailno?: string } | null)?.mailno
+      ?? (apiResultParsed as { waybillNoInfoList?: { waybillNo?: string }[] } | null)?.waybillNoInfoList?.[0]?.waybillNo
+      ?? (apiResultParsed as { waybillNoList?: { waybillNo?: string }[] } | null)?.waybillNoList?.[0]?.waybillNo
+      ?? (apiResultParsed as { mailNoList?: { mailNo?: string }[] } | null)?.mailNoList?.[0]?.mailNo
       ?? (apiResultParsed as { waybillList?: { waybillNo?: string }[] } | null)?.waybillList?.[0]?.waybillNo
-      ?? (innerMsgData as { waybillNo?: string } | null)?.waybillNo
+      ?? (innerMsgData as { waybillNo?: string; mailNo?: string; mailno?: string } | null)?.waybillNo
+      ?? (innerMsgData as { mailNo?: string } | null)?.mailNo
+      ?? (innerMsgData as { mailno?: string } | null)?.mailno
+      ?? (innerMsgData as { waybillNoInfoList?: { waybillNo?: string }[] } | null)?.waybillNoInfoList?.[0]?.waybillNo
+      ?? (innerMsgData as { waybillNoList?: { waybillNo?: string }[] } | null)?.waybillNoList?.[0]?.waybillNo
+      ?? (innerMsgData as { mailNoList?: { mailNo?: string }[] } | null)?.mailNoList?.[0]?.mailNo
       ?? (innerMsgData as { waybillList?: { waybillNo?: string }[] } | null)?.waybillList?.[0]?.waybillNo
       ?? (json as { waybillNo?: string }).waybillNo
       ?? (json as { msgData?: string })?.msgData
