@@ -220,7 +220,7 @@ const SuccessView: React.FC<{
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [confirmSuccess, setConfirmSuccess] = useState(false);
 
-  const runConfirmPayment = useCallback(() => {
+  const runConfirmPayment = useCallback(async () => {
     const win = typeof window !== 'undefined' ? window : null;
     if (!win) return;
     const params = new URLSearchParams(win.location.search);
@@ -236,45 +236,72 @@ const SuccessView: React.FC<{
     setConfirmError(null);
     setSuccessWaybillLoading(true);
     const apiUrl = `${win.location.origin}/api/confirm-payment`;
-    fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orderId, payment_intent_id: paymentIntentId ?? null }),
-    })
-      .then(async (response) => {
-        const text = await response.text();
-        if (!response.ok) {
-          setSuccessWaybillLoading(false);
-          setConfirmError(`錯誤 ${response.status}${text ? `: ${text.slice(0, 100)}` : ''}`);
-          setConfirmSuccess(false);
-          return;
-        }
-        let data: { success?: boolean; waybillNo?: string; error?: string; code?: string };
-        try {
-          data = text ? JSON.parse(text) : {};
-        } catch {
-          setSuccessWaybillLoading(false);
-          setConfirmError(`後端回傳非 JSON (${response.status})`);
-          setConfirmSuccess(false);
-          return;
-        }
-        setSuccessWaybillLoading(false);
-        if (data.success) {
-          setConfirmSuccess(true);
-          setSuccessWaybill(data.waybillNo ?? null);
-          setConfirmError(null);
-          onRefreshOrders();
-          if (paymentIntentId) try { win.sessionStorage?.removeItem?.('airwallex_payment_intent_id'); } catch { /* ignore */ }
-        } else {
-          setConfirmError(data.error ?? '確認付款時發生錯誤');
-          setConfirmSuccess(false);
-        }
-      })
-      .catch(e => {
-        setSuccessWaybillLoading(false);
-        setConfirmError(e?.message ?? '網路錯誤，請稍後再試');
-        setConfirmSuccess(false);
+    try {
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId, payment_intent_id: paymentIntentId ?? null }),
       });
+      const text = await response.text();
+      if (!response.ok) {
+        let errData: { error?: string; code?: string; details?: string } | null = null;
+        try {
+          errData = text ? JSON.parse(text) : null;
+        } catch {
+          errData = null;
+        }
+        if (errData?.code === 'SUPABASE_FETCH_FAILED' && orderId) {
+          const dbId = orderId.startsWith('ORD-') ? orderId.replace(/^ORD-/, '') : orderId;
+          const attemptUpdate = async (idValue: string) => {
+            const { data, error } = await supabase
+              .from('orders')
+              .update({ status: 'success' })
+              .eq('id', idValue)
+              .select('id,status,tracking_number')
+              .maybeSingle();
+            if (error) return null;
+            return data ?? null;
+          };
+          const updated = (await attemptUpdate(dbId)) ?? (await attemptUpdate(orderId));
+          if (updated) {
+            setSuccessWaybillLoading(false);
+            setConfirmSuccess(true);
+            setSuccessWaybill((updated as SupabaseOrderRow).tracking_number ?? null);
+            setConfirmError(null);
+            onRefreshOrders();
+            return;
+          }
+        }
+        setSuccessWaybillLoading(false);
+        setConfirmError(`錯誤 ${response.status}${text ? `: ${text.slice(0, 100)}` : ''}`);
+        setConfirmSuccess(false);
+        return;
+      }
+      let data: { success?: boolean; waybillNo?: string; error?: string; code?: string };
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        setSuccessWaybillLoading(false);
+        setConfirmError(`後端回傳非 JSON (${response.status})`);
+        setConfirmSuccess(false);
+        return;
+      }
+      setSuccessWaybillLoading(false);
+      if (data.success) {
+        setConfirmSuccess(true);
+        setSuccessWaybill(data.waybillNo ?? null);
+        setConfirmError(null);
+        onRefreshOrders();
+        if (paymentIntentId) try { win.sessionStorage?.removeItem?.('airwallex_payment_intent_id'); } catch { /* ignore */ }
+      } else {
+        setConfirmError(data.error ?? '確認付款時發生錯誤');
+        setConfirmSuccess(false);
+      }
+    } catch (e) {
+      setSuccessWaybillLoading(false);
+      setConfirmError((e as Error)?.message ?? '網路錯誤，請稍後再試');
+      setConfirmSuccess(false);
+    }
   }, [setSuccessWaybill, setSuccessWaybillLoading]);
 
   useEffect(() => {

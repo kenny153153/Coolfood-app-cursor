@@ -1,7 +1,8 @@
 /**
- * 確認支付：向 Airwallex 查詢 Payment Intent 是否 SUCCEEDED，再更新 Supabase 為 paid/success，並觸發順豐下單
+ * 確認支付：向 Airwallex 查詢 Payment Intent 是否 SUCCEEDED，再更新 Supabase 為 paid，並觸發順豐下單
  * 若 payment_intent_id 為空但有 orderId，仍會更新 Supabase 狀態（供 Sandbox 測試）
  */
+import { createClient } from '@supabase/supabase-js';
 const AIRWALLEX_DEMO = 'https://api-demo.airwallex.com';
 const AIRWALLEX_PROD = 'https://api.airwallex.com';
 
@@ -25,24 +26,6 @@ const maskUrl = (value: string): string => {
 
 const isLocalhost = (value: string): boolean => {
   return value.includes('localhost') || value.includes('127.0.0.1') || value.includes('0.0.0.0');
-};
-
-const fetchJson = async (url: string, options: RequestInit, label: string) => {
-  try {
-    const res = await fetch(url, options);
-    const text = await res.text();
-    let json: unknown = null;
-    try {
-      json = text ? JSON.parse(text) : null;
-    } catch {
-      json = null;
-    }
-    return { ok: res.ok, status: res.status, text, json };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[confirm-payment] ${label} fetch failed:`, msg);
-    return { ok: false, status: 0, text: msg, json: null };
-  }
 };
 
 async function getAirwallexToken(): Promise<{ token: string; baseUrl: string }> {
@@ -103,9 +86,9 @@ export default async function handler(
 
     const supabaseUrl = safeTrim(process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? '');
     const serviceRoleKey = safeTrim(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '');
-    const supabaseKey = serviceRoleKey || safeTrim(process.env.VITE_SUPABASE_ANON_KEY ?? '');
     if (serviceRoleKey) console.log('[confirm-payment] Using SUPABASE_SERVICE_ROLE_KEY for update');
-    if (!supabaseUrl || !supabaseKey) {
+    console.log('API 使用的網址:', process.env.SUPABASE_URL);
+    if (!supabaseUrl || !serviceRoleKey) {
       console.error('[confirm-payment] Missing Supabase config');
       return res.status(500).json({ error: 'Server config missing', code: 'CONFIG_MISSING' });
     }
@@ -114,6 +97,7 @@ export default async function handler(
       return res.status(500).json({ error: 'SUPABASE_URL must be a public URL (not localhost)', code: 'SUPABASE_URL_INVALID' });
     }
     console.log('[confirm-payment] Supabase URL host:', maskUrl(supabaseUrl));
+    const supabaseClient = createClient(supabaseUrl, serviceRoleKey);
 
     if (paymentIntentId) {
       console.log('[confirm-payment] payment_intent_id detected:', paymentIntentId);
@@ -162,22 +146,28 @@ export default async function handler(
 
     const dbId = getOrderDbId(orderId);
     console.log('[confirm-payment] Resolve orderId:', orderId, '=> dbId:', dbId);
-    const baseRest = `${supabaseUrl.replace(/\/$/, '')}/rest/v1/orders`;
-    const headers = { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` };
-    let result = await fetchJson(`${baseRest}?id=eq.${dbId}&select=id,status,tracking_number`, { headers }, 'supabase-order-by-dbId');
-    if (!result.ok && result.status === 0) {
-      return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: result.text });
+    const { data: orderByDbId, error: orderByDbError } = await supabaseClient
+      .from('orders')
+      .select('id,status,tracking_number')
+      .eq('id', dbId)
+      .maybeSingle();
+    if (orderByDbError) {
+      console.error('[confirm-payment] Supabase fetch failed (dbId):', orderByDbError.message);
+      return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: orderByDbError.message });
     }
-    let rows = result.json;
-    let order = Array.isArray(rows) ? rows[0] : null;
+    let order = orderByDbId ?? null;
     if (!order && String(dbId) !== orderId) {
       console.warn('[confirm-payment] Order not found by dbId, retry with orderId:', orderId);
-      result = await fetchJson(`${baseRest}?id=eq.${encodeURIComponent(orderId)}&select=id,status,tracking_number`, { headers }, 'supabase-order-by-orderId');
-      if (!result.ok && result.status === 0) {
-        return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: result.text });
+      const { data: orderByOrderId, error: orderByOrderError } = await supabaseClient
+        .from('orders')
+        .select('id,status,tracking_number')
+        .eq('id', orderId)
+        .maybeSingle();
+      if (orderByOrderError) {
+        console.error('[confirm-payment] Supabase fetch failed (orderId):', orderByOrderError.message);
+        return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: orderByOrderError.message });
       }
-      rows = result.json;
-      order = Array.isArray(rows) ? rows[0] : null;
+      order = orderByOrderId ?? null;
     }
     if (!order) {
       console.error('[confirm-payment] Order not found:', dbId);
@@ -186,50 +176,35 @@ export default async function handler(
     console.log('[confirm-payment] Order loaded:', JSON.stringify(order));
 
     const alreadyPaid = order.status === 'paid' || order.status === 'success';
+    let canTriggerSf = false;
     if (alreadyPaid) {
       console.log('[confirm-payment] Order already paid/success, skip update');
+      canTriggerSf = true;
     } else {
       const updateId = order.id ?? dbId;
-      console.log('[confirm-payment] Updating Supabase status to success');
-      const patchRes = await fetch(`${baseRest}?id=eq.${encodeURIComponent(String(updateId))}`, {
-        method: 'PATCH',
-        headers: {
-          apikey: supabaseKey,
-          Authorization: `Bearer ${supabaseKey}`,
-          'Content-Type': 'application/json',
-          Prefer: 'return=minimal',
-        },
-        body: JSON.stringify({ status: 'success' }),
-      });
-      if (!patchRes.ok) {
-        const errText = await patchRes.text();
-        console.error('[confirm-payment] Update status failed', patchRes.status, errText);
-        console.log('[confirm-payment] Fallback update to paid');
-        const fallbackRes = await fetch(`${baseRest}?id=eq.${encodeURIComponent(String(updateId))}`, {
-          method: 'PATCH',
-          headers: {
-            apikey: supabaseKey,
-            Authorization: `Bearer ${supabaseKey}`,
-            'Content-Type': 'application/json',
-            Prefer: 'return=minimal',
-          },
-          body: JSON.stringify({ status: 'paid' }),
-        });
-        if (!fallbackRes.ok) {
-          const fallbackText = await fallbackRes.text();
-          console.error('[confirm-payment] Fallback update to paid failed', fallbackRes.status, fallbackText);
-          return res.status(502).json({ error: 'Failed to update order status', code: 'UPDATE_FAILED', details: fallbackText.slice(0, 200) });
-        }
-        console.log('✅ Supabase 狀態已更新為 paid');
-      } else {
-        console.log('✅ Supabase 狀態已更新為 success');
+      console.log('[confirm-payment] Updating Supabase status to paid');
+      const { error: updateError } = await supabaseClient
+        .from('orders')
+        .update({ status: 'paid' })
+        .eq('id', updateId);
+      if (updateError) {
+        console.error('[confirm-payment] Update status failed', updateError.message);
+        return res.status(502).json({ error: 'Failed to update order status', code: 'UPDATE_FAILED', details: updateError.message });
       }
+      console.log('✅ Supabase 狀態已更新為 paid');
+      canTriggerSf = true;
     }
 
     if (order.tracking_number) {
       console.log('[confirm-payment] tracking_number exists, skip SF API:', order.tracking_number);
       console.log('--- [流程結束] ---');
       return res.status(200).json({ success: true, orderId, waybillNo: order.tracking_number, confirmed: true });
+    }
+
+    if (!canTriggerSf) {
+      console.log('[confirm-payment] Skip SF: status not updated to paid');
+      console.log('--- [流程結束] ---');
+      return res.status(200).json({ success: true, orderId, waybillNo: null, confirmed: true, sfPending: true });
     }
 
     // 3. 呼叫順豐前
