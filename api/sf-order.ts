@@ -46,6 +46,17 @@ function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: 
   };
 }
 
+function validateSfRequiredFields(msgData: ReturnType<typeof buildSfMsgData>) {
+  const missing: string[] = [];
+  if (!msgData.consignorContact?.trim()) missing.push('consignorContact');
+  if (!msgData.consignorTel?.trim()) missing.push('consignorTel');
+  if (!msgData.consignorAddress?.trim()) missing.push('consignorAddress');
+  if (!msgData.consigneeContact?.trim()) missing.push('consigneeContact');
+  if (!msgData.consigneeTel?.trim()) missing.push('consigneeTel');
+  if (!msgData.consigneeAddress?.trim()) missing.push('consigneeAddress');
+  return missing;
+}
+
 function computeMsgDigest(msgData: string, timestamp: string, checkword: string): string {
   const str = msgData + timestamp + checkword;
   const md5 = crypto.createHash('md5').update(str, 'utf8').digest();
@@ -116,6 +127,16 @@ export default async function handler(
   }
 
   const msgDataObj = buildSfMsgData(payload, { name: senderName, phone: senderPhone, address: senderAddress });
+  const missingFields = validateSfRequiredFields(msgDataObj);
+  if (missingFields.length > 0) {
+    console.error('[SF] Missing required fields:', missingFields, msgDataObj);
+    return res.status(400).json({
+      error: '必传参数不可为空',
+      code: 'SF_REQUIRED_FIELDS',
+      missing: missingFields,
+      msgData: msgDataObj,
+    });
+  }
   const msgData = JSON.stringify(msgDataObj);
   const timestamp = String(Date.now());
   const requestID = `sf_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;

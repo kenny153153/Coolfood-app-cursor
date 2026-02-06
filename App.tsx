@@ -1174,6 +1174,12 @@ const App: React.FC = () => {
     });
 
     const deliveryAddress = getCheckoutDeliveryAddress();
+    if (deliveryMethod === 'home') {
+      if (!deliveryAddress || !isAddressCompleteForOrder(deliveryAddress)) {
+        showToast('請填寫地區、地址、樓層、單位、收件人及手機號碼', 'error');
+        return;
+      }
+    }
     const useDraft = deliveryMethod === 'home' && checkoutAddressDraft && isAddressCompleteForOrder(checkoutAddressDraft);
     const deliveryAddr = deliveryMethod === 'sf_locker'
       ? selectedLocker.address
