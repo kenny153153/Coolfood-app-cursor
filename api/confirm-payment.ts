@@ -117,31 +117,48 @@ export default async function handler(
 
     const dbId = getOrderDbId(orderId);
     const dbIdValue = typeof dbId === 'string' && /^\d+$/.test(dbId) ? Number(dbId) : dbId;
-    const filters = String(dbIdValue) === orderId ? `id.eq.${dbIdValue}` : `id.eq.${dbIdValue},id.eq.${orderId}`;
     console.log('[confirm-payment] Resolve orderId:', orderId, '=> dbId:', dbIdValue);
-    console.log('[confirm-payment] Step A: fetch order by filters:', filters);
+    console.log('[confirm-payment] Step A: fetch order by dbId');
 
-    const { data: orderRow, error: orderError } = await supabaseAdmin
+    let orderRow: { id?: string | number; status?: string; tracking_number?: string | null; waybill_no?: string | null } | null = null;
+    const { data: orderByDbId, error: orderByDbIdError } = await supabaseAdmin
       .from('orders')
       .select('id,status,tracking_number,waybill_no')
-      .or(filters)
+      .eq('id', dbIdValue)
       .maybeSingle();
-    if (orderError) {
-      console.error('[confirm-payment] Supabase fetch error:', orderError.message, orderError.details ?? '');
-      return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: orderError.message });
+    if (orderByDbIdError) {
+      console.error('[confirm-payment] Supabase fetch error (dbId):', orderByDbIdError.message, orderByDbIdError.details ?? '');
+      return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: orderByDbIdError.message });
     }
+    orderRow = orderByDbId ?? null;
+
+    if (!orderRow && typeof orderId === 'string' && orderId.startsWith('ORD-')) {
+      console.log('[confirm-payment] Step A: fetch order by orderId string');
+      const { data: orderByOrderId, error: orderByOrderError } = await supabaseAdmin
+        .from('orders')
+        .select('id,status,tracking_number,waybill_no')
+        .eq('id', orderId)
+        .maybeSingle();
+      if (orderByOrderError) {
+        console.error('[confirm-payment] Supabase fetch error (orderId):', orderByOrderError.message, orderByOrderError.details ?? '');
+        return res.status(502).json({ error: 'Supabase fetch failed', code: 'SUPABASE_FETCH_FAILED', details: orderByOrderError.message });
+      }
+      orderRow = orderByOrderId ?? null;
+    }
+
     if (!orderRow) {
-      console.error('[confirm-payment] Order not found for filters:', filters);
+      console.error('[confirm-payment] Order not found for dbId/orderId:', dbIdValue, orderId);
       return res.status(404).json({ error: 'Order not found', code: 'ORDER_NOT_FOUND' });
     }
     console.log('[confirm-payment] Order found:', orderRow.id, orderRow.status);
 
     // Step A: 更新狀態
     console.log('[confirm-payment] Step A: update status to success');
+    const updateId = orderRow.id ?? dbIdValue;
     const { data: updatedRow, error: updateError } = await supabaseAdmin
       .from('orders')
       .update({ status: 'success' })
-      .or(filters)
+      .eq('id', updateId)
       .select('id,status,tracking_number,waybill_no')
       .maybeSingle();
     if (updateError) {
@@ -174,7 +191,7 @@ export default async function handler(
     const { error: sfStoreError } = await supabaseAdmin
       .from('orders')
       .update(updatePayload)
-      .or(filters);
+      .eq('id', updateId);
     if (sfStoreError) {
       console.error('[confirm-payment] Store SF result error:', sfStoreError.message, sfStoreError.details ?? '');
       return res.status(502).json({ error: 'Failed to store sf result', code: 'SF_STORE_FAILED', details: sfStoreError.message });
