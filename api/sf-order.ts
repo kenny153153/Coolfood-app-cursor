@@ -188,10 +188,18 @@ export default async function handler(
     console.log('Sending to SF:', JSON.stringify(finalPayload));
     console.log('[SF] Request to sandbox:', SF_SANDBOX_URL, 'requestID:', requestID);
 
+    const formBody = new URLSearchParams();
+    formBody.set('partnerID', finalPayload.partnerID.trim());
+    formBody.set('requestID', finalPayload.requestID.trim());
+    formBody.set('serviceCode', finalPayload.serviceCode.trim());
+    formBody.set('timestamp', finalPayload.timestamp.trim());
+    formBody.set('msgData', finalPayload.msgData.trim());
+    formBody.set('msgDigest', finalPayload.msgDigest.trim());
+
     const sfRes = await fetch(SF_SANDBOX_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(finalPayload),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: formBody.toString(),
     });
 
     const resText = await sfRes.text();
