@@ -223,7 +223,8 @@ const SuccessView: React.FC<{
     const win = typeof window !== 'undefined' ? window : null;
     if (!win) return;
     const params = new URLSearchParams(win.location.search);
-    const orderIdFromUrl = params.get('order')?.trim() ?? '';
+    const rawOrderId = params.get('order');
+    const orderIdFromUrl = rawOrderId ? rawOrderId.trim() : '';
     const paymentIntentId = params.get('payment_intent_id') ?? params.get('intent_id') ?? win.sessionStorage?.getItem?.('airwallex_payment_intent_id') ?? null;
     const orderId = orderIdFromUrl || null;
     if (!orderId && !paymentIntentId) {
