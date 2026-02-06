@@ -106,7 +106,7 @@ export const mapOrderRowToOrder = (row: SupabaseOrderRow): Order => ({
   status: normalizeOrderStatus(row.status),
   date: row.order_date,
   items: row.items_count,
-  trackingNumber: row.tracking_number
+  trackingNumber: row.waybill_no ?? row.tracking_number ?? undefined
 });
 
 export const mapSlideshowRowToItem = (row: SupabaseSlideshowRow): SlideshowItem => ({

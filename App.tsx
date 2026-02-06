@@ -257,7 +257,7 @@ const SuccessView: React.FC<{
               .from('orders')
               .update({ status: 'success' })
               .eq('id', idValue)
-              .select('id,status,tracking_number')
+              .select('id,status,tracking_number,waybill_no')
               .maybeSingle();
             if (error) return null;
             return data ?? null;
@@ -266,7 +266,7 @@ const SuccessView: React.FC<{
           if (updated) {
             setSuccessWaybillLoading(false);
             setConfirmSuccess(true);
-            setSuccessWaybill((updated as SupabaseOrderRow).tracking_number ?? null);
+            setSuccessWaybill((updated as SupabaseOrderRow).waybill_no ?? (updated as SupabaseOrderRow).tracking_number ?? null);
             setConfirmError(null);
             onRefreshOrders();
             return;
@@ -277,7 +277,7 @@ const SuccessView: React.FC<{
         setConfirmSuccess(false);
         return;
       }
-      let data: { success?: boolean; waybillNo?: string; error?: string; code?: string };
+      let data: { success?: boolean; waybillNo?: string; waybill_no?: string; error?: string; code?: string };
       try {
         data = text ? JSON.parse(text) : {};
       } catch {
@@ -289,7 +289,7 @@ const SuccessView: React.FC<{
       setSuccessWaybillLoading(false);
       if (data.success) {
         setConfirmSuccess(true);
-        setSuccessWaybill(data.waybillNo ?? null);
+        setSuccessWaybill(data.waybill_no ?? data.waybillNo ?? null);
         setConfirmError(null);
         onRefreshOrders();
         if (paymentIntentId) try { win.sessionStorage?.removeItem?.('airwallex_payment_intent_id'); } catch { /* ignore */ }
@@ -567,7 +567,7 @@ const App: React.FC = () => {
   const fetchOrders = useCallback(async () => {
     const { data, error } = await supabase
       .from('orders')
-      .select('id, customer_name, total, status, order_date, items_count, tracking_number')
+      .select('id, customer_name, total, status, order_date, items_count, tracking_number, waybill_no')
       .order('order_date', { ascending: false });
     if (error) {
       if (!handleSchemaError(error, 'orders')) {
@@ -605,7 +605,7 @@ const App: React.FC = () => {
       const details = data as SupabaseOrderRow;
       setInspectingOrderDetails(details);
       setOrderStatusDraft(normalizeOrderStatus(details.status));
-      setTrackingDraft(details.tracking_number ?? '');
+      setTrackingDraft(details.waybill_no ?? details.tracking_number ?? '');
     };
     loadOrderDetails();
   }, [inspectingOrder]);
@@ -2191,7 +2191,7 @@ const App: React.FC = () => {
                 <div className="p-10 bg-slate-50 border-t border-slate-100 flex justify-between items-center">
                   <button onClick={() => setInspectingOrder(null)} className="px-8 py-3 bg-white border border-slate-200 rounded-2xl font-black text-xs">關閉</button>
                   {isAdminRoute && (
-                    <button onClick={() => updateOrderFields(inspectingOrder.id, { status: orderStatusDraft || inspectingOrder.status, tracking_number: trackingDraft || null })} className="px-8 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs">更新訂單</button>
+                    <button onClick={() => updateOrderFields(inspectingOrder.id, { status: orderStatusDraft || inspectingOrder.status, waybill_no: trackingDraft || null })} className="px-8 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs">更新訂單</button>
                   )}
                 </div>
              </div>

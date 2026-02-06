@@ -115,7 +115,9 @@ export interface SupabaseOrderRow {
   delivery_floor?: string | null;
   delivery_flat?: string | null;
   contact_name?: string | null;
-  tracking_number?: string;
+  waybill_no?: string | null;
+  tracking_number?: string | null;
+  sf_responses?: unknown | null;
 }
 
 /** Supabase public.products table – column names must match (snake_case). */

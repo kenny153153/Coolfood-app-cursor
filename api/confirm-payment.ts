@@ -1,5 +1,5 @@
 /**
- * 確認支付：向 Airwallex 查詢 Payment Intent 是否 SUCCEEDED，再更新 Supabase 為 paid，並觸發順豐下單
+ * 確認支付：向 Airwallex 查詢 Payment Intent 是否 SUCCEEDED，再更新 Supabase 為 success，並觸發順豐下單
  * 若 payment_intent_id 為空但有 orderId，仍會更新 Supabase 狀態（供 Sandbox 測試）
  */
 import { createClient } from '@supabase/supabase-js';
@@ -148,7 +148,7 @@ export default async function handler(
     console.log('[confirm-payment] Resolve orderId:', orderId, '=> dbId:', dbId);
     const { data: orderByDbId, error: orderByDbError } = await supabaseClient
       .from('orders')
-      .select('id,status,tracking_number')
+      .select('id,status,tracking_number,waybill_no')
       .eq('id', dbId)
       .maybeSingle();
     if (orderByDbError) {
@@ -160,7 +160,7 @@ export default async function handler(
       console.warn('[confirm-payment] Order not found by dbId, retry with orderId:', orderId);
       const { data: orderByOrderId, error: orderByOrderError } = await supabaseClient
         .from('orders')
-        .select('id,status,tracking_number')
+        .select('id,status,tracking_number,waybill_no')
         .eq('id', orderId)
         .maybeSingle();
       if (orderByOrderError) {
@@ -175,36 +175,37 @@ export default async function handler(
     }
     console.log('[confirm-payment] Order loaded:', JSON.stringify(order));
 
-    const alreadyPaid = order.status === 'paid' || order.status === 'success';
+    const alreadySuccess = order.status === 'success';
     let canTriggerSf = false;
-    if (alreadyPaid) {
-      console.log('[confirm-payment] Order already paid/success, skip update');
+    if (alreadySuccess) {
+      console.log('[confirm-payment] Order already success, skip update');
       canTriggerSf = true;
     } else {
       const updateId = order.id ?? dbId;
-      console.log('[confirm-payment] Updating Supabase status to paid');
+      console.log('[confirm-payment] Updating Supabase status to success');
       const { error: updateError } = await supabaseClient
         .from('orders')
-        .update({ status: 'paid' })
+        .update({ status: 'success' })
         .eq('id', updateId);
       if (updateError) {
         console.error('[confirm-payment] Update status failed', updateError.message);
         return res.status(502).json({ error: 'Failed to update order status', code: 'UPDATE_FAILED', details: updateError.message });
       }
-      console.log('✅ Supabase 狀態已更新為 paid');
+      console.log('✅ Supabase 狀態已更新為 success');
       canTriggerSf = true;
     }
 
-    if (order.tracking_number) {
-      console.log('[confirm-payment] tracking_number exists, skip SF API:', order.tracking_number);
+    const existingWaybill = order.waybill_no ?? order.tracking_number ?? null;
+    if (existingWaybill) {
+      console.log('[confirm-payment] waybill exists, skip SF API:', existingWaybill);
       console.log('--- [流程結束] ---');
-      return res.status(200).json({ success: true, orderId, waybillNo: order.tracking_number, confirmed: true });
+      return res.status(200).json({ success: true, orderId, waybillNo: existingWaybill, waybill_no: existingWaybill, confirmed: true });
     }
 
     if (!canTriggerSf) {
-      console.log('[confirm-payment] Skip SF: status not updated to paid');
+      console.log('[confirm-payment] Skip SF: status not updated to success');
       console.log('--- [流程結束] ---');
-      return res.status(200).json({ success: true, orderId, waybillNo: null, confirmed: true, sfPending: true });
+      return res.status(200).json({ success: true, orderId, waybillNo: null, waybill_no: null, confirmed: true, sfPending: true });
     }
 
     // 3. 呼叫順豐前
@@ -216,7 +217,7 @@ export default async function handler(
         body: JSON.stringify({ orderId }),
       });
       const sfText = await sfRes.text();
-      let sfJson: { waybillNo?: string; error?: string; code?: string } | null = null;
+      let sfJson: { waybillNo?: string; waybill_no?: string; error?: string; code?: string } | null = null;
       try {
         sfJson = sfText ? JSON.parse(sfText) : null;
       } catch {
@@ -226,14 +227,54 @@ export default async function handler(
 
       console.log('--- [流程結束] ---');
       if (!sfRes.ok) {
-        return res.status(200).json({ success: true, orderId, waybillNo: null, confirmed: true, sfPending: true });
+        const updateId = order.id ?? dbId;
+        const sfErrorPayload = { status: sfRes.status, body: sfJson ?? sfText, at: new Date().toISOString() };
+        const { error: sfStoreError } = await supabaseClient
+          .from('orders')
+          .update({ sf_responses: sfErrorPayload })
+          .eq('id', updateId);
+        if (sfStoreError) {
+          console.error('[confirm-payment] Failed to store sf_responses', sfStoreError.message);
+        }
+        return res.status(200).json({ success: true, orderId, waybillNo: null, waybill_no: null, confirmed: true, sfPending: true });
       }
-      return res.status(200).json({ success: true, orderId, waybillNo: sfJson?.waybillNo ?? null, confirmed: true });
+      const waybill = sfJson?.waybill_no ?? sfJson?.waybillNo ?? null;
+      const updateId = order.id ?? dbId;
+      if (waybill) {
+        const { error: wbError } = await supabaseClient
+          .from('orders')
+          .update({ waybill_no: waybill, sf_responses: null })
+          .eq('id', updateId);
+        if (wbError) {
+          console.error('[confirm-payment] Failed to store waybill_no', wbError.message);
+        } else {
+          console.log('[confirm-payment] waybill_no saved:', waybill);
+        }
+      } else {
+        const sfErrorPayload = { status: sfRes.status, body: sfJson ?? sfText, at: new Date().toISOString() };
+        const { error: sfStoreError } = await supabaseClient
+          .from('orders')
+          .update({ sf_responses: sfErrorPayload })
+          .eq('id', updateId);
+        if (sfStoreError) {
+          console.error('[confirm-payment] Failed to store sf_responses', sfStoreError.message);
+        }
+      }
+      return res.status(200).json({ success: true, orderId, waybillNo: waybill, waybill_no: waybill, confirmed: true });
     } catch (sfErr) {
       const msg = sfErr instanceof Error ? sfErr.message : String(sfErr);
       console.error('[confirm-payment] SF fetch failed, mark pending:', msg);
       console.log('--- [流程結束] ---');
-      return res.status(200).json({ success: true, orderId, waybillNo: null, confirmed: true, sfPending: true });
+      const updateId = order.id ?? dbId;
+      const sfErrorPayload = { status: 0, body: msg, at: new Date().toISOString() };
+      const { error: sfStoreError } = await supabaseClient
+        .from('orders')
+        .update({ sf_responses: sfErrorPayload })
+        .eq('id', updateId);
+      if (sfStoreError) {
+        console.error('[confirm-payment] Failed to store sf_responses', sfStoreError.message);
+      }
+      return res.status(200).json({ success: true, orderId, waybillNo: null, waybill_no: null, confirmed: true, sfPending: true });
     }
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
