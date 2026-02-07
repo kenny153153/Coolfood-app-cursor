@@ -15,6 +15,7 @@ import {
 import { GoogleGenAI } from "@google/genai";
 import { HK_DISTRICTS, SF_LOCKERS } from './constants';
 import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem } from './types';
+import { useI18n, Language } from './i18n';
 import { supabase } from './supabaseClient';
 import {
   mapProductRowToProduct,
@@ -176,7 +177,11 @@ const getEffectiveUnitPrice = (p: Product, qty: number, isWallet: boolean) => {
   return base;
 };
 
-const getOrderStatusLabel = (status: OrderStatus | string) => {
+const getOrderStatusLabel = (status: OrderStatus | string, t?: { orderStatus: Record<string, string> }) => {
+  if (t) {
+    const key = String(status) as keyof typeof t.orderStatus;
+    if (t.orderStatus[key]) return t.orderStatus[key];
+  }
   const labels: Record<string, string> = {
     [OrderStatus.PENDING_PAYMENT]: '待付款',
     [OrderStatus.TO_PACK]: '待包裝',
@@ -186,22 +191,24 @@ const getOrderStatusLabel = (status: OrderStatus | string) => {
     [OrderStatus.WAITING_PICKUP]: '等待取件',
     [OrderStatus.COMPLETED]: '已完成',
     [OrderStatus.ABNORMAL]: '異常',
+    [OrderStatus.REFUND]: '已退款',
   };
   return labels[status] ?? String(status);
 };
 
-const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
-  const configs = {
-    [OrderStatus.PENDING_PAYMENT]: { label: getOrderStatusLabel(OrderStatus.PENDING_PAYMENT), color: 'bg-slate-50 text-slate-600 border-slate-100' },
-    [OrderStatus.TO_PACK]: { label: getOrderStatusLabel(OrderStatus.TO_PACK), color: 'bg-blue-50 text-blue-700 border-blue-100' },
-    [OrderStatus.PROCESSING]: { label: getOrderStatusLabel(OrderStatus.PROCESSING), color: 'bg-slate-100 text-slate-700 border-slate-200' },
-    [OrderStatus.READY_FOR_PICKUP]: { label: getOrderStatusLabel(OrderStatus.READY_FOR_PICKUP), color: 'bg-amber-50 text-amber-700 border-amber-100' },
-    [OrderStatus.SHIPPING]: { label: getOrderStatusLabel(OrderStatus.SHIPPING), color: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
-    [OrderStatus.WAITING_PICKUP]: { label: getOrderStatusLabel(OrderStatus.WAITING_PICKUP), color: 'bg-slate-100 text-slate-700 border-slate-200' },
-    [OrderStatus.COMPLETED]: { label: getOrderStatusLabel(OrderStatus.COMPLETED), color: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
-    [OrderStatus.ABNORMAL]: { label: getOrderStatusLabel(OrderStatus.ABNORMAL), color: 'bg-rose-50 text-rose-700 border-rose-100' },
+const StatusBadge: React.FC<{ status: OrderStatus; t?: { orderStatus: Record<string, string> } }> = ({ status, t }) => {
+  const configs: Record<string, { label: string; color: string }> = {
+    [OrderStatus.PENDING_PAYMENT]: { label: getOrderStatusLabel(OrderStatus.PENDING_PAYMENT, t), color: 'bg-slate-50 text-slate-600 border-slate-100' },
+    [OrderStatus.TO_PACK]: { label: getOrderStatusLabel(OrderStatus.TO_PACK, t), color: 'bg-blue-50 text-blue-700 border-blue-100' },
+    [OrderStatus.PROCESSING]: { label: getOrderStatusLabel(OrderStatus.PROCESSING, t), color: 'bg-slate-100 text-slate-700 border-slate-200' },
+    [OrderStatus.READY_FOR_PICKUP]: { label: getOrderStatusLabel(OrderStatus.READY_FOR_PICKUP, t), color: 'bg-amber-50 text-amber-700 border-amber-100' },
+    [OrderStatus.SHIPPING]: { label: getOrderStatusLabel(OrderStatus.SHIPPING, t), color: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
+    [OrderStatus.WAITING_PICKUP]: { label: getOrderStatusLabel(OrderStatus.WAITING_PICKUP, t), color: 'bg-slate-100 text-slate-700 border-slate-200' },
+    [OrderStatus.COMPLETED]: { label: getOrderStatusLabel(OrderStatus.COMPLETED, t), color: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
+    [OrderStatus.ABNORMAL]: { label: getOrderStatusLabel(OrderStatus.ABNORMAL, t), color: 'bg-rose-50 text-rose-700 border-rose-100' },
+    [OrderStatus.REFUND]: { label: getOrderStatusLabel(OrderStatus.REFUND, t), color: 'bg-orange-50 text-orange-700 border-orange-100' },
   };
-  const config = configs[status];
+  const config = configs[status] || { label: String(status), color: 'bg-slate-50 text-slate-600 border-slate-100' };
   return (
     <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase border tracking-wider ${config.color}`}>
       {config.label}
@@ -247,6 +254,7 @@ const SuccessView: React.FC<{
   onViewOrders: () => void;
   onRefreshOrders: () => void;
 }> = ({ successWaybill, successWaybillLoading, setSuccessWaybill, setSuccessWaybillLoading, onViewOrders, onRefreshOrders }) => {
+  const { t } = useI18n();
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [confirmSuccess, setConfirmSuccess] = useState(false);
 
@@ -259,7 +267,7 @@ const SuccessView: React.FC<{
     const paymentIntentId = params.get('payment_intent_id') ?? params.get('intent_id') ?? win.sessionStorage?.getItem?.('airwallex_payment_intent_id') ?? null;
     const orderId = orderIdFromUrl || null;
     if (!orderId && !paymentIntentId) {
-      setConfirmError('缺少訂單或支付參數，請從「記錄」進入或重新結帳。');
+      setConfirmError(t.success.missingParams);
       setSuccessWaybillLoading(false);
       return;
     }
@@ -342,34 +350,34 @@ const SuccessView: React.FC<{
     <div className="flex-1 bg-slate-50 min-h-screen flex flex-col items-center justify-center p-6 pb-24 animate-fade-in">
       <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-lg p-10 max-w-md w-full text-center space-y-6">
         <div className="w-20 h-20 mx-auto rounded-full bg-emerald-100 flex items-center justify-center"><CheckCircle className="w-12 h-12 text-emerald-600" /></div>
-        <h2 className="text-2xl font-black text-slate-900">付款已確認！</h2>
-        <p className="text-slate-600 font-bold text-sm">順豐單號正自動生成中...</p>
+        <h2 className="text-2xl font-black text-slate-900">{t.success.paymentConfirmed}</h2>
+        <p className="text-slate-600 font-bold text-sm">{t.success.waybillGenerating}</p>
 
         {successWaybillLoading && (
-          <p className="text-slate-600 text-sm font-bold">正在與 Airwallex 核實付款紀錄...</p>
+          <p className="text-slate-600 text-sm font-bold">{t.success.verifyingPayment}</p>
         )}
 
         {!successWaybillLoading && confirmSuccess && successWaybill && (
           <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">順豐單號</p>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{t.success.sfWaybill}</p>
             <p className="text-lg font-black text-slate-900 tracking-wide">{successWaybill}</p>
           </div>
         )}
 
         {!successWaybillLoading && confirmSuccess && !successWaybill && (
-          <p className="text-slate-400 text-xs">單號生成後會顯示於「記錄」頁面。</p>
+          <p className="text-slate-400 text-xs">{t.success.waybillLater}</p>
         )}
 
         {!successWaybillLoading && confirmError && (
           <div className="space-y-3">
             <p className="text-rose-600 text-sm font-bold">{confirmError}</p>
             <button type="button" onClick={runConfirmPayment} className="w-full py-3 bg-rose-50 text-rose-700 rounded-2xl font-black text-sm border border-rose-200 hover:bg-rose-100">
-              手動重試
+              {t.success.retryManual}
             </button>
           </div>
         )}
 
-        <button type="button" onClick={onViewOrders} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm">查看記錄</button>
+        <button type="button" onClick={onViewOrders} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm">{t.success.viewOrders}</button>
       </div>
     </div>
   );
@@ -384,6 +392,8 @@ const DEFAULT_SLIDESHOW: SlideshowItem[] = [
 // --- Main App ---
 
 const App: React.FC = () => {
+  const { lang, setLang, t } = useI18n();
+
   // --- Routing & Auth Logic ---
   const [isAdminRoute, setIsAdminRoute] = useState(window.location.hash === '#admin');
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
@@ -1714,7 +1724,7 @@ const App: React.FC = () => {
                 <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0">
                    {['all', ...Object.values(OrderStatus)].map(s => (
                       <button key={s} onClick={() => setOrdersStatusFilter(s as any)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap ${ordersStatusFilter === s ? 'bg-slate-900 text-white shadow-lg' : 'bg-white border border-slate-100 text-slate-400'}`}>
-                        {s === 'all' ? '全部' : getOrderStatusLabel(s)}
+                        {s === 'all' ? t.admin.all : getOrderStatusLabel(s, t)}
                       </button>
                    ))}
                 </div>
@@ -2285,19 +2295,19 @@ const App: React.FC = () => {
       <div className="flex-1 bg-slate-50 min-h-screen pb-48 overflow-y-auto animate-fade-in">
         <header className="bg-white/95 backdrop-blur-md sticky top-0 z-40 px-4 py-4 border-b border-slate-100 flex items-center justify-between">
           <button onClick={() => setView('store')} className="p-2 hover:bg-slate-50 rounded-full transition-colors"><ChevronLeft size={24} /></button>
-          <h2 className="text-lg font-black text-slate-900">確認訂單</h2><div className="w-10"></div>
+          <h2 className="text-lg font-black text-slate-900">{t.checkout.confirmOrder}</h2><div className="w-10"></div>
         </header>
         <div className="p-6 space-y-6">
           <section className="bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-sm space-y-4">
-            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><MapPin size={14}/> 收貨資訊</h3>
+            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><MapPin size={14}/> {t.checkout.deliveryInfo}</h3>
             {deliveryMethod === 'sf_locker' ? (
               <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-2"><button onClick={() => setDeliveryMethod('home')} className="py-3 px-4 border border-slate-100 rounded-2xl text-xs font-bold text-slate-400">送貨上門</button><button onClick={() => setDeliveryMethod('sf_locker')} className="py-3 px-4 bg-blue-600 rounded-2xl text-xs font-black text-white shadow-lg">順豐自提櫃</button></div>
+                <div className="grid grid-cols-2 gap-2"><button onClick={() => setDeliveryMethod('home')} className="py-3 px-4 border border-slate-100 rounded-2xl text-xs font-bold text-slate-400">{t.checkout.homeDelivery}</button><button onClick={() => setDeliveryMethod('sf_locker')} className="py-3 px-4 bg-blue-600 rounded-2xl text-xs font-black text-white shadow-lg">{t.checkout.sfLocker}</button></div>
                 <select value={selectedLocker.code} onChange={(e) => setSelectedLocker(SF_LOCKERS.find(l => l.code === e.target.value) || SF_LOCKERS[0])} className="w-full p-4 bg-slate-50 border-none rounded-2xl text-xs font-bold focus:ring-2 focus:ring-blue-100">{SF_LOCKERS.map(l => <option key={l.code} value={l.code}>{l.address}</option>)}</select>
               </div>
             ) : (
               <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-2"><button onClick={() => setDeliveryMethod('home')} className="py-3 px-4 bg-blue-600 rounded-2xl text-xs font-black text-white shadow-lg">送貨上門</button><button onClick={() => setDeliveryMethod('sf_locker')} className="py-3 px-4 border border-slate-100 rounded-2xl text-xs font-bold text-slate-400">順豐自提櫃</button></div>
+                <div className="grid grid-cols-2 gap-2"><button onClick={() => setDeliveryMethod('home')} className="py-3 px-4 bg-blue-600 rounded-2xl text-xs font-black text-white shadow-lg">{t.checkout.homeDelivery}</button><button onClick={() => setDeliveryMethod('sf_locker')} className="py-3 px-4 border border-slate-100 rounded-2xl text-xs font-bold text-slate-400">{t.checkout.sfLocker}</button></div>
                 {isChangingAddress && user ? (
                   <div className="space-y-5 animate-fade-in">
                     <div className="flex items-center justify-between">
@@ -2452,7 +2462,7 @@ const App: React.FC = () => {
               {deliveryFee === 0 && <p className="text-[9px] text-emerald-400 font-black tracking-widest uppercase">已享全單免運優惠 ✨</p>}
               <div className="pt-4 border-t border-white/10 flex justify-between items-end"><span className="text-sm font-black uppercase tracking-widest">總金額</span><span className="text-4xl font-black text-blue-400">${total}</span></div>
             </div>
-            <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || isRedirectingToPayment} onClick={handleSubmitOrder} className="w-full py-5 bg-blue-600 rounded-[2rem] font-black text-lg shadow-xl active:scale-95 transition-all disabled:opacity-30 flex items-center justify-center gap-3">{isRedirectingToPayment ? <RefreshCw size={20} className="animate-spin" /> : <CreditCard size={20}/>} {isRedirectingToPayment ? '轉接中...' : '立即支付'}</button>
+            <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || isRedirectingToPayment} onClick={handleSubmitOrder} className="w-full py-5 bg-blue-600 rounded-[2rem] font-black text-lg shadow-xl active:scale-95 transition-all disabled:opacity-30 flex items-center justify-center gap-3">{isRedirectingToPayment ? <RefreshCw size={20} className="animate-spin" /> : <CreditCard size={20}/>} {isRedirectingToPayment ? t.checkout.redirecting : t.checkout.payNow}</button>
           </section>
         </div>
       </div>
@@ -2463,11 +2473,13 @@ const App: React.FC = () => {
     <div className="flex flex-col h-screen overflow-hidden bg-white animate-fade-in font-sans">
       <header className="bg-white/95 backdrop-blur-md sticky top-0 z-40 px-4 py-3 border-b border-slate-100 flex items-center justify-between">
         <div className="flex items-center gap-2"><div className="w-9 h-9 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-lg"><span>{siteConfig.logoIcon}</span></div><h1 className="font-bold text-lg text-slate-900 tracking-tight">{siteConfig.logoText}</h1></div>
-        <div className="flex items-center gap-2"><a href="https://wa.me/85212345678" target="_blank" rel="noreferrer" className="p-2 bg-green-50 text-green-600 rounded-full border border-green-100"><MessageCircle size={18} fill="currentColor" /></a>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setLang(lang === 'zh-HK' ? 'en' : 'zh-HK')} className="px-2.5 py-1.5 bg-slate-100 text-slate-600 rounded-full border border-slate-200 text-[10px] font-black uppercase tracking-wider hover:bg-slate-200 transition-colors">{lang === 'zh-HK' ? 'EN' : '中'}</button>
+          <a href="https://wa.me/85212345678" target="_blank" rel="noreferrer" className="p-2 bg-green-50 text-green-600 rounded-full border border-green-100"><MessageCircle size={18} fill="currentColor" /></a>
           {user ? (
              <button onClick={() => setView('profile')} className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-full border border-slate-100"><Wallet size={14} className={textAccentClass} /><span className="text-xs font-bold text-slate-700">${user.walletBalance}</span></button>
           ) : (
-            <button onClick={() => setView('profile')} className={`text-xs font-bold ${textAccentClass} px-3 py-1.5 rounded-full bg-blue-50`}>登入</button>
+            <button onClick={() => setView('profile')} className={`text-xs font-bold ${textAccentClass} px-3 py-1.5 rounded-full bg-blue-50`}>{t.store.login}</button>
           )}
         </div>
       </header>
@@ -2515,7 +2527,7 @@ const App: React.FC = () => {
             )}
             {categories.length === 0 && (
               <div className="bg-slate-50 border border-slate-100 rounded-3xl p-8 text-center text-slate-400 font-bold">
-                尚未有分類與商品
+                {t.store.noCategories}
               </div>
             )}
             {categories.map(cat => (
@@ -2523,7 +2535,7 @@ const App: React.FC = () => {
                 <h3 className="font-bold text-slate-900 flex items-center gap-2 mb-2 text-sm sticky top-[0px] bg-white py-2 z-10 border-b border-slate-50"><span className="text-lg">{cat.icon}</span> {cat.name}</h3>
                 <div className="divide-y divide-slate-100 bg-white rounded-2xl overflow-hidden shadow-sm">
                   {products.filter(p => p.categories.includes(cat.id)).length === 0 && (
-                    <div className="p-6 text-center text-slate-400 font-bold">此分類沒有商品</div>
+                    <div className="p-6 text-center text-slate-400 font-bold">{t.store.noCategoryProducts}</div>
                   )}
                   {products.filter(p => p.categories.includes(cat.id)).map(p => {
                     const itemInCart = cart.find(i => i.id === p.id);
@@ -2565,7 +2577,7 @@ const App: React.FC = () => {
         <div className="fixed bottom-20 inset-x-4 z-[60]">
           <button onClick={(e) => { e.stopPropagation(); setView('checkout'); }} className="w-full h-14 bg-slate-900 text-white rounded-2xl flex items-center justify-between pl-6 pr-3 shadow-2xl active:scale-95 transition-all ring-4 ring-white/10">
             <div className="flex items-center gap-4"><ShoppingBag size={20} /><div className="text-base font-bold tracking-tight">${pricingData.subtotal}</div></div>
-            <div className="px-4 h-9 bg-white/10 rounded-xl flex items-center gap-1 font-bold text-xs uppercase tracking-wider text-white">去結帳 <ChevronRight size={14} /></div>
+            <div className="px-4 h-9 bg-white/10 rounded-xl flex items-center gap-1 font-bold text-xs uppercase tracking-wider text-white">{t.store.goCheckout} <ChevronRight size={14} /></div>
           </button>
         </div>
       )}
@@ -2584,21 +2596,21 @@ const App: React.FC = () => {
             <div className={`flex items-center ${isAdminSidebarOpen ? 'gap-3 w-full' : 'justify-center flex-col gap-1'}`}>
               <div className="w-10 h-10 bg-blue-600 rounded-2xl flex items-center justify-center text-white shadow-xl shadow-blue-900/40 flex-shrink-0"><Cpu size={24}/></div>
               {isAdminSidebarOpen && (
-                <div className="min-w-0"><h2 className="text-base font-black tracking-tight truncate">智控中心</h2><p className="text-[9px] text-slate-500 uppercase tracking-widest font-bold">REAR-LINK 4.2</p></div>
+                <div className="min-w-0"><h2 className="text-base font-black tracking-tight truncate">{t.admin.controlCenter}</h2><p className="text-[9px] text-slate-500 uppercase tracking-widest font-bold">REAR-LINK 4.2</p></div>
               )}
             </div>
             <button onClick={() => setIsAdminSidebarOpen(prev => !prev)} className={`w-full flex items-center ${isAdminSidebarOpen ? 'gap-2 px-3' : 'justify-center'} py-2 mt-4 bg-white/5 rounded-2xl text-xs font-black text-white/70 hover:text-white transition-all flex-shrink-0`}>
               <ChevronLeft size={16} className={isAdminSidebarOpen ? '' : 'rotate-180'} />
-              {isAdminSidebarOpen && <span>收起選單</span>}
+              {isAdminSidebarOpen && <span>{t.admin.collapseSidebar}</span>}
             </button>
             <nav className="space-y-1 flex-1 mt-4 w-full min-w-0">
                {[
-                 { id: 'dashboard', label: '營運概覽', icon: <BarChart3 size={20}/> },
-                 { id: 'inventory', label: '產品/分類', icon: <Package size={20}/> },
-                 { id: 'orders', label: '訂單', icon: <Truck size={20}/> },
-                 { id: 'members', label: '會員管理', icon: <Users size={20}/> },
-                 { id: 'slideshow', label: '廣告輪播', icon: <ImageIcon size={20}/> },
-                 { id: 'settings', label: '系統設定', icon: <Settings size={20}/> }
+                 { id: 'dashboard', label: t.admin.dashboard, icon: <BarChart3 size={20}/> },
+                 { id: 'inventory', label: t.admin.inventory, icon: <Package size={20}/> },
+                 { id: 'orders', label: t.admin.orders, icon: <Truck size={20}/> },
+                 { id: 'members', label: t.admin.members, icon: <Users size={20}/> },
+                 { id: 'slideshow', label: t.admin.slideshow, icon: <ImageIcon size={20}/> },
+                 { id: 'settings', label: t.admin.settings, icon: <Settings size={20}/> }
                ].map(item => (
                  <button
                    key={item.id}
@@ -2611,11 +2623,11 @@ const App: React.FC = () => {
                ))}
             </nav>
             <button onClick={() => { setIsAdminAuthenticated(false); window.location.hash = ''; }} className={`w-full flex items-center ${isAdminSidebarOpen ? 'gap-3 px-4' : 'justify-center px-0'} py-3 text-slate-500 font-bold text-sm hover:text-white border-t border-white/5 pt-4 mt-auto transition-colors flex-shrink-0`}>
-              <LogOut size={20}/> {isAdminSidebarOpen && <span className="truncate">離開後台</span>}
+              <LogOut size={20}/> {isAdminSidebarOpen && <span className="truncate">{t.admin.exitAdmin}</span>}
             </button>
           </aside>
           <main className="flex-1 min-w-0 p-6 md:p-10 overflow-y-auto bg-[#f8fafc] hide-scrollbar">
-            <header className="flex justify-between items-center mb-10"><div><h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: '儀表板', inventory: '產品/分類', orders: '訂單', members: '會員管理', slideshow: '廣告輪播', settings: '系統設定' } as Record<string, string>)[adminModule] || adminModule}</h1><p className="text-slate-400 font-bold text-sm">實時管理後台</p></div><div className="flex items-center gap-4"><button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button><button onClick={() => showToast('帳戶功能開發中', 'error')} className="w-12 h-12 bg-slate-200 rounded-2xl border border-slate-100"></button></div></header>
+            <header className="flex justify-between items-center mb-10"><div><h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: t.admin.dashboard, inventory: t.admin.inventory, orders: t.admin.orders, members: t.admin.members, slideshow: t.admin.slideshow, settings: t.admin.settings } as Record<string, string>)[adminModule] || adminModule}</h1><p className="text-slate-400 font-bold text-sm">{t.admin.realtimeAdmin}</p></div><div className="flex items-center gap-4"><button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button><button onClick={() => showToast('帳戶功能開發中', 'error')} className="w-12 h-12 bg-slate-200 rounded-2xl border border-slate-100"></button></div></header>
             {renderAdminModuleContent()}
           </main>
         </>
@@ -2637,10 +2649,10 @@ const App: React.FC = () => {
           )}
           {view === 'orders' && (
              <div className="flex-1 bg-slate-50 p-6 space-y-4 overflow-y-auto pb-24">
-                <h2 className="text-2xl font-black text-slate-900 mb-6 tracking-tight">我的訂單記錄</h2>
+                <h2 className="text-2xl font-black text-slate-900 mb-6 tracking-tight">{t.orders.myOrders}</h2>
                 {orders.length === 0 && (
                    <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm text-center text-slate-400 font-bold">
-                      尚未有訂單
+                      {t.orders.noOrders}
                    </div>
                 )}
                 {orders.map(o => (
@@ -2651,28 +2663,28 @@ const App: React.FC = () => {
                       <div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                         <span>#{o.id} • {o.date}</span>
                         <div className="flex items-center gap-2">
-                          <StatusBadge status={o.status as OrderStatus} />
+                          <StatusBadge status={o.status as OrderStatus} t={t} />
                           {!o.trackingNumber && (
-                            <span className="text-rose-600 px-2 py-0.5 bg-rose-50 rounded-md">沒有物流編號</span>
+                            <span className="text-rose-600 px-2 py-0.5 bg-rose-50 rounded-md">{t.orders.noTracking}</span>
                           )}
                         </div>
                       </div>
                       <div className="flex justify-between items-center flex-wrap gap-2">
                         <p className="text-2xl font-black text-slate-900">${o.total}</p>
                         <div className="flex items-center gap-2">
-                          <button onClick={() => setInspectingOrder(o)} className="px-4 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all border border-slate-200 hover:bg-slate-200">查看訂單</button>
-                          <button onClick={() => handleTrackOrder(o)} className={`px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all ${o.trackingNumber ? 'bg-slate-900 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`} disabled={!o.trackingNumber}><Truck size={14} className="inline mr-2"/> 追蹤物流</button>
+                          <button onClick={() => setInspectingOrder(o)} className="px-4 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all border border-slate-200 hover:bg-slate-200">{t.orders.viewOrder}</button>
+                          <button onClick={() => handleTrackOrder(o)} className={`px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all ${o.trackingNumber ? 'bg-slate-900 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`} disabled={!o.trackingNumber}><Truck size={14} className="inline mr-2"/> {t.orders.trackLogistics}</button>
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-3 text-xs font-bold text-slate-600">
-                        <span>物流公司：順豐速運</span>
-                        <span>物流狀態：{getOrderStatusLabel(o.status)}</span>
-                        {o.trackingNumber && <span>單號：{o.trackingNumber}</span>}
+                                                <span>{t.orders.courier}</span>
+                                                <span>{t.orders.logisticsStatus}{getOrderStatusLabel(o.status, t)}</span>
+                                                {o.trackingNumber && <span>{t.orders.trackingNo}{o.trackingNumber}</span>}
                       </div>
                       <div className="bg-slate-50 rounded-2xl p-3 border border-slate-100">
                         <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                          <span>處理進度</span>
-                          <span>{getOrderStatusLabel(o.status)}</span>
+                          <span>{t.orders.progress}</span>
+                          <span>{getOrderStatusLabel(o.status, t)}</span>
                         </div>
                         <div className="mt-3 grid grid-cols-5 gap-2">
                           {ORDER_TIMELINE.map((step, idx) => {
@@ -2681,7 +2693,7 @@ const App: React.FC = () => {
                             return (
                               <div key={step} className="flex flex-col items-center gap-2 text-[9px] font-bold text-slate-500">
                                 <div className={`w-full h-1 rounded-full ${isActive ? 'bg-slate-900' : 'bg-slate-200'}`} />
-                                <span className={`${isActive ? 'text-slate-700' : 'text-slate-400'}`}>{getOrderStatusLabel(step)}</span>
+                                <span className={`${isActive ? 'text-slate-700' : 'text-slate-400'}`}>{getOrderStatusLabel(step, t)}</span>
                               </div>
                             );
                           })}
@@ -2694,44 +2706,44 @@ const App: React.FC = () => {
           {view === 'profile' && !user && (
              <div className="flex-1 bg-slate-50 p-6 overflow-y-auto pb-24 animate-fade-in">
                 <div className="max-w-md mx-auto pt-4">
-                  <h2 className="text-xl font-black text-slate-900 mb-6 tracking-tight">會員登入 / 註冊</h2>
+                  <h2 className="text-xl font-black text-slate-900 mb-6 tracking-tight">{t.profile.loginSignup}</h2>
                   <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden">
                     <div className="flex gap-0 border-b border-slate-100">
-                      <button type="button" onClick={() => setAuthMode('login')} className={`flex-1 py-4 font-bold text-sm ${authMode === 'login' ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/30' : 'text-slate-400'}`}>登入</button>
-                      <button type="button" onClick={() => setAuthMode('signup')} className={`flex-1 py-4 font-bold text-sm ${authMode === 'signup' ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/30' : 'text-slate-400'}`}>註冊</button>
+                                            <button type="button" onClick={() => setAuthMode('login')} className={`flex-1 py-4 font-bold text-sm ${authMode === 'login' ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/30' : 'text-slate-400'}`}>{t.profile.loginTab}</button>
+                                            <button type="button" onClick={() => setAuthMode('signup')} className={`flex-1 py-4 font-bold text-sm ${authMode === 'signup' ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/30' : 'text-slate-400'}`}>{t.profile.signupTab}</button>
                     </div>
                     <div className="p-6 space-y-4">
                       {authMode === 'login' ? (
                         <form onSubmit={handleLogin} className="space-y-4">
                           <div>
-                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">電郵或電話</label>
-                            <input type="text" value={authForm.email} onChange={e => setAuthForm({ ...authForm, email: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder="電郵或電話" required />
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{t.profile.emailOrPhone}</label>
+                            <input type="text" value={authForm.email} onChange={e => setAuthForm({ ...authForm, email: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder={t.profile.emailOrPhone} required />
                           </div>
                           <div>
-                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">密碼</label>
-                            <input type="password" value={authForm.password} onChange={e => setAuthForm({ ...authForm, password: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder="密碼" required />
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{t.profile.password}</label>
+                            <input type="password" value={authForm.password} onChange={e => setAuthForm({ ...authForm, password: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder={t.profile.password} required />
                           </div>
-                          <button type="submit" className="w-full py-3 bg-slate-900 text-white rounded-2xl font-black text-sm">登入</button>
+                          <button type="submit" className="w-full py-3 bg-slate-900 text-white rounded-2xl font-black text-sm">{t.profile.loginBtn}</button>
                         </form>
                       ) : (
                         <form onSubmit={handleSignup} className="space-y-4">
                           <div>
-                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">姓名</label>
-                            <input value={authForm.name} onChange={e => setAuthForm({ ...authForm, name: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder="姓名" required />
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{t.profile.name}</label>
+                            <input value={authForm.name} onChange={e => setAuthForm({ ...authForm, name: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder={t.profile.name} required />
                           </div>
                           <div>
-                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">電話</label>
-                            <input type="tel" value={authForm.phone} onChange={e => setAuthForm({ ...authForm, phone: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder="電話" required />
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{t.profile.phone}</label>
+                            <input type="tel" value={authForm.phone} onChange={e => setAuthForm({ ...authForm, phone: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder={t.profile.phone} required />
                           </div>
                           <div>
-                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">電郵（選填）</label>
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{t.profile.emailOptional}</label>
                             <input type="email" value={authForm.email} onChange={e => setAuthForm({ ...authForm, email: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder="your@email.com" />
                           </div>
                           <div>
-                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">密碼（至少 6 字）</label>
-                            <input type="password" value={authForm.password} onChange={e => setAuthForm({ ...authForm, password: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder="密碼" minLength={6} required />
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{t.profile.passwordMin6}</label>
+                            <input type="password" value={authForm.password} onChange={e => setAuthForm({ ...authForm, password: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder={t.profile.password} minLength={6} required />
                           </div>
-                          <button type="submit" className="w-full py-3 bg-slate-900 text-white rounded-2xl font-black text-sm">註冊</button>
+                          <button type="submit" className="w-full py-3 bg-slate-900 text-white rounded-2xl font-black text-sm">{t.profile.signupBtn}</button>
                         </form>
                       )}
                     </div>
@@ -2744,8 +2756,8 @@ const App: React.FC = () => {
                 <div className={`p-8 rounded-[3rem] ${accentClass} text-white shadow-2xl relative overflow-hidden group`}>
                    <div className="relative z-10"><h2 className="text-2xl font-black mb-2 tracking-tight">{user.name}</h2><p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-60 mb-8">{user.tier} MEMBER</p>
                       <div className="grid grid-cols-2 gap-4">
-                        <div className="bg-white/10 p-5 rounded-3xl border border-white/10 backdrop-blur-sm shadow-inner group-hover:bg-white/20 transition-colors"><p className="text-[9px] font-bold uppercase mb-1 tracking-widest">錢包餘額</p><p className="text-2xl font-black">${user.walletBalance}</p></div>
-                        <div className="bg-white/10 p-5 rounded-3xl border border-white/10 backdrop-blur-sm shadow-inner group-hover:bg-white/20 transition-colors"><p className="text-[9px] font-bold uppercase mb-1 tracking-widest">累積積分</p><p className="text-2xl font-black">{user.points}</p></div>
+                        <div className="bg-white/10 p-5 rounded-3xl border border-white/10 backdrop-blur-sm shadow-inner group-hover:bg-white/20 transition-colors"><p className="text-[9px] font-bold uppercase mb-1 tracking-widest">{t.profile.walletBalance}</p><p className="text-2xl font-black">${user.walletBalance}</p></div>
+                        <div className="bg-white/10 p-5 rounded-3xl border border-white/10 backdrop-blur-sm shadow-inner group-hover:bg-white/20 transition-colors"><p className="text-[9px] font-bold uppercase mb-1 tracking-widest">{t.profile.points}</p><p className="text-2xl font-black">{user.points}</p></div>
                       </div>
                    </div>
                    <div className="absolute -bottom-10 -right-10 opacity-10 group-hover:rotate-12 transition-transform duration-1000"><ShoppingBag size={200}/></div>
@@ -2753,7 +2765,7 @@ const App: React.FC = () => {
                 <div className="space-y-3">
                   <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden transition-all">
                     <button onClick={() => setShowAddressDropdown(!showAddressDropdown)} className="w-full flex justify-between items-center p-6 font-bold text-slate-700 hover:bg-slate-50 transition-colors">
-                      <div className="flex items-center gap-3"><MapPin size={20} className="text-blue-500"/> 收貨地址/聯絡人</div>
+                      <div className="flex items-center gap-3"><MapPin size={20} className="text-blue-500"/> {t.profile.addresses}</div>
                       <ChevronDown size={18} className={`text-slate-300 transition-transform duration-300 ${showAddressDropdown ? 'rotate-180' : ''}`}/>
                     </button>
                     {showAddressDropdown && (
@@ -2761,7 +2773,7 @@ const App: React.FC = () => {
                         {user.addresses?.map(addr => (
                           <div key={addr.id} onClick={() => handleSetDefaultAddress(user.id, addr.id)} className={`p-5 rounded-[2rem] border transition-all cursor-pointer group relative ${addr.isDefault ? 'bg-white border-blue-400 shadow-lg ring-1 ring-blue-400' : 'bg-white border-slate-100 hover:border-blue-200'}`}>
                             <div className="flex justify-between items-start mb-2">
-                              <div className="flex items-center gap-2"><span className="font-black text-slate-900 text-xs">{addr.label}</span>{addr.isDefault && <span className="px-2 py-0.5 bg-blue-600 text-white text-[8px] font-black uppercase rounded-full">預設</span>}</div>
+                              <div className="flex items-center gap-2"><span className="font-black text-slate-900 text-xs">{addr.label}</span>{addr.isDefault && <span className="px-2 py-0.5 bg-blue-600 text-white text-[8px] font-black uppercase rounded-full">{t.profile.default}</span>}</div>
                               <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
                                 <button type="button" onClick={() => setAddressEditor({ address: { ...addr }, isNew: false, ownerId: user.id })} className="p-2 rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors" aria-label="編輯"><Edit size={14}/></button>
                                 <button type="button" onClick={() => handleDeleteAddress(user.id, addr.id)} className="p-2 rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-500 transition-colors" aria-label="刪除"><Trash2 size={14}/></button>
@@ -2770,21 +2782,21 @@ const App: React.FC = () => {
                             <p className="text-[11px] text-slate-500 font-bold leading-relaxed mb-3 line-clamp-2">{formatAddressLine(addr)}</p>
                           </div>
                         ))}
-                        <button onClick={() => setAddressEditor({ address: emptyAddress(), isNew: true, ownerId: user.id })} className="w-full py-4 border-2 border-dashed border-slate-200 rounded-[2rem] text-slate-300 font-black uppercase text-[10px] tracking-widest hover:border-blue-400 hover:text-blue-500 transition-all flex items-center justify-center gap-2"><Plus size={16}/> 新增地址/聯絡人</button>
+                        <button onClick={() => setAddressEditor({ address: emptyAddress(), isNew: true, ownerId: user.id })} className="w-full py-4 border-2 border-dashed border-slate-200 rounded-[2rem] text-slate-300 font-black uppercase text-[10px] tracking-widest hover:border-blue-400 hover:text-blue-500 transition-all flex items-center justify-center gap-2"><Plus size={16}/> {t.profile.addAddress}</button>
                       </div>
                     )}
                   </div>
-                  <button onClick={() => window.location.hash = 'admin'} className="w-full flex justify-between items-center p-6 bg-slate-900 rounded-[2.5rem] text-white font-bold shadow-xl active:scale-95 transition-all"><div className="flex items-center gap-3"><ShieldCheck size={20} className="text-blue-400"/> 開啟管理後台</div><ArrowUpRight size={18} className="text-slate-400"/></button>
+                  <button onClick={() => window.location.hash = 'admin'} className="w-full flex justify-between items-center p-6 bg-slate-900 rounded-[2.5rem] text-white font-bold shadow-xl active:scale-95 transition-all"><div className="flex items-center gap-3"><ShieldCheck size={20} className="text-blue-400"/> {t.profile.openAdmin}</div><ArrowUpRight size={18} className="text-slate-400"/></button>
                 </div>
-                <button onClick={() => { setUser(null); try { localStorage.removeItem('coolfood_member_id'); } catch { /* ignore */ } setView('store'); showToast('已成功登出'); }} className="w-full py-5 bg-white text-rose-500 rounded-[2rem] font-black border border-rose-50 shadow-sm active:scale-95 transition-all hover:bg-rose-50">退出登入</button>
+                <button onClick={() => { setUser(null); try { localStorage.removeItem('coolfood_member_id'); } catch { /* ignore */ } setView('store'); showToast(t.profile.loggedOut); }} className="w-full py-5 bg-white text-rose-500 rounded-[2rem] font-black border border-rose-50 shadow-sm active:scale-95 transition-all hover:bg-rose-50">{t.profile.logout}</button>
              </div>
           )}
           {!isAdminRoute && (
             <nav className="fixed bottom-0 inset-x-0 h-16 bg-white/95 backdrop-blur-xl border-t border-slate-100 flex items-center justify-around z-50">
               {[
-                { id: 'store', label: '商店', icon: <ShoppingBag size={24} strokeWidth={2.5} /> },
-                { id: 'orders', label: '記錄', icon: <Clock size={24} strokeWidth={2.5} /> },
-                { id: 'profile', label: '會員', icon: <User size={24} strokeWidth={2.5} /> }
+                { id: 'store', label: t.nav.store, icon: <ShoppingBag size={24} strokeWidth={2.5} /> },
+                { id: 'orders', label: t.nav.orders, icon: <Clock size={24} strokeWidth={2.5} /> },
+                { id: 'profile', label: t.nav.profile, icon: <User size={24} strokeWidth={2.5} /> }
               ].map(item => (<button key={item.id} onClick={() => setView(item.id as any)} className={`flex flex-col items-center gap-1.5 transition-all duration-300 ${view === item.id ? `${textAccentClass} scale-110` : 'text-slate-300 hover:text-slate-400'}`}>{item.icon}<span className="text-[8px] font-black uppercase tracking-widest">{item.label}</span></button>))}
             </nav>
           )}

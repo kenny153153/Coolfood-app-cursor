@@ -7,7 +7,8 @@ export enum OrderStatus {
   SHIPPING = 'shipping',
   WAITING_PICKUP = 'waiting_pickup',
   COMPLETED = 'completed',
-  ABNORMAL = 'abnormal'
+  ABNORMAL = 'abnormal',
+  REFUND = 'refund'
 }
 
 export interface Recipe {
