@@ -778,20 +778,40 @@ const App: React.FC = () => {
       const failedNames: string[] = [];
       const newCart: CartItem[] = [...cart];
 
+      // Debug: 列出所有資訊以便診斷
+      const productIds = products.map(p => ({ id: p.id, idType: typeof p.id, name: p.name, stock: p.stock, trackInventory: p.trackInventory }));
+      console.log('[reorder] 商店產品清單:', productIds);
+      console.log('[reorder] 歷史訂單 line_items:', JSON.stringify(lineItems));
+
       for (const li of lineItems) {
-        const prod = products.find(p => p.id === li.product_id);
-        if (!prod || prod.stock <= 0) {
-          failedNames.push(li.name || li.product_id);
+        // 寬鬆比對：同時嘗試嚴格匹配與 toString 匹配
+        const liId = String(li.product_id ?? '');
+        const prod = products.find(p => String(p.id) === liId);
+
+        if (!prod) {
+          console.warn(`[reorder] ❌ 找不到產品 — product_id="${liId}" (type=${typeof li.product_id})`);
+          failedNames.push(li.name || liId);
           continue;
         }
+
+        // 庫存判斷：若不追蹤庫存(trackInventory=false)則視為有貨；stock 為 null/undefined 也視為有貨
+        const hasStock = !prod.trackInventory || prod.stock === null || prod.stock === undefined || prod.stock > 0;
+        if (!hasStock) {
+          console.warn(`[reorder] ❌ 庫存不足 — "${prod.name}" stock=${prod.stock}, trackInventory=${prod.trackInventory}`);
+          failedNames.push(li.name || prod.name);
+          continue;
+        }
+
         const existing = newCart.find(c => c.id === prod.id);
-        const wantQty = Math.min(li.qty, prod.stock);
+        const maxQty = (prod.trackInventory && prod.stock > 0) ? prod.stock : 999;
+        const wantQty = Math.min(li.qty || 1, maxQty);
         if (existing) {
-          existing.qty = Math.min(existing.qty + wantQty, prod.stock);
+          existing.qty = Math.min(existing.qty + wantQty, maxQty);
         } else {
           newCart.push({ ...prod, qty: wantQty });
         }
         successCount++;
+        console.log(`[reorder] ✅ 已加入 "${prod.name}" x${wantQty}`);
       }
 
       setCart(newCart);
