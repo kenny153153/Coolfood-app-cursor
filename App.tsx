@@ -159,9 +159,9 @@ const Toast: React.FC<{ message: string; type: 'success' | 'error'; onClose: () 
   }, [onClose]);
 
   return (
-    <div className={`fixed top-12 left-1/2 -translate-x-1/2 z-[9000] animate-slide-up px-6 py-3 rounded-full shadow-2xl flex items-center gap-2 text-white font-medium ${type === 'success' ? 'bg-slate-900' : 'bg-rose-600'}`}>
-      {type === 'success' ? <CheckCircle size={18} /> : <AlertTriangle size={18} />}
-      {message}
+    <div className={`fixed top-[env(safe-area-inset-top,12px)] left-1/2 -translate-x-1/2 mt-3 z-[9000] animate-slide-up px-5 py-2.5 rounded-full shadow-2xl flex items-center gap-2 text-white text-sm font-medium max-w-[90vw] ${type === 'success' ? 'bg-slate-900' : 'bg-rose-600'}`}>
+      {type === 'success' ? <CheckCircle size={16} /> : <AlertTriangle size={16} />}
+      <span className="truncate">{message}</span>
     </div>
   );
 };
@@ -731,15 +731,34 @@ const App: React.FC = () => {
     if (!phone || phone.length < 6) { showToast('請輸入有效手機號碼', 'error'); return; }
     setReorderLoading(true);
     try {
-      const { data: orderRows, error } = await supabase
-        .from('orders')
-        .select('line_items')
-        .eq('customer_phone', phone)
-        .in('status', ['paid', 'processing', 'ready_for_pickup', 'completed'])
-        .order('order_date', { ascending: false })
-        .limit(1);
+      // 嘗試多種電話格式匹配（帶/不帶區號）
+      const phoneTrimmed = phone.replace(/\s+/g, '').replace(/^(\+?852)/, '');
+      const phoneVariants = [phoneTrimmed, `852${phoneTrimmed}`, `+852${phoneTrimmed}`, phone];
 
-      if (error || !orderRows || orderRows.length === 0) {
+      let orderRows: any[] | null = null;
+      let queryError: any = null;
+
+      for (const variant of phoneVariants) {
+        const { data, error } = await supabase
+          .from('orders')
+          .select('line_items')
+          .eq('customer_phone', variant)
+          .in('status', ['paid', 'processing', 'ready_for_pickup', 'completed'])
+          .order('order_date', { ascending: false })
+          .limit(1);
+        queryError = error;
+        if (!error && data && data.length > 0) { orderRows = data; break; }
+      }
+
+      if (queryError) {
+        console.warn('[reorder] Query error:', queryError.message);
+        setReorderNotification({ type: 'fail', successCount: 0, failedNames: ['系統查詢暫時出錯，請稍後再試。'] });
+        setReorderLoading(false);
+        setReorderModalOpen(false);
+        return;
+      }
+
+      if (!orderRows || orderRows.length === 0) {
         setReorderNotification({ type: 'fail', successCount: 0, failedNames: ['未搵到您嘅歷史紀錄，不如去睇下我哋今日嘅精選？'] });
         setReorderLoading(false);
         setReorderModalOpen(false);
@@ -2498,15 +2517,16 @@ const App: React.FC = () => {
     <>
       {/* ── 一鍵回購 Modal（訪客輸入手機號碼）── */}
       {reorderModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[5500] flex items-end justify-center animate-fade-in" onClick={() => setReorderModalOpen(false)}>
-          <div className="bg-white w-full max-w-md rounded-t-[2.5rem] shadow-2xl p-8 space-y-5 animate-slide-up" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[5500] flex items-center justify-center p-6 animate-fade-in" onClick={() => setReorderModalOpen(false)}>
+          <div className="bg-white w-full max-w-sm rounded-[2rem] shadow-2xl p-7 space-y-4 animate-scale-up" onClick={e => e.stopPropagation()}>
             <div className="flex justify-between items-center">
-              <div className="flex items-center gap-2"><Clock size={20} className="text-amber-500" /><h3 className="text-lg font-black text-slate-900">一鍵回購</h3></div>
-              <button onClick={() => setReorderModalOpen(false)} className="p-2 bg-slate-100 rounded-full text-slate-400 active:scale-90"><X size={18}/></button>
+              <div className="flex items-center gap-2"><Clock size={18} className="text-amber-500" /><h3 className="text-base font-black text-slate-900">一鍵回購</h3></div>
+              <button onClick={() => setReorderModalOpen(false)} className="p-2 bg-slate-100 rounded-full text-slate-400 active:scale-90"><X size={16}/></button>
             </div>
-            <p className="text-xs text-slate-400 font-bold">輸入上次落單用嘅手機號碼，即刻幫你填返成份清單。</p>
+            <p className="text-[11px] text-slate-400 font-bold">輸入上次落單用嘅手機號碼，即刻幫你填返成份清單。</p>
             <input
               type="tel"
+              inputMode="numeric"
               placeholder="手機號碼（如 91234567）"
               value={reorderPhone}
               onChange={e => handleReorderPhoneCheck(e.target.value)}
@@ -3437,43 +3457,46 @@ const App: React.FC = () => {
 
       {/* ── 一鍵回購持久通知（手動關閉）── */}
       {reorderNotification && (
-        <div className="fixed top-0 inset-x-0 z-[8500] flex justify-center pointer-events-none" onClick={() => setReorderNotification(null)}>
-          <div
-            className={`pointer-events-auto mt-3 mx-4 max-w-md w-full rounded-2xl shadow-2xl border px-5 py-4 animate-slide-up ${
-              reorderNotification.type === 'success'
-                ? 'bg-emerald-50 border-emerald-200'
-                : reorderNotification.type === 'partial'
-                ? 'bg-amber-50 border-amber-200'
-                : 'bg-rose-50 border-rose-200'
-            }`}
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex items-start gap-3">
-              <div className={`flex-shrink-0 mt-0.5 ${
-                reorderNotification.type === 'success' ? 'text-emerald-500' : reorderNotification.type === 'partial' ? 'text-amber-500' : 'text-rose-500'
-              }`}>
-                {reorderNotification.type === 'success' ? <CheckCircle size={18}/> : reorderNotification.type === 'partial' ? <AlertTriangle size={18}/> : <X size={18}/>}
+        <>
+          {/* 點擊空白處關閉的透明遮罩 */}
+          <div className="fixed inset-0 z-[8499]" onClick={() => setReorderNotification(null)} />
+          <div className="fixed top-14 sm:top-16 inset-x-0 z-[8500] flex justify-center px-4 pointer-events-none">
+            <div
+              className={`pointer-events-auto w-full max-w-sm rounded-2xl shadow-xl border px-4 py-3 animate-slide-up ${
+                reorderNotification.type === 'success'
+                  ? 'bg-emerald-50 border-emerald-200'
+                  : reorderNotification.type === 'partial'
+                  ? 'bg-amber-50 border-amber-200'
+                  : 'bg-rose-50 border-rose-200'
+              }`}
+            >
+              <div className="flex items-start gap-2.5">
+                <div className={`flex-shrink-0 mt-0.5 ${
+                  reorderNotification.type === 'success' ? 'text-emerald-500' : reorderNotification.type === 'partial' ? 'text-amber-500' : 'text-rose-500'
+                }`}>
+                  {reorderNotification.type === 'success' ? <CheckCircle size={16}/> : reorderNotification.type === 'partial' ? <AlertTriangle size={16}/> : <AlertTriangle size={16}/>}
+                </div>
+                <div className="flex-1 min-w-0 space-y-0.5">
+                  {reorderNotification.type === 'success' && (
+                    <p className="text-xs font-bold text-emerald-700">已加入上次購買的 {reorderNotification.successCount} 件產品！您可以繼續選購。</p>
+                  )}
+                  {reorderNotification.type === 'partial' && (
+                    <>
+                      <p className="text-xs font-bold text-amber-700">已加入 {reorderNotification.successCount} 件，以下缺貨：</p>
+                      <p className="text-[10px] text-amber-600/80 font-medium">{reorderNotification.failedNames.join('、')}</p>
+                    </>
+                  )}
+                  {reorderNotification.type === 'fail' && (
+                    <p className="text-xs font-bold text-rose-700">{reorderNotification.failedNames[0] || '上次買嘅產品已全數售罄'}</p>
+                  )}
+                </div>
+                <button onClick={() => setReorderNotification(null)} className="flex-shrink-0 p-1 rounded-full hover:bg-black/5 active:scale-90 transition-all" aria-label="關閉">
+                  <X size={14} className="text-slate-400" />
+                </button>
               </div>
-              <div className="flex-1 min-w-0 space-y-1">
-                {reorderNotification.type === 'success' && (
-                  <p className="text-sm font-bold text-emerald-700">已加入上次購買的 {reorderNotification.successCount} 件產品！您可以繼續選購。</p>
-                )}
-                {reorderNotification.type === 'partial' && (
-                  <>
-                    <p className="text-sm font-bold text-amber-700">已加入 {reorderNotification.successCount} 件產品，以下產品缺貨/已下架：</p>
-                    <p className="text-xs text-amber-600/80 font-medium">{reorderNotification.failedNames.join('、')}</p>
-                  </>
-                )}
-                {reorderNotification.type === 'fail' && (
-                  <p className="text-sm font-bold text-rose-700">{reorderNotification.failedNames[0] || '上次買嘅產品已全數售罄'}</p>
-                )}
-              </div>
-              <button onClick={() => setReorderNotification(null)} className="flex-shrink-0 p-1.5 rounded-full hover:bg-black/5 active:scale-90 transition-all" aria-label="關閉">
-                <X size={14} className="text-slate-400" />
-              </button>
             </div>
           </div>
-        </div>
+        </>
       )}
       
       {isAdminRoute ? (
