@@ -94,7 +94,7 @@ export const normalizeOrderStatus = (status: string | null | undefined): OrderSt
     return normalized as OrderStatus;
   }
   if (normalized === 'paid' || normalized === 'success') {
-    return OrderStatus.PROCESSING;
+    return OrderStatus.PAID;
   }
   return OrderStatus.PENDING_PAYMENT;
 };

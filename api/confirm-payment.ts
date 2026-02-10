@@ -152,12 +152,12 @@ export default async function handler(
     }
     console.log('[confirm-payment] Order found:', orderRow.id, orderRow.status);
 
-    // Step A: 更新狀態為 processing（解耦順豐 API，由後台批量操作觸發）
-    console.log('[confirm-payment] Step A: update status to processing');
+    // Step A: 更新狀態為 paid（已付款）— SF API 已解耦，由後台批量操作觸發截單→呼叫順豐
+    console.log('[confirm-payment] Step A: update status to paid');
     const updateId = orderRow.id ?? dbIdValue;
     const { data: updatedRow, error: updateError } = await supabaseAdmin
       .from('orders')
-      .update({ status: 'processing' })
+      .update({ status: 'paid' })
       .eq('id', updateId)
       .select('id,status,tracking_number,waybill_no')
       .maybeSingle();
@@ -166,9 +166,9 @@ export default async function handler(
       return res.status(502).json({ error: 'Failed to update order status', code: 'UPDATE_FAILED', details: updateError.message });
     }
     const effectiveOrder = updatedRow ?? orderRow;
-    console.log('[confirm-payment] Status updated to processing:', effectiveOrder.status);
+    console.log('[confirm-payment] Status updated to paid:', effectiveOrder.status);
 
-    // SF API 已解耦：不再自動呼叫順豐，改由後台「呼叫順豐」批量操作手動觸發
+    // SF API 已解耦：不再自動呼叫順豐，後台流程為 paid → 截單(processing) → 呼叫順豐(ready_for_pickup)
     return res.status(200).json({
       success: true,
       orderId,

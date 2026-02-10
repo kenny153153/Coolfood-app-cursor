@@ -183,10 +183,8 @@ export const MOCK_ORDERS: Order[] = [
   { id: 'ORD-8823', customerName: '張志明', total: 220, status: OrderStatus.SHIPPING, date: '2024-05-11', items: 2, trackingNumber: 'SF123456789' },
 ];
 
-export const SF_LOCKERS = [
-  { code: 'H852M001', address: '旺角家樂坊順豐智能櫃' },
-  { code: 'H852K023', address: '觀塘開源道順豐站' },
-];
+/** @deprecated 已遷移至 sfColdPickupPoints.ts，此處保留空陣列以避免 import 破損 */
+export const SF_LOCKERS: { code: string; address: string }[] = [];
 
 export const HK_DISTRICTS = [
   '香港島',

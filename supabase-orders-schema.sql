@@ -66,6 +66,7 @@ ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_flat TEXT;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS contact_name TEXT;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_alt_contact_name TEXT;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_alt_contact_phone TEXT;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS locker_code TEXT;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS waybill_no TEXT;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS sf_responses JSONB;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS tracking_number TEXT;

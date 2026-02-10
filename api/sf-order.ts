@@ -23,7 +23,21 @@ type SfOrderPayload = {
   delivery_building?: string;
   delivery_floor?: string;
   delivery_flat?: string;
+  delivery_method?: string;
+  locker_code?: string;
 };
+
+/**
+ * 順豐 expressType 對照表 (香港)：
+ *   1  = 順豐標快 (Standard Express)
+ *   2  = 順豐特快 (S.F. Express)
+ *  21  = 冷運到付 / 冷鏈服務 (Cold Chain)
+ *
+ * 環境變數 SF_COLD_EXPRESS_TYPE 可覆蓋預設值。
+ * 若訂單為自提櫃取貨 (sf_locker)，亦使用冷鏈代碼，
+ * 因為本系統所有配送均為冷鏈。
+ */
+const COLD_CHAIN_EXPRESS_TYPE = Number(process.env.SF_COLD_EXPRESS_TYPE ?? '21') || 21;
 
 function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: string; address: string }) {
   const monthlyCard = (process.env.SF_MONTHLY_CARD ?? process.env.SF_PARTNER_ID ?? '').trim() || '7551234567';
@@ -38,11 +52,18 @@ function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: 
   const receiverContact = payload.contact_name || payload.customer_name || '收件人';
   const receiverPhone = payload.customer_phone || '';
   const receiverDistrict = payload.delivery_district || '香港';
+
+  // ── expressType 邏輯 ──────────────────────────────────────────────
+  // 本系統所有配送均為冷鏈，不論是冷鏈送貨 (sf_delivery) 還是冷鏈自提櫃 (sf_locker)，
+  // 都使用 COLD_CHAIN_EXPRESS_TYPE（預設 21）。
+  // 若未來需要非冷鏈服務，可在此增加判斷。
+  const expressType = COLD_CHAIN_EXPRESS_TYPE;
+
   return {
     orderId: payload.orderId,
     language: 'Zh-CN',
     monthlyCard,
-    expressType: 1,
+    expressType,
     payMethod: 1,
     parcelQty: 1,
     totalWeight: 1,
@@ -173,9 +194,11 @@ export default async function handler(
           delivery_building: row.delivery_building,
           delivery_floor: row.delivery_floor,
           delivery_flat: row.delivery_flat,
+          delivery_method: row.delivery_method,
+          locker_code: row.locker_code,
         };
         if (/^ORD-/.test(orderId)) payload.orderId = orderId;
-        console.log('[SF] Fetched order from Supabase:', payload.orderId);
+        console.log('[SF] Fetched order from Supabase:', payload.orderId, '| delivery_method:', payload.delivery_method, '| locker_code:', payload.locker_code);
       }
     } catch (e) {
       console.error('[SF] Supabase fetch error', e);

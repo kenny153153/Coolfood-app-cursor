@@ -6,6 +6,7 @@ const translations = {
   'zh-HK': {
     orderStatus: {
       pending_payment: '待付款',
+      paid: '已付款',
       processing: '處理中',
       ready_for_pickup: '等待收件',
       shipping: '運輸中',
@@ -357,6 +358,7 @@ const translations = {
   en: {
     orderStatus: {
       pending_payment: 'Pending Payment',
+      paid: 'Paid',
       processing: 'Processing',
       ready_for_pickup: 'Ready for Pickup',
       shipping: 'Shipping',

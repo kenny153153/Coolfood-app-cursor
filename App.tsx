@@ -13,7 +13,8 @@ import {
   Layers, Percent, Globe, Crosshair, Scissors, Phone, Square, CheckSquare
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
-import { HK_DISTRICTS, SF_LOCKERS } from './constants';
+import { HK_DISTRICTS } from './constants';
+import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
 import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem } from './types';
 import { useI18n, Language } from './i18n';
 import { supabase } from './supabaseClient';
@@ -184,6 +185,7 @@ const getOrderStatusLabel = (status: OrderStatus | string, t?: { orderStatus: Re
   }
   const labels: Record<string, string> = {
     [OrderStatus.PENDING_PAYMENT]: '待付款',
+    [OrderStatus.PAID]: '已付款',
     [OrderStatus.PROCESSING]: '處理中',
     [OrderStatus.READY_FOR_PICKUP]: '等待收件',
     [OrderStatus.SHIPPING]: '運輸中',
@@ -197,6 +199,7 @@ const getOrderStatusLabel = (status: OrderStatus | string, t?: { orderStatus: Re
 const StatusBadge: React.FC<{ status: OrderStatus; t?: { orderStatus: Record<string, string> } }> = ({ status, t }) => {
   const configs: Record<string, { label: string; color: string }> = {
     [OrderStatus.PENDING_PAYMENT]: { label: getOrderStatusLabel(OrderStatus.PENDING_PAYMENT, t), color: 'bg-slate-50 text-slate-600 border-slate-100' },
+    [OrderStatus.PAID]: { label: getOrderStatusLabel(OrderStatus.PAID, t), color: 'bg-green-50 text-green-700 border-green-100' },
     [OrderStatus.PROCESSING]: { label: getOrderStatusLabel(OrderStatus.PROCESSING, t), color: 'bg-blue-50 text-blue-700 border-blue-100' },
     [OrderStatus.READY_FOR_PICKUP]: { label: getOrderStatusLabel(OrderStatus.READY_FOR_PICKUP, t), color: 'bg-amber-50 text-amber-700 border-amber-100' },
     [OrderStatus.SHIPPING]: { label: getOrderStatusLabel(OrderStatus.SHIPPING, t), color: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
@@ -213,6 +216,7 @@ const StatusBadge: React.FC<{ status: OrderStatus; t?: { orderStatus: Record<str
 };
 
 const ORDER_TIMELINE = [
+  OrderStatus.PAID,
   OrderStatus.PROCESSING,
   OrderStatus.READY_FOR_PICKUP,
   OrderStatus.SHIPPING,
@@ -288,7 +292,7 @@ const SuccessView: React.FC<{
           const attemptUpdate = async (idValue: string) => {
             const { data, error } = await supabase
               .from('orders')
-              .update({ status: 'processing' })
+              .update({ status: 'paid' })
               .eq('id', idValue)
               .select('id,status,tracking_number,waybill_no')
               .maybeSingle();
@@ -439,7 +443,10 @@ const App: React.FC = () => {
   const [editingSlideshow, setEditingSlideshow] = useState<SlideshowItem | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [deliveryMethod, setDeliveryMethod] = useState<'home' | 'sf_locker'>('home');
-  const [selectedLocker, setSelectedLocker] = useState(SF_LOCKERS[0]);
+  const [selectedLockerDistrict, setSelectedLockerDistrict] = useState('');
+  const [selectedLockerCode, setSelectedLockerCode] = useState('');
+  const lockerPointsForDistrict = useMemo(() => getPointsByDistrict(selectedLockerDistrict), [selectedLockerDistrict]);
+  const selectedLockerPoint: SfColdPickupPoint | undefined = useMemo(() => findPointByCode(selectedLockerCode), [selectedLockerCode]);
   
   // UI State
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -1072,15 +1079,15 @@ const App: React.FC = () => {
 
   // ========== Batch Order Operations ==========
 
-  /** Action A: 截單 — batch update paid/processing orders to processing */
+  /** Action A: 截單 — batch update paid orders to processing */
   const handleBatchCutoff = async () => {
     if (selectedOrderIds.size === 0) return;
     setBatchProcessing(true);
     try {
-      // Filter selected orders: only those with status processing (paid orders are mapped to processing)
-      const eligibleOrders = orders.filter(o => selectedOrderIds.has(o.id) && o.status === OrderStatus.PROCESSING);
+      // Filter selected orders: only those with status paid (已付款)
+      const eligibleOrders = orders.filter(o => selectedOrderIds.has(o.id) && o.status === OrderStatus.PAID);
       if (eligibleOrders.length === 0) {
-        showToast('沒有符合條件的訂單（僅限「處理中」狀態）', 'error');
+        showToast('沒有符合條件的訂單（僅限「已付款」狀態）', 'error');
         setBatchProcessing(false);
         return;
       }
@@ -1540,9 +1547,15 @@ const App: React.FC = () => {
         return;
       }
     }
+    if (deliveryMethod === 'sf_locker') {
+      if (!selectedLockerPoint) {
+        showToast('請選擇冷運自提點', 'error');
+        return;
+      }
+    }
     const useDraft = deliveryMethod === 'home' && checkoutAddressDraft && isAddressCompleteForOrder(checkoutAddressDraft);
-    const deliveryAddr = deliveryMethod === 'sf_locker'
-      ? selectedLocker.address
+    const deliveryAddr = deliveryMethod === 'sf_locker' && selectedLockerPoint
+      ? formatLockerAddress(selectedLockerPoint, selectedLockerDistrict)
       : (deliveryAddress ? deliveryAddress.detail ?? null : null);
     const contactName = deliveryAddress?.contactName ?? (user?.name ?? null);
     const customerPhone = deliveryAddress?.phone ?? (user?.phoneNumber ?? null);
@@ -1580,6 +1593,10 @@ const App: React.FC = () => {
       insertRow.delivery_district = deliveryAddress.district ?? null;
       insertRow.delivery_floor = deliveryAddress.floor ?? null;
       insertRow.delivery_flat = deliveryAddress.flat ?? null;
+    }
+    if (deliveryMethod === 'sf_locker' && selectedLockerPoint) {
+      insertRow.locker_code = selectedLockerPoint.code;
+      insertRow.delivery_district = selectedLockerDistrict;
     }
 
     setIsRedirectingToPayment(true);
@@ -2729,7 +2746,43 @@ const App: React.FC = () => {
             {deliveryMethod === 'sf_locker' ? (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-2"><button onClick={() => setDeliveryMethod('home')} className="py-3 px-4 border border-slate-100 rounded-2xl text-xs font-bold text-slate-400">{t.checkout.homeDelivery}</button><button onClick={() => setDeliveryMethod('sf_locker')} className="py-3 px-4 bg-blue-600 rounded-2xl text-xs font-black text-white shadow-lg">{t.checkout.sfLocker}</button></div>
-                <select value={selectedLocker.code} onChange={(e) => setSelectedLocker(SF_LOCKERS.find(l => l.code === e.target.value) || SF_LOCKERS[0])} className="w-full p-4 bg-slate-50 border-none rounded-2xl text-xs font-bold focus:ring-2 focus:ring-blue-100">{SF_LOCKERS.map(l => <option key={l.code} value={l.code}>{l.address}</option>)}</select>
+                {/* 二級下拉：第一層選地區，第二層選自提點 */}
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">選擇地區</label>
+                    <select
+                      value={selectedLockerDistrict}
+                      onChange={(e) => { setSelectedLockerDistrict(e.target.value); setSelectedLockerCode(''); }}
+                      className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-blue-100 focus:border-blue-200 transition-all"
+                    >
+                      <option value="">— 請選擇地區 —</option>
+                      {SF_COLD_DISTRICT_NAMES.map(d => <option key={d} value={d}>{d}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">選擇冷運自提點</label>
+                    <select
+                      value={selectedLockerCode}
+                      onChange={(e) => setSelectedLockerCode(e.target.value)}
+                      disabled={!selectedLockerDistrict}
+                      className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-blue-100 focus:border-blue-200 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <option value="">{selectedLockerDistrict ? '— 請選擇自提點 —' : '— 請先選擇地區 —'}</option>
+                      {lockerPointsForDistrict.map(p => (
+                        <option key={p.code} value={p.code}>{p.area} · {p.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {selectedLockerPoint && (
+                    <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 space-y-1.5 animate-fade-in">
+                      <p className="text-xs font-black text-blue-800">{selectedLockerPoint.name}</p>
+                      <p className="text-[11px] font-bold text-blue-600 leading-relaxed">{selectedLockerPoint.address}</p>
+                      <p className="text-[10px] font-bold text-blue-500">
+                        點碼：{selectedLockerPoint.code} ｜ 營業：{selectedLockerPoint.hours.weekday}（平日）/ {selectedLockerPoint.hours.weekend}（週末）
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="space-y-4">
@@ -2888,7 +2941,7 @@ const App: React.FC = () => {
               {deliveryFee === 0 && <p className="text-[9px] text-emerald-400 font-black tracking-widest uppercase">已享全單免運優惠 ✨</p>}
               <div className="pt-4 border-t border-white/10 flex justify-between items-end"><span className="text-sm font-black uppercase tracking-widest">總金額</span><span className="text-4xl font-black text-blue-400">${total}</span></div>
             </div>
-            <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || isRedirectingToPayment} onClick={handleSubmitOrder} className="w-full py-5 bg-blue-600 rounded-[2rem] font-black text-lg shadow-xl active:scale-95 transition-all disabled:opacity-30 flex items-center justify-center gap-3">{isRedirectingToPayment ? <RefreshCw size={20} className="animate-spin" /> : <CreditCard size={20}/>} {isRedirectingToPayment ? t.checkout.redirecting : t.checkout.payNow}</button>
+            <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || (deliveryMethod === 'sf_locker' && !selectedLockerPoint) || isRedirectingToPayment} onClick={handleSubmitOrder} className="w-full py-5 bg-blue-600 rounded-[2rem] font-black text-lg shadow-xl active:scale-95 transition-all disabled:opacity-30 flex items-center justify-center gap-3">{isRedirectingToPayment ? <RefreshCw size={20} className="animate-spin" /> : <CreditCard size={20}/>} {isRedirectingToPayment ? t.checkout.redirecting : t.checkout.payNow}</button>
           </section>
         </div>
       </div>
@@ -3112,7 +3165,7 @@ const App: React.FC = () => {
                           <span>{t.orders.progress}</span>
                           <span>{getOrderStatusLabel(o.status, t)}</span>
                         </div>
-                        <div className="mt-3 grid grid-cols-4 gap-2">
+                        <div className="mt-3 grid grid-cols-5 gap-2">
                           {ORDER_TIMELINE.map((step, idx) => {
                             const currentIdx = getTimelineIndex(o.status);
                             const isActive = currentIdx >= idx;

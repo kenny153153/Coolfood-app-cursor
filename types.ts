@@ -1,6 +1,7 @@
 
 export enum OrderStatus {
   PENDING_PAYMENT = 'pending_payment',
+  PAID = 'paid',
   PROCESSING = 'processing',
   READY_FOR_PICKUP = 'ready_for_pickup',
   SHIPPING = 'shipping',
@@ -119,6 +120,7 @@ export interface SupabaseOrderRow {
   contact_name?: string | null;
   delivery_alt_contact_name?: string | null;
   delivery_alt_contact_phone?: string | null;
+  locker_code?: string | null;
   waybill_no?: string | null;
   tracking_number?: string | null;
   sf_responses?: unknown | null;
