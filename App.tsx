@@ -466,6 +466,17 @@ const App: React.FC = () => {
   const [batchProcessing, setBatchProcessing] = useState(false);
   const [sfValidationModal, setSfValidationModal] = useState<{ problematic: { id: string; reason: string }[]; valid: SupabaseOrderRow[] } | null>(null);
   
+  // ── 一鍵回購 ──
+  const [reorderModalOpen, setReorderModalOpen] = useState(false);
+  const [reorderPhone, setReorderPhone] = useState('');
+  const [reorderHint, setReorderHint] = useState<{ type: 'none' | 'guest' | 'member'; text: string }>({ type: 'none', text: '' });
+  const [reorderLoading, setReorderLoading] = useState(false);
+  const [reorderNotification, setReorderNotification] = useState<{
+    type: 'success' | 'partial' | 'fail';
+    successCount: number;
+    failedNames: string[];
+  } | null>(null);
+
   // Modals
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingMember, setEditingMember] = useState<UserType | null>(null);
@@ -714,6 +725,104 @@ const App: React.FC = () => {
       return prev;
     });
   };
+
+  // ── 一鍵回購：核心邏輯 ──
+  const handleReorderByPhone = useCallback(async (phone: string) => {
+    if (!phone || phone.length < 6) { showToast('請輸入有效手機號碼', 'error'); return; }
+    setReorderLoading(true);
+    try {
+      const { data: orderRows, error } = await supabase
+        .from('orders')
+        .select('line_items')
+        .eq('customer_phone', phone)
+        .in('status', ['paid', 'processing', 'ready_for_pickup', 'completed'])
+        .order('order_date', { ascending: false })
+        .limit(1);
+
+      if (error || !orderRows || orderRows.length === 0) {
+        setReorderNotification({ type: 'fail', successCount: 0, failedNames: ['未搵到您嘅歷史紀錄，不如去睇下我哋今日嘅精選？'] });
+        setReorderLoading(false);
+        setReorderModalOpen(false);
+        return;
+      }
+
+      const lineItems: OrderLineItem[] = orderRows[0].line_items || [];
+      if (lineItems.length === 0) {
+        setReorderNotification({ type: 'fail', successCount: 0, failedNames: ['上次訂單冇產品紀錄'] });
+        setReorderLoading(false);
+        setReorderModalOpen(false);
+        return;
+      }
+
+      // 分類 successItems 與 failedItems
+      let successCount = 0;
+      const failedNames: string[] = [];
+      const newCart: CartItem[] = [...cart];
+
+      for (const li of lineItems) {
+        const prod = products.find(p => p.id === li.product_id);
+        if (!prod || prod.stock <= 0) {
+          failedNames.push(li.name || li.product_id);
+          continue;
+        }
+        const existing = newCart.find(c => c.id === prod.id);
+        const wantQty = Math.min(li.qty, prod.stock);
+        if (existing) {
+          existing.qty = Math.min(existing.qty + wantQty, prod.stock);
+        } else {
+          newCart.push({ ...prod, qty: wantQty });
+        }
+        successCount++;
+      }
+
+      setCart(newCart);
+      setReorderModalOpen(false);
+      setReorderPhone('');
+      setReorderHint({ type: 'none', text: '' });
+
+      // 顯示持久性通知（不跳轉、不自動消失）
+      if (successCount > 0 && failedNames.length === 0) {
+        setReorderNotification({ type: 'success', successCount, failedNames: [] });
+      } else if (successCount > 0 && failedNames.length > 0) {
+        setReorderNotification({ type: 'partial', successCount, failedNames });
+      } else {
+        setReorderNotification({ type: 'fail', successCount: 0, failedNames });
+      }
+    } catch {
+      setReorderNotification({ type: 'fail', successCount: 0, failedNames: ['查詢失敗，請稍後再試'] });
+      setReorderModalOpen(false);
+    }
+    setReorderLoading(false);
+  }, [cart, products]);
+
+  const handleReorderClick = useCallback(() => {
+    setReorderNotification(null); // 清除舊通知
+    if (user?.phoneNumber) {
+      // 情況 A：已登入，直接查詢（不跳轉）
+      handleReorderByPhone(user.phoneNumber);
+    } else {
+      // 情況 B：未登入，彈出 Modal
+      setReorderPhone('');
+      setReorderHint({ type: 'none', text: '' });
+      setReorderModalOpen(true);
+    }
+  }, [user, handleReorderByPhone]);
+
+  // 訪客輸入電話後偵測是否為會員
+  const handleReorderPhoneCheck = useCallback(async (phone: string) => {
+    setReorderPhone(phone);
+    if (phone.length < 8) { setReorderHint({ type: 'none', text: '' }); return; }
+    try {
+      const { data } = await supabase.from('members').select('id').eq('phone_number', phone).maybeSingle();
+      if (data) {
+        setReorderHint({ type: 'member', text: '👋 原來您係我哋會員！您可以先登入，買嘢更快之餘仲可以累積積分。(但唔登入都買得架)' });
+      } else {
+        setReorderHint({ type: 'guest', text: '💡 溫馨提示：登記做會員下次就唔使再輸入電話，仲可以儲分換禮品添！(但唔登記都買得架)' });
+      }
+    } catch {
+      setReorderHint({ type: 'guest', text: '' });
+    }
+  }, []);
 
   const isUsingWallet = user && user.walletBalance > 0;
   
@@ -2387,6 +2496,44 @@ const App: React.FC = () => {
 
   const renderGlobalModals = () => (
     <>
+      {/* ── 一鍵回購 Modal（訪客輸入手機號碼）── */}
+      {reorderModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[5500] flex items-end justify-center animate-fade-in" onClick={() => setReorderModalOpen(false)}>
+          <div className="bg-white w-full max-w-md rounded-t-[2.5rem] shadow-2xl p-8 space-y-5 animate-slide-up" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center">
+              <div className="flex items-center gap-2"><Clock size={20} className="text-amber-500" /><h3 className="text-lg font-black text-slate-900">一鍵回購</h3></div>
+              <button onClick={() => setReorderModalOpen(false)} className="p-2 bg-slate-100 rounded-full text-slate-400 active:scale-90"><X size={18}/></button>
+            </div>
+            <p className="text-xs text-slate-400 font-bold">輸入上次落單用嘅手機號碼，即刻幫你填返成份清單。</p>
+            <input
+              type="tel"
+              placeholder="手機號碼（如 91234567）"
+              value={reorderPhone}
+              onChange={e => handleReorderPhoneCheck(e.target.value)}
+              className="w-full p-4 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100 focus:ring-2 focus:ring-amber-100 focus:border-amber-200 transition-all"
+              autoFocus
+            />
+            {/* 動態提示 */}
+            {reorderHint.text && (
+              <div className="px-1">
+                <p className="text-[11px] text-slate-400 font-bold leading-relaxed">{reorderHint.text}</p>
+                {reorderHint.type === 'member' && (
+                  <button onClick={() => { setReorderModalOpen(false); setView('profile'); }} className="text-[11px] text-blue-500 font-black mt-1 hover:underline">立即登入 →</button>
+                )}
+              </div>
+            )}
+            <button
+              disabled={reorderPhone.length < 6 || reorderLoading}
+              onClick={() => handleReorderByPhone(reorderPhone)}
+              className="w-full py-4 bg-amber-500 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
+            >
+              {reorderLoading ? <RefreshCw size={16} className="animate-spin" /> : <Clock size={16}/>}
+              {reorderLoading ? '查詢中...' : '搵返上次嘅清單'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {selectedProduct && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[5500] flex items-end justify-center animate-fade-in" onClick={() => setSelectedProduct(null)}>
           <div className="bg-white w-full max-w-md rounded-t-[3rem] shadow-2xl p-8 space-y-6 animate-slide-up overflow-y-auto max-h-[90vh] hide-scrollbar" onClick={e => e.stopPropagation()}>
@@ -2870,16 +3017,16 @@ const App: React.FC = () => {
     const isFree = deliveryFee === 0;
 
     if (compact) {
-      // 簡約版：用於浮動購物車按鈕上方
+      // 簡約版：嵌入購物車按鈕內部的一行文字 + 細進度條
       return (
-        <div className="bg-white/95 backdrop-blur-md rounded-2xl px-4 py-2.5 shadow-lg border border-slate-100 mb-2">
+        <div className="px-1">
           {isFree ? (
-            <p className="text-[11px] font-black text-emerald-600 text-center tracking-wide">🎉 已享有免運費優惠！</p>
+            <p className="text-[9px] font-bold text-emerald-400 text-center">✓ 免運費</p>
           ) : (
-            <div className="space-y-1.5">
-              <p className="text-[11px] font-black text-orange-500 text-center tracking-wide">仲差 ${diff.toFixed(0)} 就免運費喇！</p>
-              <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-orange-400 to-amber-400 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress * 100}%` }} />
+            <div className="flex items-center gap-2">
+              <p className="text-[9px] font-bold text-orange-300 whitespace-nowrap">差${diff.toFixed(0)}免運</p>
+              <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden min-w-[40px]">
+                <div className="h-full bg-orange-400 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress * 100}%` }} />
               </div>
             </div>
           )}
@@ -2887,19 +3034,21 @@ const App: React.FC = () => {
       );
     }
 
-    // 完整版：用於結帳金額明細區
+    // 完整版：用於結帳金額明細區（精簡版）
     return (
-      <div className={`p-4 rounded-2xl border ${isFree ? 'bg-emerald-50/80 border-emerald-200' : 'bg-orange-50/80 border-orange-200'} space-y-2.5 transition-all`}>
+      <div className={`px-3 py-2 rounded-xl ${isFree ? 'bg-emerald-500/10' : 'bg-orange-500/10'} transition-all`}>
         {isFree ? (
-          <p className="text-sm font-black text-emerald-600 text-center">🎉 已享有免運費優惠！</p>
+          <p className="text-[11px] font-black text-emerald-400 text-center">✓ 已享有免運費優惠</p>
         ) : (
-          <>
-            <p className="text-sm font-black text-orange-600 text-center">仲差 <span className="text-base">${diff.toFixed(0)}</span> 就免運費喇！</p>
-            <div className="w-full h-2 bg-white/60 rounded-full overflow-hidden shadow-inner">
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-bold text-orange-300">仲差 ${diff.toFixed(0)} 免運</p>
+              <p className="text-[9px] text-white/30 font-bold">滿${shippingThreshold}免運</p>
+            </div>
+            <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
               <div className="h-full bg-gradient-to-r from-orange-400 to-amber-400 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress * 100}%` }} />
             </div>
-            <p className="text-[10px] text-orange-400 font-bold text-center">滿 ${shippingThreshold} 免運費 · 未達標運費 ${shippingFee}</p>
-          </>
+          </div>
         )}
       </div>
     );
@@ -3166,6 +3315,7 @@ const App: React.FC = () => {
       <header className="bg-white/95 backdrop-blur-md sticky top-0 z-40 px-4 py-3 border-b border-slate-100 flex items-center justify-between">
         <div className="flex items-center gap-2"><div className="w-9 h-9 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-lg"><span>{siteConfig.logoIcon}</span></div><h1 className="font-bold text-lg text-slate-900 tracking-tight">{siteConfig.logoText}</h1></div>
         <div className="flex items-center gap-2">
+          <button onClick={handleReorderClick} className="p-2 bg-amber-50 text-amber-600 rounded-full border border-amber-100 active:scale-90 transition-transform" title="一鍵回購"><Clock size={18} /></button>
           <button onClick={() => setLang(lang === 'zh-HK' ? 'en' : 'zh-HK')} className="px-2.5 py-1.5 bg-slate-100 text-slate-600 rounded-full border border-slate-200 text-[10px] font-black uppercase tracking-wider hover:bg-slate-200 transition-colors">{lang === 'zh-HK' ? 'EN' : '中'}</button>
           <a href="https://wa.me/85212345678" target="_blank" rel="noreferrer" className="p-2 bg-green-50 text-green-600 rounded-full border border-green-100"><MessageCircle size={18} fill="currentColor" /></a>
           {user ? (
@@ -3267,10 +3417,12 @@ const App: React.FC = () => {
       </div>
       {cart.length > 0 && (
         <div className="fixed bottom-20 inset-x-4 z-[60]">
-          <FreeShippingNudge compact />
-          <button onClick={(e) => { e.stopPropagation(); setView('checkout'); }} className="w-full h-14 bg-slate-900 text-white rounded-2xl flex items-center justify-between pl-6 pr-3 shadow-2xl active:scale-95 transition-all ring-4 ring-white/10">
-            <div className="flex items-center gap-4"><ShoppingBag size={20} /><div className="text-base font-bold tracking-tight">${pricingData.subtotal}</div></div>
-            <div className="px-4 h-9 bg-white/10 rounded-xl flex items-center gap-1 font-bold text-xs uppercase tracking-wider text-white">{t.store.goCheckout} <ChevronRight size={14} /></div>
+          <button onClick={(e) => { e.stopPropagation(); setView('checkout'); }} className="w-full bg-slate-900 text-white rounded-2xl shadow-2xl active:scale-[0.98] transition-all ring-4 ring-white/10 overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-3">
+              <div className="flex items-center gap-3"><ShoppingBag size={18} /><span className="text-sm font-bold">${pricingData.subtotal}</span></div>
+              <div className="flex-1 mx-3"><FreeShippingNudge compact /></div>
+              <div className="px-3 py-1.5 bg-white/10 rounded-lg flex items-center gap-1 font-bold text-[10px] uppercase tracking-wider text-white flex-shrink-0">{t.store.goCheckout} <ChevronRight size={12} /></div>
+            </div>
           </button>
         </div>
       )}
@@ -3282,6 +3434,47 @@ const App: React.FC = () => {
   return (
     <div className={isAdminRoute ? "h-screen bg-slate-50 flex flex-row overflow-hidden font-sans" : "max-w-md mx-auto min-h-screen relative shadow-2xl overflow-hidden flex flex-col md:max-w-none bg-white font-sans"}>
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+
+      {/* ── 一鍵回購持久通知（手動關閉）── */}
+      {reorderNotification && (
+        <div className="fixed top-0 inset-x-0 z-[8500] flex justify-center pointer-events-none" onClick={() => setReorderNotification(null)}>
+          <div
+            className={`pointer-events-auto mt-3 mx-4 max-w-md w-full rounded-2xl shadow-2xl border px-5 py-4 animate-slide-up ${
+              reorderNotification.type === 'success'
+                ? 'bg-emerald-50 border-emerald-200'
+                : reorderNotification.type === 'partial'
+                ? 'bg-amber-50 border-amber-200'
+                : 'bg-rose-50 border-rose-200'
+            }`}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className={`flex-shrink-0 mt-0.5 ${
+                reorderNotification.type === 'success' ? 'text-emerald-500' : reorderNotification.type === 'partial' ? 'text-amber-500' : 'text-rose-500'
+              }`}>
+                {reorderNotification.type === 'success' ? <CheckCircle size={18}/> : reorderNotification.type === 'partial' ? <AlertTriangle size={18}/> : <X size={18}/>}
+              </div>
+              <div className="flex-1 min-w-0 space-y-1">
+                {reorderNotification.type === 'success' && (
+                  <p className="text-sm font-bold text-emerald-700">已加入上次購買的 {reorderNotification.successCount} 件產品！您可以繼續選購。</p>
+                )}
+                {reorderNotification.type === 'partial' && (
+                  <>
+                    <p className="text-sm font-bold text-amber-700">已加入 {reorderNotification.successCount} 件產品，以下產品缺貨/已下架：</p>
+                    <p className="text-xs text-amber-600/80 font-medium">{reorderNotification.failedNames.join('、')}</p>
+                  </>
+                )}
+                {reorderNotification.type === 'fail' && (
+                  <p className="text-sm font-bold text-rose-700">{reorderNotification.failedNames[0] || '上次買嘅產品已全數售罄'}</p>
+                )}
+              </div>
+              <button onClick={() => setReorderNotification(null)} className="flex-shrink-0 p-1.5 rounded-full hover:bg-black/5 active:scale-90 transition-all" aria-label="關閉">
+                <X size={14} className="text-slate-400" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       
       {isAdminRoute ? (
         <>
