@@ -213,6 +213,14 @@ export interface DeliveryRules {
   tieredFees?: DeliveryTier[];
 }
 
+export interface ShippingConfig {
+  id: string;          // 'sf_delivery' | 'sf_locker'
+  label: string;
+  fee: number;
+  threshold: number;
+  updated_at?: string;
+}
+
 export interface SiteConfig {
   logoText: string;
   logoIcon: string;

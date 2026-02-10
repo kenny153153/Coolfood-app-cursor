@@ -79,3 +79,81 @@ CREATE POLICY "Allow anonymous read and insert"
   ON public.orders FOR ALL
   USING (true)
   WITH CHECK (true);
+
+-- ═══════════════════════════════════════════════════════════════════
+-- 6) shipping_configs — 動態運費管理（每種配送方式一行）
+-- ═══════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS public.shipping_configs (
+  id TEXT PRIMARY KEY,              -- 'sf_delivery' | 'sf_locker'
+  label TEXT NOT NULL,              -- 顯示名稱
+  fee NUMERIC NOT NULL DEFAULT 0,   -- 運費
+  threshold NUMERIC NOT NULL DEFAULT 0, -- 免運門檻
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 預設種子資料（如已存在則跳過）
+INSERT INTO public.shipping_configs (id, label, fee, threshold) VALUES
+  ('sf_delivery', '順豐冷鏈上門', 50, 300),
+  ('sf_locker',   '順豐凍櫃自取', 30, 200)
+ON CONFLICT (id) DO NOTHING;
+
+ALTER TABLE public.shipping_configs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow full access on shipping_configs" ON public.shipping_configs;
+CREATE POLICY "Allow full access on shipping_configs"
+  ON public.shipping_configs FOR ALL
+  USING (true)
+  WITH CHECK (true);
+
+-- ═══════════════════════════════════════════════════════════════════
+-- 7) upsell_configs — 湊單推薦產品
+-- ═══════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS public.upsell_configs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  product_id TEXT NOT NULL,           -- 關聯至 products 表的 id
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_upsell_configs_product_id ON public.upsell_configs(product_id);
+
+ALTER TABLE public.upsell_configs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow public read on upsell_configs" ON public.upsell_configs;
+CREATE POLICY "Allow public read on upsell_configs"
+  ON public.upsell_configs FOR SELECT
+  USING (true);
+
+DROP POLICY IF EXISTS "Allow admin write on upsell_configs" ON public.upsell_configs;
+CREATE POLICY "Allow admin write on upsell_configs"
+  ON public.upsell_configs FOR ALL
+  USING (true)
+  WITH CHECK (true);
+
+-- ═══════════════════════════════════════════════════════════════════
+-- 8) notification_logs — 手機優先通知日誌（不收集電郵）
+-- ═══════════════════════════════════════════════════════════════════
+DROP TABLE IF EXISTS public.notification_logs;
+
+CREATE TABLE public.notification_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  order_id TEXT NOT NULL,                         -- 訂單 ID
+  phone_number TEXT,                              -- 客戶手機號碼
+  status_type TEXT NOT NULL,                      -- 觸發狀態 e.g. "shipping", "completed"
+  content TEXT NOT NULL,                          -- 通知正文（廣東話）
+  provider TEXT NOT NULL DEFAULT 'MOCK_WHATSAPP', -- 發送商: MOCK_WHATSAPP / WHATSAPP / TWILIO_SMS
+  delivery_status TEXT NOT NULL DEFAULT 'LOGGED', -- 發送狀態: LOGGED / SENT / FAILED
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 索引
+CREATE INDEX IF NOT EXISTS idx_notification_logs_order_id ON public.notification_logs(order_id);
+CREATE INDEX IF NOT EXISTS idx_notification_logs_created_at ON public.notification_logs(created_at);
+
+ALTER TABLE public.notification_logs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow full access on notification_logs" ON public.notification_logs;
+CREATE POLICY "Allow full access on notification_logs"
+  ON public.notification_logs FOR ALL
+  USING (true)
+  WITH CHECK (true);

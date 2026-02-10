@@ -34,8 +34,8 @@ const translations = {
     checkout: {
       title: '結帳',
       deliveryMethod: '配送方式',
-      homeDelivery: '送貨上門',
-      sfLocker: '順豐自取',
+      homeDelivery: '順豐冷鏈上門',
+      sfLocker: '順豐凍櫃自取',
       deliveryAddress: '收貨地址',
       fillAddress: '填寫收貨地址',
       changeAddress: '改用其他地址／填寫新地址',

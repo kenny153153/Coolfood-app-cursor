@@ -13,6 +13,7 @@
  */
 import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
+import { sendPhoneNotification } from '../services/notification';
 
 /** SF Route Push opCode → order status mapping */
 const ROUTE_STATUS_MAP: Record<string, string> = {
@@ -152,10 +153,10 @@ export default async function handler(
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
-    // Find order by waybill_no
+    // Find order by waybill_no (include customer info for notifications)
     const { data: orderRows, error: findError } = await supabaseAdmin
       .from('orders')
-      .select('id, status, waybill_no')
+      .select('id, status, waybill_no, customer_name, customer_phone')
       .eq('waybill_no', waybillNo);
 
     if (findError) {
@@ -205,6 +206,17 @@ export default async function handler(
       } else {
         updatedCount++;
         console.log(`[sf-status] Order ${order.id} updated to ${targetStatus}`);
+
+        // ── 觸發通知（非阻塞）──
+        sendPhoneNotification(supabaseAdmin, {
+          orderId: String(order.id),
+          newStatus: targetStatus,
+          waybillNo,
+          customerPhone: order.customer_phone ?? undefined,
+          source: 'sf-status-webhook',
+        }).catch(err => {
+          console.warn(`[sf-status] Notification failed for order ${order.id}:`, err);
+        });
       }
     }
 

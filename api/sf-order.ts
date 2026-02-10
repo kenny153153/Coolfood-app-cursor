@@ -4,6 +4,8 @@
  * 簽名：Base64(MD5(msgData + timestamp + checkword))
  */
 import crypto from 'crypto';
+import { createClient } from '@supabase/supabase-js';
+import { sendPhoneNotification } from './services/notification';
 
 const SF_SANDBOX_URL = 'https://sfapi-sbox.sf-express.com/std/service';
 
@@ -303,6 +305,24 @@ export default async function handler(
         else console.log('[SF] Order updated with waybill:', orderId);
       } catch (e) {
         console.error('[SF] Supabase update error', e);
+      }
+    }
+
+    // ── 觸發通知：ready_for_pickup（順豐已接單）──
+    if (waybillNoStr && supabaseUrl && supabaseKey) {
+      try {
+        const supabaseAdmin = createClient(supabaseUrl, supabaseKey, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        sendPhoneNotification(supabaseAdmin, {
+          orderId,
+          newStatus: 'ready_for_pickup',
+          waybillNo: waybillNoStr,
+          customerPhone: payload.customer_phone,
+          source: 'sf-order',
+        }).catch(err => console.warn('[SF] Notification error (swallowed):', err));
+      } catch {
+        // 通知失敗不影響回應
       }
     }
 

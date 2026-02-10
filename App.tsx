@@ -15,7 +15,7 @@ import {
 import { GoogleGenAI } from "@google/genai";
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
-import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem } from './types';
+import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig } from './types';
 import { useI18n, Language } from './i18n';
 import { supabase } from './supabaseClient';
 import {
@@ -443,6 +443,14 @@ const App: React.FC = () => {
   const [editingSlideshow, setEditingSlideshow] = useState<SlideshowItem | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [deliveryMethod, setDeliveryMethod] = useState<'home' | 'sf_locker'>('home');
+
+  // ── 動態運費管理 ──
+  const SHIPPING_FALLBACKS: Record<string, ShippingConfig> = {
+    sf_delivery: { id: 'sf_delivery', label: '順豐冷鏈上門', fee: 50, threshold: 300 },
+    sf_locker:   { id: 'sf_locker',   label: '順豐凍櫃自取', fee: 30, threshold: 200 },
+  };
+  const [shippingConfigs, setShippingConfigs] = useState<Record<string, ShippingConfig>>(SHIPPING_FALLBACKS);
+  const [upsellProductIds, setUpsellProductIds] = useState<string[]>([]);
   const [selectedLockerDistrict, setSelectedLockerDistrict] = useState('');
   const [selectedLockerCode, setSelectedLockerCode] = useState('');
   const lockerPointsForDistrict = useMemo(() => getPointsByDistrict(selectedLockerDistrict), [selectedLockerDistrict]);
@@ -584,6 +592,26 @@ const App: React.FC = () => {
       if (!slideshowRes.error && slideshowRes.data?.length) {
         setSlideshowItems(slideshowRes.data.map((r: { id: string; type: string; url: string; title?: string | null; sort_order: number }) => mapSlideshowRowToItem(r)));
       }
+
+      // ── 載入動態運費配置 + 湊單推薦產品（合併請求，失敗時使用 fallback）──
+      try {
+        const [scRes, upRes] = await Promise.all([
+          supabase.from('shipping_configs').select('*'),
+          supabase.from('upsell_configs').select('product_id').eq('is_active', true),
+        ]);
+        if (!scRes.error && scRes.data && scRes.data.length > 0) {
+          const map: Record<string, ShippingConfig> = {};
+          scRes.data.forEach((row: any) => {
+            map[row.id] = { id: row.id, label: row.label, fee: Number(row.fee), threshold: Number(row.threshold), updated_at: row.updated_at };
+          });
+          setShippingConfigs(prev => ({ ...prev, ...map }));
+        }
+        if (!upRes.error && upRes.data) {
+          setUpsellProductIds(upRes.data.map((r: any) => r.product_id));
+        }
+      } catch {
+        console.warn('[shipping/upsell] Failed to load, using fallback values');
+      }
     };
 
     loadCoreData();
@@ -695,25 +723,29 @@ const App: React.FC = () => {
       subtotal += getEffectiveUnitPrice(item, item.qty, !!isUsingWallet) * item.qty;
     });
 
-    let deliveryFee = 0;
-    if (subtotal < (siteConfig.deliveryRules?.freeThreshold || 500)) {
-      const tiers = siteConfig.deliveryRules?.tieredFees || [];
-      const tier = tiers.slice().sort((a, b) => b.min - a.min).find(t => subtotal >= t.min);
-      deliveryFee = tier ? tier.fee : (siteConfig.deliveryRules?.baseFee || 50);
-    }
-
-    if (deliveryMethod === 'home') deliveryFee += (siteConfig.deliveryRules?.residentialSurcharge || 0);
-    else deliveryFee -= (siteConfig.deliveryRules?.lockerDiscount || 0);
-
-    const hasCold = true; // Assume cold items exist
-    if (hasCold) deliveryFee += (siteConfig.deliveryRules?.coldChainSurcharge || 0);
+    // 動態運費：根據配送方式從 shipping_configs 讀取 fee / threshold
+    const configKey = deliveryMethod === 'home' ? 'sf_delivery' : 'sf_locker';
+    const sc = shippingConfigs[configKey] || SHIPPING_FALLBACKS[configKey];
+    const deliveryFee = subtotal >= sc.threshold ? 0 : sc.fee;
 
     return { 
       subtotal, 
-      deliveryFee: Math.max(0, deliveryFee), 
-      total: subtotal + Math.max(0, deliveryFee) 
+      deliveryFee, 
+      total: subtotal + deliveryFee,
+      // 額外欄位供免運進度 UI 使用
+      shippingThreshold: sc.threshold,
+      shippingFee: sc.fee,
     };
-  }, [cart, isUsingWallet, deliveryMethod, siteConfig]);
+  }, [cart, isUsingWallet, deliveryMethod, shippingConfigs]);
+
+  // ── 湊單推薦產品（已過濾掉購物車中的商品）──
+  const upsellProducts = useMemo(() => {
+    if (upsellProductIds.length === 0) return [];
+    const cartIds = new Set(cart.map(c => c.id));
+    return products
+      .filter(p => upsellProductIds.includes(p.id) && !cartIds.has(p.id) && p.stock > 0)
+      .slice(0, 3);
+  }, [upsellProductIds, products, cart]);
 
   const scrollToCategory = (id: string) => {
     setActiveCategory(id);
@@ -1104,6 +1136,18 @@ const App: React.FC = () => {
         showToast(`截單失敗：${error.message}`, 'error');
       } else {
         showToast(`已截單 ${eligibleOrders.length} 筆訂單`);
+        // 觸發通知（非阻塞，失敗不影響截單結果）
+        // customerPhone 由 notification service 自動從 DB 查詢
+        fetch(`${window.location.origin}/api/send-notification`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orders: eligibleOrders.map(o => ({
+              orderId: o.id,
+              newStatus: 'processing',
+            })),
+          }),
+        }).catch(() => {/* 通知失敗不影響 UI */});
         await fetchOrders();
         setSelectedOrderIds(new Set());
       }
@@ -2249,6 +2293,92 @@ const App: React.FC = () => {
                    <button onClick={applyGlobalPricingRules} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all">套用並更新所有會員價</button>
                 </div>
              </div>
+             {/* ── 運費設置卡片 ── */}
+             <div className="bg-white p-10 rounded-[3.5rem] border border-slate-100 shadow-sm space-y-8 lg:col-span-2">
+                <div className="flex items-center gap-3"><div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl"><Truck size={20}/></div><h3 className="text-xl font-black">運費設置</h3></div>
+                <p className="text-xs text-slate-400 font-bold -mt-4">在此設定每種配送方式的運費及免運門檻，切勿在程式碼中寫死數字。</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                  {(['sf_delivery', 'sf_locker'] as const).map(key => {
+                    const sc = shippingConfigs[key] || SHIPPING_FALLBACKS[key];
+                    return (
+                      <div key={key} className="p-6 bg-slate-50 rounded-3xl border border-slate-100 space-y-5">
+                        <h4 className="font-black text-sm text-slate-700">{sc.label}</h4>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 ml-1 uppercase">運費 (HKD)</label>
+                          <input type="number" min="0" step="1" value={sc.fee} onChange={e => setShippingConfigs(prev => ({ ...prev, [key]: { ...prev[key], fee: Number(e.target.value) } }))} className="w-full p-4 bg-white rounded-2xl font-bold border border-slate-100 focus:ring-2 focus:ring-emerald-100 focus:border-emerald-200 transition-all" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 ml-1 uppercase">免運門檻 (HKD)</label>
+                          <input type="number" min="0" step="1" value={sc.threshold} onChange={e => setShippingConfigs(prev => ({ ...prev, [key]: { ...prev[key], threshold: Number(e.target.value) } }))} className="w-full p-4 bg-white rounded-2xl font-bold border border-slate-100 focus:ring-2 focus:ring-emerald-100 focus:border-emerald-200 transition-all" />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <button onClick={async () => {
+                  try {
+                    const entries = Object.values(shippingConfigs);
+                    for (const sc of entries) {
+                      const { error } = await supabase.from('shipping_configs').upsert({ id: sc.id, label: sc.label, fee: sc.fee, threshold: sc.threshold, updated_at: new Date().toISOString() });
+                      if (error) throw error;
+                    }
+                    showToast('運費設置已儲存');
+                  } catch (err: any) {
+                    showToast(`儲存失敗：${err.message}`, 'error');
+                  }
+                }} className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2"><Save size={16}/> 儲存運費設置</button>
+             </div>
+             {/* ── 湊單推薦產品管理 ── */}
+             <div className="bg-white p-10 rounded-[3.5rem] border border-slate-100 shadow-sm space-y-8 lg:col-span-2">
+                <div className="flex items-center gap-3"><div className="p-3 bg-orange-50 text-orange-600 rounded-2xl"><Zap size={20}/></div><h3 className="text-xl font-black">湊單推薦產品</h3></div>
+                <p className="text-xs text-slate-400 font-bold -mt-4">挑選 2-3 個產品作為「差少少就免運」的推薦項目，會在結帳頁面顯示。</p>
+                {/* 已選產品列表 */}
+                {upsellProductIds.length > 0 && (
+                  <div className="space-y-2">
+                    {upsellProductIds.map(pid => {
+                      const p = products.find(x => x.id === pid);
+                      return (
+                        <div key={pid} className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl border border-slate-100">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-10 h-10 bg-white rounded-xl border border-slate-100 flex items-center justify-center text-lg overflow-hidden flex-shrink-0">
+                              {p?.image?.startsWith('data') || p?.image?.startsWith('http') ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span>{p?.image || '📦'}</span>}
+                            </div>
+                            <div className="min-w-0"><p className="text-sm font-black text-slate-700 truncate">{p?.name || pid}</p><p className="text-[10px] text-slate-400 font-bold">${p?.price ?? '?'}</p></div>
+                          </div>
+                          <button onClick={() => setUpsellProductIds(prev => prev.filter(x => x !== pid))} className="p-2 text-slate-300 hover:text-red-500 transition-colors"><X size={16}/></button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {/* 新增產品下拉 */}
+                {upsellProductIds.length < 5 && (
+                  <select
+                    value=""
+                    onChange={e => { if (e.target.value) setUpsellProductIds(prev => [...prev, e.target.value]); }}
+                    className="w-full p-4 bg-slate-50 rounded-2xl font-bold border border-slate-100 focus:ring-2 focus:ring-orange-100 focus:border-orange-200 transition-all"
+                  >
+                    <option value="">＋ 新增推薦產品...</option>
+                    {products.filter(p => !upsellProductIds.includes(p.id)).map(p => (
+                      <option key={p.id} value={p.id}>{p.name} — ${p.price}</option>
+                    ))}
+                  </select>
+                )}
+                <button onClick={async () => {
+                  try {
+                    // 先清除舊資料，再插入新選擇
+                    await supabase.from('upsell_configs').delete().neq('id', '');
+                    if (upsellProductIds.length > 0) {
+                      const rows = upsellProductIds.map(pid => ({ product_id: pid, is_active: true }));
+                      const { error } = await supabase.from('upsell_configs').insert(rows);
+                      if (error) throw error;
+                    }
+                    showToast('湊單推薦已儲存');
+                  } catch (err: any) {
+                    showToast(`儲存失敗：${err.message}`, 'error');
+                  }
+                }} className="w-full py-4 bg-orange-500 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2"><Save size={16}/> 儲存湊單推薦</button>
+             </div>
           </div>
         );
       default: return null;
@@ -2732,6 +2862,88 @@ const App: React.FC = () => {
     </>
   );
 
+  // ── 免運進度提示元件 ──
+  const FreeShippingNudge = ({ compact = false }: { compact?: boolean }) => {
+    const { subtotal, shippingThreshold, shippingFee, deliveryFee } = pricingData;
+    const diff = shippingThreshold - subtotal;
+    const progress = Math.min(1, subtotal / (shippingThreshold || 1));
+    const isFree = deliveryFee === 0;
+
+    if (compact) {
+      // 簡約版：用於浮動購物車按鈕上方
+      return (
+        <div className="bg-white/95 backdrop-blur-md rounded-2xl px-4 py-2.5 shadow-lg border border-slate-100 mb-2">
+          {isFree ? (
+            <p className="text-[11px] font-black text-emerald-600 text-center tracking-wide">🎉 已享有免運費優惠！</p>
+          ) : (
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-black text-orange-500 text-center tracking-wide">仲差 ${diff.toFixed(0)} 就免運費喇！</p>
+              <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-orange-400 to-amber-400 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress * 100}%` }} />
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // 完整版：用於結帳金額明細區
+    return (
+      <div className={`p-4 rounded-2xl border ${isFree ? 'bg-emerald-50/80 border-emerald-200' : 'bg-orange-50/80 border-orange-200'} space-y-2.5 transition-all`}>
+        {isFree ? (
+          <p className="text-sm font-black text-emerald-600 text-center">🎉 已享有免運費優惠！</p>
+        ) : (
+          <>
+            <p className="text-sm font-black text-orange-600 text-center">仲差 <span className="text-base">${diff.toFixed(0)}</span> 就免運費喇！</p>
+            <div className="w-full h-2 bg-white/60 rounded-full overflow-hidden shadow-inner">
+              <div className="h-full bg-gradient-to-r from-orange-400 to-amber-400 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress * 100}%` }} />
+            </div>
+            <p className="text-[10px] text-orange-400 font-bold text-center">滿 ${shippingThreshold} 免運費 · 未達標運費 ${shippingFee}</p>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  // ── 一鍵湊免運推薦區塊 ──
+  const UpsellNudge = () => {
+    const { subtotal, shippingThreshold, deliveryFee } = pricingData;
+    const diff = shippingThreshold - subtotal;
+    // 只在 1 ≤ diff ≤ 50 且有可推薦產品時顯示
+    if (deliveryFee === 0 || diff < 1 || diff > 50 || upsellProducts.length === 0) return null;
+
+    return (
+      <section className="bg-white p-5 rounded-[2.5rem] border border-orange-100 shadow-sm space-y-4 animate-fade-in">
+        <div className="flex items-center gap-2">
+          <div className="p-1.5 bg-orange-100 rounded-xl"><Zap size={14} className="text-orange-500" /></div>
+          <h3 className="text-xs font-black text-orange-500 uppercase tracking-widest">差少少就免運費！加多件就可以：</h3>
+        </div>
+        <div className="flex gap-3 overflow-x-auto pb-1 hide-scrollbar -mx-1 px-1">
+          {upsellProducts.map(p => {
+            const effectivePrice = getEffectiveUnitPrice(p, 1, !!isUsingWallet);
+            return (
+              <div key={p.id} className="flex-shrink-0 w-40 bg-slate-50 rounded-2xl border border-slate-100 p-3 space-y-2.5 hover:border-orange-200 transition-all">
+                <div className="w-full h-20 bg-white rounded-xl border border-slate-50 flex items-center justify-center text-3xl overflow-hidden">
+                  {p.image?.startsWith('data') || p.image?.startsWith('http') ? <img src={p.image} className="w-full h-full object-cover" alt={p.name} /> : <span>{p.image || '📦'}</span>}
+                </div>
+                <p className="text-xs font-black text-slate-700 truncate">{p.name}</p>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-black text-orange-600">${effectivePrice}</span>
+                  <button
+                    onClick={() => { updateCart(p, 1); showToast(`已加入 ${p.name}`); }}
+                    className="px-3 py-1.5 bg-orange-500 text-white rounded-xl text-[10px] font-black shadow-md active:scale-90 transition-all whitespace-nowrap"
+                  >
+                    + 加購
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    );
+  };
+
   const renderCheckoutView = () => {
     const { subtotal, deliveryFee, total } = pricingData;
     return (
@@ -2934,11 +3146,12 @@ const App: React.FC = () => {
                ))}
              </div>
           </section>
+          <UpsellNudge />
           <section className="bg-slate-900 p-8 rounded-[3rem] text-white space-y-6 shadow-2xl">
             <div className="space-y-3">
               <div className="flex justify-between text-xs font-bold text-white/40 uppercase tracking-widest"><span>商品小計</span><span>${subtotal}</span></div>
-              <div className="flex justify-between text-xs font-bold text-white/40 uppercase tracking-widest"><span>預估運費</span><span>${deliveryFee}</span></div>
-              {deliveryFee === 0 && <p className="text-[9px] text-emerald-400 font-black tracking-widest uppercase">已享全單免運優惠 ✨</p>}
+              <div className="flex justify-between text-xs font-bold text-white/40 uppercase tracking-widest"><span>預估運費</span><span>{deliveryFee === 0 ? '免運費' : `$${deliveryFee}`}</span></div>
+              <FreeShippingNudge />
               <div className="pt-4 border-t border-white/10 flex justify-between items-end"><span className="text-sm font-black uppercase tracking-widest">總金額</span><span className="text-4xl font-black text-blue-400">${total}</span></div>
             </div>
             <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || (deliveryMethod === 'sf_locker' && !selectedLockerPoint) || isRedirectingToPayment} onClick={handleSubmitOrder} className="w-full py-5 bg-blue-600 rounded-[2rem] font-black text-lg shadow-xl active:scale-95 transition-all disabled:opacity-30 flex items-center justify-center gap-3">{isRedirectingToPayment ? <RefreshCw size={20} className="animate-spin" /> : <CreditCard size={20}/>} {isRedirectingToPayment ? t.checkout.redirecting : t.checkout.payNow}</button>
@@ -3054,6 +3267,7 @@ const App: React.FC = () => {
       </div>
       {cart.length > 0 && (
         <div className="fixed bottom-20 inset-x-4 z-[60]">
+          <FreeShippingNudge compact />
           <button onClick={(e) => { e.stopPropagation(); setView('checkout'); }} className="w-full h-14 bg-slate-900 text-white rounded-2xl flex items-center justify-between pl-6 pr-3 shadow-2xl active:scale-95 transition-all ring-4 ring-white/10">
             <div className="flex items-center gap-4"><ShoppingBag size={20} /><div className="text-base font-bold tracking-tight">${pricingData.subtotal}</div></div>
             <div className="px-4 h-9 bg-white/10 rounded-xl flex items-center gap-1 font-bold text-xs uppercase tracking-wider text-white">{t.store.goCheckout} <ChevronRight size={14} /></div>
