@@ -1,6 +1,9 @@
 /**
  * 第三部分：Webhook — 當 Supabase 訂單被更新為「已付款」(paid/success) 時由 Supabase 呼叫
  * 在 Supabase Dashboard → Database → Webhooks 新增：table orders, Events: Update, URL: https://你的網域/api/on-order-paid
+ * 
+ * 注意：SF API 已解耦，此 webhook 僅確認付款並更新狀態至 processing。
+ * 順豐下單改由後台「呼叫順豐」批量操作觸發。
  */
 type WebhookPayload = {
   type?: string;
@@ -33,21 +36,7 @@ export default async function handler(
     return res.status(200).json({ received: true, skipped: true });
   }
 
-  const id = body.record.id;
-  const orderId = typeof id === 'number' ? `ORD-${id}` : String(id);
-  const baseUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://coolfood-app-cursor.vercel.app';
-
-  try {
-    const cfRes = await fetch(`${baseUrl}/api/confirm-payment`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orderId, origin: baseUrl }),
-    });
-    const data = await cfRes.json();
-    console.log('[on-order-paid] confirm-payment result', cfRes.status, data);
-    return res.status(200).json({ received: true, confirmPayment: data });
-  } catch (e) {
-    console.error('[on-order-paid] Error', e);
-    return res.status(502).json({ received: true, error: String(e) });
-  }
+  // SF API 已解耦：webhook 僅記錄收到事件，不再觸發 confirm-payment 或 SF 下單
+  console.log('[on-order-paid] Payment confirmed for order', body.record.id, '- SF decoupled, no auto-call');
+  return res.status(200).json({ received: true, sfDecoupled: true });
 }

@@ -152,12 +152,12 @@ export default async function handler(
     }
     console.log('[confirm-payment] Order found:', orderRow.id, orderRow.status);
 
-    // Step A: 更新狀態
-    console.log('[confirm-payment] Step A: update status to success');
+    // Step A: 更新狀態為 processing（解耦順豐 API，由後台批量操作觸發）
+    console.log('[confirm-payment] Step A: update status to processing');
     const updateId = orderRow.id ?? dbIdValue;
     const { data: updatedRow, error: updateError } = await supabaseAdmin
       .from('orders')
-      .update({ status: 'success' })
+      .update({ status: 'processing' })
       .eq('id', updateId)
       .select('id,status,tracking_number,waybill_no')
       .maybeSingle();
@@ -166,43 +166,14 @@ export default async function handler(
       return res.status(502).json({ error: 'Failed to update order status', code: 'UPDATE_FAILED', details: updateError.message });
     }
     const effectiveOrder = updatedRow ?? orderRow;
-    console.log('[confirm-payment] Status updated:', effectiveOrder.status);
+    console.log('[confirm-payment] Status updated to processing:', effectiveOrder.status);
 
-    // Step B: 呼叫順豐
-    console.log('[confirm-payment] Step B: call sf-order');
-    const sfRes = await fetch(`${origin}/api/sf-order`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orderId }),
-    });
-    const sfText = await sfRes.text();
-    let sfJson: { waybillNo?: string; waybill_no?: string } | null = null;
-    try {
-      sfJson = sfText ? JSON.parse(sfText) : null;
-    } catch {
-      sfJson = null;
-    }
-
-    // Step C: 儲存單號 + 回應
-    const waybill = sfJson?.waybill_no ?? sfJson?.waybillNo ?? null;
-    const sfPayload = { status: sfRes.status, body: sfJson ?? sfText, at: new Date().toISOString() };
-    const updatePayload = waybill ? { waybill_no: waybill, sf_responses: sfPayload } : { sf_responses: sfPayload };
-
-    const { error: sfStoreError } = await supabaseAdmin
-      .from('orders')
-      .update(updatePayload)
-      .eq('id', updateId);
-    if (sfStoreError) {
-      console.error('[confirm-payment] Store SF result error:', sfStoreError.message, sfStoreError.details ?? '');
-      return res.status(502).json({ error: 'Failed to store sf result', code: 'SF_STORE_FAILED', details: sfStoreError.message });
-    }
-
-    console.log('[confirm-payment] Step C: sf result stored, waybill:', waybill ?? '(none)');
+    // SF API 已解耦：不再自動呼叫順豐，改由後台「呼叫順豐」批量操作手動觸發
     return res.status(200).json({
       success: true,
       orderId,
-      waybillNo: waybill ?? effectiveOrder.tracking_number ?? null,
-      waybill_no: waybill ?? effectiveOrder.waybill_no ?? null,
+      waybillNo: effectiveOrder.tracking_number ?? null,
+      waybill_no: effectiveOrder.waybill_no ?? null,
       confirmed: true,
     });
   } catch (error) {

@@ -61,6 +61,19 @@
         .animate-order-pop {
             animation: orderPop 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
         }
+        /* Print styles — hide navigation, sidebars, and action bars when printing */
+        @media print {
+            nav, aside, .print\\:hidden, [class*="fixed bottom"] {
+                display: none !important;
+            }
+            body {
+                background: white !important;
+                color: black !important;
+            }
+            .page-break-after {
+                page-break-after: always;
+            }
+        }
     </style>
 <link rel="stylesheet" href="/index.css">
 </head>

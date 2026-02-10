@@ -10,7 +10,7 @@ import {
   Check, Filter, List, Video, FileText, ChevronUp, ChevronDown, GripVertical,
   Printer, ExternalLink, Calendar, Hash, UserCheck, CreditCard as CardIcon,
   Award, Smartphone, Mail, Save, PlusCircle, Map, Download, Upload, Zap,
-  Layers, Percent, Globe, Crosshair
+  Layers, Percent, Globe, Crosshair, Scissors, Phone, Square, CheckSquare
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { HK_DISTRICTS, SF_LOCKERS } from './constants';
@@ -184,11 +184,9 @@ const getOrderStatusLabel = (status: OrderStatus | string, t?: { orderStatus: Re
   }
   const labels: Record<string, string> = {
     [OrderStatus.PENDING_PAYMENT]: '待付款',
-    [OrderStatus.TO_PACK]: '待包裝',
     [OrderStatus.PROCESSING]: '處理中',
     [OrderStatus.READY_FOR_PICKUP]: '等待收件',
     [OrderStatus.SHIPPING]: '運輸中',
-    [OrderStatus.WAITING_PICKUP]: '等待取件',
     [OrderStatus.COMPLETED]: '已完成',
     [OrderStatus.ABNORMAL]: '異常',
     [OrderStatus.REFUND]: '已退款',
@@ -199,11 +197,9 @@ const getOrderStatusLabel = (status: OrderStatus | string, t?: { orderStatus: Re
 const StatusBadge: React.FC<{ status: OrderStatus; t?: { orderStatus: Record<string, string> } }> = ({ status, t }) => {
   const configs: Record<string, { label: string; color: string }> = {
     [OrderStatus.PENDING_PAYMENT]: { label: getOrderStatusLabel(OrderStatus.PENDING_PAYMENT, t), color: 'bg-slate-50 text-slate-600 border-slate-100' },
-    [OrderStatus.TO_PACK]: { label: getOrderStatusLabel(OrderStatus.TO_PACK, t), color: 'bg-blue-50 text-blue-700 border-blue-100' },
-    [OrderStatus.PROCESSING]: { label: getOrderStatusLabel(OrderStatus.PROCESSING, t), color: 'bg-slate-100 text-slate-700 border-slate-200' },
+    [OrderStatus.PROCESSING]: { label: getOrderStatusLabel(OrderStatus.PROCESSING, t), color: 'bg-blue-50 text-blue-700 border-blue-100' },
     [OrderStatus.READY_FOR_PICKUP]: { label: getOrderStatusLabel(OrderStatus.READY_FOR_PICKUP, t), color: 'bg-amber-50 text-amber-700 border-amber-100' },
     [OrderStatus.SHIPPING]: { label: getOrderStatusLabel(OrderStatus.SHIPPING, t), color: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
-    [OrderStatus.WAITING_PICKUP]: { label: getOrderStatusLabel(OrderStatus.WAITING_PICKUP, t), color: 'bg-slate-100 text-slate-700 border-slate-200' },
     [OrderStatus.COMPLETED]: { label: getOrderStatusLabel(OrderStatus.COMPLETED, t), color: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
     [OrderStatus.ABNORMAL]: { label: getOrderStatusLabel(OrderStatus.ABNORMAL, t), color: 'bg-rose-50 text-rose-700 border-rose-100' },
     [OrderStatus.REFUND]: { label: getOrderStatusLabel(OrderStatus.REFUND, t), color: 'bg-orange-50 text-orange-700 border-orange-100' },
@@ -220,7 +216,6 @@ const ORDER_TIMELINE = [
   OrderStatus.PROCESSING,
   OrderStatus.READY_FOR_PICKUP,
   OrderStatus.SHIPPING,
-  OrderStatus.WAITING_PICKUP,
   OrderStatus.COMPLETED,
 ];
 
@@ -293,7 +288,7 @@ const SuccessView: React.FC<{
           const attemptUpdate = async (idValue: string) => {
             const { data, error } = await supabase
               .from('orders')
-              .update({ status: 'success' })
+              .update({ status: 'processing' })
               .eq('id', idValue)
               .select('id,status,tracking_number,waybill_no')
               .maybeSingle();
@@ -452,6 +447,9 @@ const App: React.FC = () => {
   const [adminProductSearch, setAdminProductSearch] = useState('');
   const [adminOrderSearch, setAdminOrderSearch] = useState('');
   const [adminMemberSearch, setAdminMemberSearch] = useState('');
+  const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
+  const [batchProcessing, setBatchProcessing] = useState(false);
+  const [sfValidationModal, setSfValidationModal] = useState<{ problematic: { id: string; reason: string }[]; valid: SupabaseOrderRow[] } | null>(null);
   
   // Modals
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -1070,6 +1068,323 @@ const App: React.FC = () => {
     }
     const url = `https://www.sf-express.com/hk/en/dynamic_function/waybill/?billno=${order.trackingNumber}`;
     window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  // ========== Batch Order Operations ==========
+
+  /** Action A: 截單 — batch update paid/processing orders to processing */
+  const handleBatchCutoff = async () => {
+    if (selectedOrderIds.size === 0) return;
+    setBatchProcessing(true);
+    try {
+      // Filter selected orders: only those with status processing (paid orders are mapped to processing)
+      const eligibleOrders = orders.filter(o => selectedOrderIds.has(o.id) && o.status === OrderStatus.PROCESSING);
+      if (eligibleOrders.length === 0) {
+        showToast('沒有符合條件的訂單（僅限「處理中」狀態）', 'error');
+        setBatchProcessing(false);
+        return;
+      }
+      const dbIds = eligibleOrders.map(o => {
+        const dbId = getOrderDbId(o.id);
+        return dbId;
+      }).filter((id): id is number => id !== null);
+
+      const { error } = await supabase
+        .from('orders')
+        .update({ status: 'processing' })
+        .in('id', dbIds);
+      if (error) {
+        showToast(`截單失敗：${error.message}`, 'error');
+      } else {
+        showToast(`已截單 ${eligibleOrders.length} 筆訂單`);
+        await fetchOrders();
+        setSelectedOrderIds(new Set());
+      }
+    } catch (e) {
+      showToast(`截單錯誤：${e instanceof Error ? e.message : String(e)}`, 'error');
+    }
+    setBatchProcessing(false);
+  };
+
+  /** Action B: 列印總揀貨單 — aggregate packing list */
+  const handlePrintAggregateList = async () => {
+    if (selectedOrderIds.size === 0) return;
+    setBatchProcessing(true);
+    try {
+      const dbIds = Array.from(selectedOrderIds).map(id => {
+        const dbId = getOrderDbId(id);
+        return dbId;
+      }).filter((id): id is number => id !== null);
+
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .in('id', dbIds);
+      if (error || !data) {
+        showToast('載入訂單資料失敗', 'error');
+        setBatchProcessing(false);
+        return;
+      }
+
+      // Aggregate line_items by product
+      const aggregated: Record<string, { name: string; qty: number; image?: string | null }> = {};
+      for (const row of data as SupabaseOrderRow[]) {
+        for (const item of row.line_items || []) {
+          const key = `${item.product_id}_${item.name}`;
+          if (aggregated[key]) {
+            aggregated[key].qty += item.qty;
+          } else {
+            aggregated[key] = { name: item.name, qty: item.qty, image: item.image };
+          }
+        }
+      }
+
+      // Sort by qty descending
+      const sorted = Object.values(aggregated).sort((a, b) => b.qty - a.qty);
+      const today = new Date().toLocaleDateString('zh-HK');
+
+      // Open print window
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) {
+        showToast('無法開啟列印視窗，請允許彈出視窗', 'error');
+        setBatchProcessing(false);
+        return;
+      }
+      printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>總揀貨單</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 40px; color: #1e293b; }
+          h1 { font-size: 24px; font-weight: 900; margin-bottom: 8px; }
+          .meta { color: #64748b; font-size: 13px; margin-bottom: 24px; }
+          table { width: 100%; border-collapse: collapse; }
+          th { background: #f1f5f9; padding: 12px 16px; text-align: left; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #64748b; border-bottom: 2px solid #e2e8f0; }
+          td { padding: 12px 16px; border-bottom: 1px solid #f1f5f9; font-size: 14px; font-weight: 600; }
+          tr:nth-child(even) { background: #f8fafc; }
+          .qty { font-weight: 900; font-size: 16px; color: #0f172a; }
+          @media print { body { padding: 20px; } }
+        </style>
+      </head><body>
+        <h1>總揀貨單</h1>
+        <p class="meta">日期：${today} ｜ 共 ${selectedOrderIds.size} 筆訂單 ｜ ${sorted.length} 種商品</p>
+        <table>
+          <thead><tr><th>#</th><th>商品名稱</th><th>總數量</th></tr></thead>
+          <tbody>${sorted.map((item, i) => `<tr><td>${i + 1}</td><td>${item.name}</td><td class="qty">${item.qty}</td></tr>`).join('')}</tbody>
+        </table>
+      </body></html>`);
+      printWindow.document.close();
+      printWindow.focus();
+      setTimeout(() => printWindow.print(), 300);
+    } catch (e) {
+      showToast(`列印失敗：${e instanceof Error ? e.message : String(e)}`, 'error');
+    }
+    setBatchProcessing(false);
+  };
+
+  /** Action C: 列印個人清單 — individual invoices */
+  const handlePrintIndividualInvoices = async () => {
+    if (selectedOrderIds.size === 0) return;
+    setBatchProcessing(true);
+    try {
+      const dbIds = Array.from(selectedOrderIds).map(id => {
+        const dbId = getOrderDbId(id);
+        return dbId;
+      }).filter((id): id is number => id !== null);
+
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .in('id', dbIds);
+      if (error || !data) {
+        showToast('載入訂單資料失敗', 'error');
+        setBatchProcessing(false);
+        return;
+      }
+
+      const orderRows = data as SupabaseOrderRow[];
+      const today = new Date().toLocaleDateString('zh-HK');
+
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) {
+        showToast('無法開啟列印視窗，請允許彈出視窗', 'error');
+        setBatchProcessing(false);
+        return;
+      }
+
+      const invoicesHtml = orderRows.map((row, idx) => {
+        const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : row.id;
+        const address = [row.delivery_district, row.delivery_address, row.delivery_street, row.delivery_building].filter(Boolean).join(' ');
+        const floorFlat = [row.delivery_floor ? row.delivery_floor + '樓' : '', row.delivery_flat ? row.delivery_flat + '室' : ''].filter(Boolean).join(' ');
+        const fullAddress = [address, floorFlat].filter(Boolean).join(' ') || '未提供地址';
+
+        const lineItemsHtml = (row.line_items || []).map(item =>
+          `<tr><td>${item.name}</td><td style="text-align:center">${item.qty}</td><td style="text-align:right">$${item.unit_price}</td><td style="text-align:right">$${item.line_total}</td></tr>`
+        ).join('');
+
+        return `<div class="invoice" ${idx < orderRows.length - 1 ? 'style="page-break-after:always"' : ''}>
+          <h2>訂單 #${orderId}</h2>
+          <div class="info-grid">
+            <div><span class="label">客戶</span><span>${row.customer_name}</span></div>
+            <div><span class="label">電話</span><span>${row.customer_phone || '未提供'}</span></div>
+            <div><span class="label">聯絡人</span><span>${row.contact_name || '未提供'}</span></div>
+            <div><span class="label">配送方式</span><span>${row.delivery_method || '未設定'}</span></div>
+            <div class="full-width"><span class="label">地址</span><span>${fullAddress}</span></div>
+          </div>
+          <table>
+            <thead><tr><th>商品</th><th style="text-align:center">數量</th><th style="text-align:right">單價</th><th style="text-align:right">小計</th></tr></thead>
+            <tbody>${lineItemsHtml}</tbody>
+          </table>
+          <div class="totals">
+            <div><span>商品小計</span><span>$${row.subtotal ?? row.total}</span></div>
+            <div><span>運費</span><span>$${row.delivery_fee ?? 0}</span></div>
+            <div class="grand-total"><span>總計</span><span>$${row.total}</span></div>
+          </div>
+        </div>`;
+      }).join('');
+
+      printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>個人清單</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 40px; color: #1e293b; }
+          .invoice { margin-bottom: 40px; }
+          h2 { font-size: 20px; font-weight: 900; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 2px solid #1e293b; }
+          .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; margin-bottom: 20px; }
+          .info-grid .full-width { grid-column: 1 / -1; }
+          .info-grid .label { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #64748b; display: block; }
+          .info-grid span:not(.label) { font-size: 14px; font-weight: 600; }
+          table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+          th { background: #f1f5f9; padding: 10px 12px; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #64748b; border-bottom: 2px solid #e2e8f0; text-align: left; }
+          td { padding: 10px 12px; border-bottom: 1px solid #f1f5f9; font-size: 13px; font-weight: 600; }
+          .totals { text-align: right; font-size: 14px; }
+          .totals > div { display: flex; justify-content: flex-end; gap: 24px; padding: 4px 0; }
+          .totals .grand-total { font-weight: 900; font-size: 16px; border-top: 2px solid #1e293b; padding-top: 8px; margin-top: 4px; }
+          @media print { body { padding: 20px; } }
+        </style>
+      </head><body>
+        <div style="text-align:center;margin-bottom:32px;font-size:11px;color:#94a3b8;font-weight:700;">列印日期：${today} ｜ 共 ${orderRows.length} 筆訂單</div>
+        ${invoicesHtml}
+      </body></html>`);
+      printWindow.document.close();
+      printWindow.focus();
+      setTimeout(() => printWindow.print(), 300);
+    } catch (e) {
+      showToast(`列印失敗：${e instanceof Error ? e.message : String(e)}`, 'error');
+    }
+    setBatchProcessing(false);
+  };
+
+  /** Action D: 呼叫順豐 — call SF API sequentially, then update status */
+  const handleBatchCallCourier = async () => {
+    if (selectedOrderIds.size === 0) return;
+    setBatchProcessing(true);
+    try {
+      // Filter to processing orders only
+      const eligibleOrders = orders.filter(o => selectedOrderIds.has(o.id) && o.status === OrderStatus.PROCESSING);
+      if (eligibleOrders.length === 0) {
+        showToast('沒有符合條件的訂單（僅限「處理中」狀態）', 'error');
+        setBatchProcessing(false);
+        return;
+      }
+
+      // Fetch full details for all eligible orders
+      const dbIds = eligibleOrders.map(o => getOrderDbId(o.id)).filter((id): id is number => id !== null);
+      const { data, error } = await supabase.from('orders').select('*').in('id', dbIds);
+      if (error || !data) {
+        showToast('載入訂單資料失敗', 'error');
+        setBatchProcessing(false);
+        return;
+      }
+
+      const orderRows = data as SupabaseOrderRow[];
+
+      // Validate: check address and contact info
+      const problematic: { id: string; reason: string }[] = [];
+      const valid: SupabaseOrderRow[] = [];
+      for (const row of orderRows) {
+        const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
+        const reasons: string[] = [];
+        if (!row.delivery_address && !row.delivery_district) reasons.push('缺少配送地址');
+        if (!row.customer_phone && !row.contact_name) reasons.push('缺少聯絡人/電話');
+        if (reasons.length > 0) {
+          problematic.push({ id: orderId, reason: reasons.join('、') });
+        } else {
+          valid.push(row);
+        }
+      }
+
+      if (problematic.length > 0) {
+        // Show validation modal
+        setSfValidationModal({ problematic, valid });
+        setBatchProcessing(false);
+        return;
+      }
+
+      // All valid — proceed to call SF
+      await executeSfCalls(valid);
+    } catch (e) {
+      showToast(`呼叫順豐錯誤：${e instanceof Error ? e.message : String(e)}`, 'error');
+    }
+    setBatchProcessing(false);
+  };
+
+  /** Execute SF API calls sequentially with controlled flow */
+  const executeSfCalls = async (validOrders: SupabaseOrderRow[]) => {
+    setBatchProcessing(true);
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const row of validOrders) {
+      const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
+      try {
+        const sfRes = await fetch(`${window.location.origin}/api/sf-order`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderId }),
+        });
+        const sfText = await sfRes.text();
+        let sfJson: { waybillNo?: string; waybill_no?: string } | null = null;
+        try { sfJson = sfText ? JSON.parse(sfText) : null; } catch { sfJson = null; }
+
+        if (sfRes.ok && sfJson) {
+          const waybill = sfJson.waybill_no ?? sfJson.waybillNo ?? null;
+          // Update order status to ready_for_pickup and store waybill
+          await supabase
+            .from('orders')
+            .update({
+              status: 'ready_for_pickup',
+              ...(waybill ? { waybill_no: waybill } : {}),
+              sf_responses: { status: sfRes.status, body: sfJson, at: new Date().toISOString() },
+            })
+            .eq('id', row.id);
+          successCount++;
+        } else {
+          // Mark as abnormal on failure
+          await supabase
+            .from('orders')
+            .update({
+              status: 'abnormal',
+              sf_responses: { status: sfRes.status, body: sfText, at: new Date().toISOString(), error: true },
+            })
+            .eq('id', row.id);
+          failCount++;
+        }
+      } catch (e) {
+        await supabase
+          .from('orders')
+          .update({
+            status: 'abnormal',
+            sf_responses: { error: true, message: e instanceof Error ? e.message : String(e), at: new Date().toISOString() },
+          })
+          .eq('id', row.id);
+        failCount++;
+      }
+    }
+
+    await fetchOrders();
+    setSelectedOrderIds(new Set());
+    setSfValidationModal(null);
+    const msg = failCount > 0
+      ? `順豐下單完成：${successCount} 成功、${failCount} 失敗（已標記異常）`
+      : `順豐下單完成：${successCount} 筆訂單已更新為「等待收件」`;
+    showToast(msg, failCount > 0 ? 'error' : 'success');
+    setBatchProcessing(false);
   };
 
   const handleLocateMe = () => {
@@ -1714,8 +2029,24 @@ const App: React.FC = () => {
         );
       case 'inventory': return renderInventoryModule();
       case 'orders':
+        const allFilteredIds = new Set(filteredAdminOrders.map(o => o.id));
+        const allSelected = filteredAdminOrders.length > 0 && filteredAdminOrders.every(o => selectedOrderIds.has(o.id));
+        const toggleSelectAll = () => {
+          if (allSelected) {
+            setSelectedOrderIds(new Set());
+          } else {
+            setSelectedOrderIds(new Set(filteredAdminOrders.map(o => o.id)));
+          }
+        };
+        const toggleSelectOrder = (id: string) => {
+          setSelectedOrderIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+          });
+        };
         return (
-          <div className="space-y-6 animate-fade-in">
+          <div className="space-y-6 animate-fade-in print:hidden">
              <div className="flex flex-col md:flex-row gap-4 justify-between">
                 <div className="relative flex-1 max-w-md">
                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
@@ -1733,6 +2064,11 @@ const App: React.FC = () => {
                 <table className="w-full text-left text-sm">
                    <thead className="bg-slate-50 border-b border-slate-100">
                       <tr>
+                         <th className="px-4 py-4 w-12">
+                           <button onClick={toggleSelectAll} className="text-slate-400 hover:text-slate-700 transition-colors">
+                             {allSelected ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}
+                           </button>
+                         </th>
                          <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">訂單編號</th>
                          <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">客戶</th>
                          <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">金額</th>
@@ -1743,13 +2079,16 @@ const App: React.FC = () => {
                    <tbody className="divide-y divide-slate-50">
                       {filteredAdminOrders.length === 0 && (
                         <tr>
-                          <td colSpan={5} className="px-6 py-10 text-center text-slate-400 font-bold">
+                          <td colSpan={6} className="px-6 py-10 text-center text-slate-400 font-bold">
                             尚未有訂單
                           </td>
                         </tr>
                       )}
                       {filteredAdminOrders.map(o => (
-                         <tr key={o.id} className="hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => setInspectingOrder(o)}>
+                         <tr key={o.id} className={`hover:bg-slate-50 transition-colors cursor-pointer ${selectedOrderIds.has(o.id) ? 'bg-blue-50/50' : ''}`} onClick={() => setInspectingOrder(o)}>
+                            <td className="px-4 py-4" onClick={e => { e.stopPropagation(); toggleSelectOrder(o.id); }}>
+                              {selectedOrderIds.has(o.id) ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} className="text-slate-300" />}
+                            </td>
                             <td className="px-6 py-4 font-black text-blue-600">#{o.id}</td>
                             <td className="px-6 py-4 font-bold text-slate-700">{o.customerName}</td>
                             <td className="px-6 py-4 font-black text-slate-900">${o.total}</td>
@@ -1760,6 +2099,48 @@ const App: React.FC = () => {
                    </tbody>
                 </table>
              </div>
+
+             {/* Floating Batch Action Bar */}
+             {selectedOrderIds.size > 0 && (
+               <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[5000] bg-slate-900 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-4 animate-fade-in">
+                 <span className="text-sm font-black whitespace-nowrap">已選 {selectedOrderIds.size} 筆訂單</span>
+                 <div className="w-px h-8 bg-slate-700" />
+                 <button
+                   disabled={batchProcessing}
+                   onClick={handleBatchCutoff}
+                   className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-black transition-colors disabled:opacity-50"
+                 >
+                   <Scissors size={14} /> 截單
+                 </button>
+                 <button
+                   disabled={batchProcessing}
+                   onClick={handlePrintAggregateList}
+                   className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-black transition-colors disabled:opacity-50"
+                 >
+                   <ClipboardList size={14} /> 總揀貨單
+                 </button>
+                 <button
+                   disabled={batchProcessing}
+                   onClick={handlePrintIndividualInvoices}
+                   className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-black transition-colors disabled:opacity-50"
+                 >
+                   <Printer size={14} /> 個人清單
+                 </button>
+                 <button
+                   disabled={batchProcessing}
+                   onClick={handleBatchCallCourier}
+                   className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-xs font-black transition-colors disabled:opacity-50"
+                 >
+                   <Phone size={14} /> 呼叫順豐
+                 </button>
+                 <button
+                   onClick={() => setSelectedOrderIds(new Set())}
+                   className="ml-2 p-2 hover:bg-slate-700 rounded-xl transition-colors"
+                 >
+                   <X size={14} />
+                 </button>
+               </div>
+             )}
           </div>
         );
       case 'slideshow':
@@ -2271,6 +2652,51 @@ const App: React.FC = () => {
           </div>
       )}
 
+      {/* SF Validation Modal — 呼叫順豐前的地址驗證 */}
+      {sfValidationModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[6500] flex items-center justify-center p-6 animate-fade-in">
+          <div className="bg-white w-full max-w-lg rounded-[2rem] shadow-2xl p-8 space-y-6">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="text-amber-500" size={20} />
+              <h4 className="text-lg font-black text-slate-900">地址驗證結果</h4>
+            </div>
+            {sfValidationModal.problematic.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-sm font-bold text-slate-600">以下訂單資料不完整，將被跳過：</p>
+                <div className="max-h-48 overflow-y-auto space-y-2">
+                  {sfValidationModal.problematic.map(p => (
+                    <div key={p.id} className="flex items-center gap-3 bg-amber-50 border border-amber-100 rounded-xl p-3">
+                      <AlertTriangle className="text-amber-500 flex-shrink-0" size={14} />
+                      <div>
+                        <span className="text-sm font-black text-slate-900">訂單 #{p.id}</span>
+                        <span className="text-xs font-bold text-amber-700 ml-2">{p.reason}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {sfValidationModal.valid.length > 0 && (
+              <p className="text-sm font-bold text-emerald-700 bg-emerald-50 rounded-xl p-3">
+                可處理的訂單：{sfValidationModal.valid.length} 筆
+              </p>
+            )}
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setSfValidationModal(null)} className="px-6 py-3 bg-white border border-slate-200 rounded-2xl font-black text-xs">取消</button>
+              {sfValidationModal.valid.length > 0 && (
+                <button
+                  disabled={batchProcessing}
+                  onClick={() => executeSfCalls(sfValidationModal.valid)}
+                  className="px-6 py-3 bg-emerald-600 text-white rounded-2xl font-black text-xs disabled:opacity-50"
+                >
+                  {batchProcessing ? '處理中...' : `繼續處理 ${sfValidationModal.valid.length} 筆`}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {confirmation && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[6500] flex items-center justify-center p-6 animate-fade-in">
           <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl p-8 space-y-6">
@@ -2686,7 +3112,7 @@ const App: React.FC = () => {
                           <span>{t.orders.progress}</span>
                           <span>{getOrderStatusLabel(o.status, t)}</span>
                         </div>
-                        <div className="mt-3 grid grid-cols-5 gap-2">
+                        <div className="mt-3 grid grid-cols-4 gap-2">
                           {ORDER_TIMELINE.map((step, idx) => {
                             const currentIdx = getTimelineIndex(o.status);
                             const isActive = currentIdx >= idx;
