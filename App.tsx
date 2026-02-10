@@ -876,13 +876,22 @@ const App: React.FC = () => {
     const sc = shippingConfigs[configKey] || SHIPPING_FALLBACKS[configKey];
     const deliveryFee = subtotal >= sc.threshold ? 0 : sc.fee;
 
+    // 雙門檻資料供免運進度條使用
+    const lockerConfig = shippingConfigs['sf_locker'] || SHIPPING_FALLBACKS['sf_locker'];
+    const deliveryConfig = shippingConfigs['sf_delivery'] || SHIPPING_FALLBACKS['sf_delivery'];
+
     return { 
       subtotal, 
       deliveryFee, 
       total: subtotal + deliveryFee,
-      // 額外欄位供免運進度 UI 使用
+      // 當前選擇的配送方式門檻
       shippingThreshold: sc.threshold,
       shippingFee: sc.fee,
+      // 雙門檻值
+      lockerThreshold: lockerConfig.threshold,
+      lockerFee: lockerConfig.fee,
+      deliveryThreshold: deliveryConfig.threshold,
+      deliveryFee_delivery: deliveryConfig.fee,
     };
   }, [cart, isUsingWallet, deliveryMethod, shippingConfigs]);
 
@@ -3049,44 +3058,75 @@ const App: React.FC = () => {
     </>
   );
 
-  // ── 免運進度提示元件 ──
+  // ── 免運進度提示元件（雙門檻：自提櫃 / 送貨上門）──
   const FreeShippingNudge = ({ compact = false }: { compact?: boolean }) => {
-    const { subtotal, shippingThreshold, shippingFee, deliveryFee } = pricingData;
-    const diff = shippingThreshold - subtotal;
-    const progress = Math.min(1, subtotal / (shippingThreshold || 1));
-    const isFree = deliveryFee === 0;
+    const { subtotal, lockerThreshold, deliveryThreshold } = pricingData;
+
+    // 三段式狀態判斷
+    const tier: 'below_locker' | 'between' | 'all_free' =
+      subtotal < lockerThreshold ? 'below_locker' :
+      subtotal < deliveryThreshold ? 'between' : 'all_free';
+
+    // 進度條：以最高門檻為 100%
+    const progress = Math.min(1, subtotal / (deliveryThreshold || 1));
+    // 中間刻度位置
+    const lockerMark = deliveryThreshold > 0 ? (lockerThreshold / deliveryThreshold) * 100 : 50;
+
+    // 進度條顏色
+    const barColor = tier === 'all_free'
+      ? 'bg-emerald-400'
+      : tier === 'between'
+      ? 'bg-gradient-to-r from-emerald-400 to-teal-300'
+      : 'bg-gradient-to-r from-orange-400 to-amber-400';
 
     if (compact) {
-      // 簡約版：嵌入購物車按鈕內部的一行文字 + 細進度條
+      // 簡約版：嵌入購物車按鈕
+      const label = tier === 'all_free'
+        ? '✓ 全場免運'
+        : tier === 'between'
+        ? `自提免運！差$${Math.ceil(deliveryThreshold - subtotal)}上門免運`
+        : `差$${Math.ceil(lockerThreshold - subtotal)}自提免運`;
+      const textColor = tier === 'all_free' ? 'text-emerald-400' : tier === 'between' ? 'text-teal-300' : 'text-orange-300';
+
       return (
         <div className="px-1">
-          {isFree ? (
-            <p className="text-[9px] font-bold text-emerald-400 text-center">✓ 免運費</p>
-          ) : (
-            <div className="flex items-center gap-2">
-              <p className="text-[9px] font-bold text-orange-300 whitespace-nowrap">差${diff.toFixed(0)}免運</p>
-              <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden min-w-[40px]">
-                <div className="h-full bg-orange-400 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress * 100}%` }} />
+          <div className="flex items-center gap-2">
+            <p className={`text-[9px] font-bold ${textColor} whitespace-nowrap`}>{label}</p>
+            {tier !== 'all_free' && (
+              <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden min-w-[32px] relative">
+                <div className={`h-full ${barColor} rounded-full transition-all duration-500 ease-out`} style={{ width: `${progress * 100}%` }} />
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       );
     }
 
-    // 完整版：用於結帳金額明細區（精簡版）
+    // 完整版：用於結帳金額明細區
+    const bgClass = tier === 'all_free' ? 'bg-emerald-500/10' : tier === 'between' ? 'bg-teal-500/10' : 'bg-orange-500/10';
+
     return (
-      <div className={`px-3 py-2 rounded-xl ${isFree ? 'bg-emerald-500/10' : 'bg-orange-500/10'} transition-all`}>
-        {isFree ? (
-          <p className="text-[11px] font-black text-emerald-400 text-center">✓ 已享有免運費優惠</p>
+      <div className={`px-3 py-2.5 rounded-xl ${bgClass} transition-all`}>
+        {tier === 'all_free' ? (
+          <p className="text-[11px] font-black text-emerald-400 text-center">🎉 已享有全場免運費優惠！</p>
         ) : (
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <p className="text-[11px] font-bold text-orange-300">仲差 ${diff.toFixed(0)} 免運</p>
-              <p className="text-[9px] text-white/30 font-bold">滿${shippingThreshold}免運</p>
+          <div className="space-y-2">
+            <p className={`text-[11px] font-bold text-center ${tier === 'between' ? 'text-teal-300' : 'text-orange-300'}`}>
+              {tier === 'between'
+                ? <>自提櫃已免運！再買 <span className="font-black">${Math.ceil(deliveryThreshold - subtotal)}</span> 即享送貨上門免運 🏠</>
+                : <>仲差 <span className="font-black">${Math.ceil(lockerThreshold - subtotal)}</span> 享自提櫃免運 📦</>
+              }
+            </p>
+            {/* 雙門檻進度條 */}
+            <div className="relative w-full h-1.5 bg-white/10 rounded-full overflow-visible">
+              <div className={`h-full ${barColor} rounded-full transition-all duration-500 ease-out`} style={{ width: `${progress * 100}%` }} />
+              {/* $200 刻度線 */}
+              <div className="absolute top-0 h-full w-px bg-white/20" style={{ left: `${lockerMark}%` }} />
             </div>
-            <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-orange-400 to-amber-400 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress * 100}%` }} />
+            <div className="relative w-full h-3 text-[8px] text-white/25 font-bold">
+              <span className="absolute left-0">$0</span>
+              <span className="absolute" style={{ left: `${lockerMark}%`, transform: 'translateX(-50%)' }}>📦${lockerThreshold}</span>
+              <span className="absolute right-0">🏠${deliveryThreshold}</span>
             </div>
           </div>
         )}
