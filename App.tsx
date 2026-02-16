@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense, lazy } from 'react';
 import { 
   ShoppingBag, Package, Truck, CreditCard, Settings, CheckCircle,
   AlertTriangle, X, ChevronRight, LogOut, Edit, Plus, Minus,
@@ -32,6 +32,8 @@ import {
 } from './supabaseMappers';
 import { hashPassword, verifyPassword } from './authHelpers';
 import { uploadImage, uploadImages, deleteImage, isMediaUrl } from './imageUpload';
+
+const LazySetupPage = lazy(() => import('./SetupPage'));
 
 /** Format address for display using new required fields. */
 const formatAddressLine = (addr: UserAddress): string => {
@@ -272,6 +274,8 @@ const TierBadge: React.FC<{ tier: string }> = ({ tier }) => {
 };
 
 /** 第四部分：/success 頁面 — 抓取 URL 參數、發送確認請求、同步狀態、支援重整與手動重試 */
+const SHOP_WHATSAPP = '85263611672';
+
 const SuccessView: React.FC<{
   successWaybill: string | null;
   successWaybillLoading: boolean;
@@ -279,9 +283,12 @@ const SuccessView: React.FC<{
   setSuccessWaybillLoading: (v: boolean) => void;
   highlightOrderId: string | null;
   orders: Order[];
+  cart: CartItem[];
+  total: number;
+  deliveryMethod: string;
   onViewOrders: () => void;
   onRefreshOrders: () => void;
-}> = ({ successWaybill, successWaybillLoading, setSuccessWaybill, setSuccessWaybillLoading, onViewOrders, onRefreshOrders }) => {
+}> = ({ successWaybill, successWaybillLoading, setSuccessWaybill, setSuccessWaybillLoading, onViewOrders, onRefreshOrders, cart, total, deliveryMethod }) => {
   const { t } = useI18n();
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [confirmSuccess, setConfirmSuccess] = useState(false);
@@ -405,6 +412,34 @@ const SuccessView: React.FC<{
           </div>
         )}
 
+        {!successWaybillLoading && confirmSuccess && (() => {
+          const params = new URLSearchParams(window.location.search);
+          const orderId = params.get('order') || '---';
+          const itemsList = cart.length > 0
+            ? cart.map(i => `${i.name} x${i.qty}`).join(', ')
+            : '(見訂單詳情)';
+          const delivery = deliveryMethod === 'sf_locker' ? '順豐凍櫃自取' : '順豐冷鏈上門';
+          const msg = encodeURIComponent(
+            `訂單確認\n` +
+            `Order: ${orderId}\n` +
+            `Items: ${itemsList}\n` +
+            `Total: $${total}\n` +
+            `Delivery: ${delivery}\n` +
+            `${successWaybill ? `SF Waybill: ${successWaybill}\n` : ''}` +
+            `多謝惠顧！`
+          );
+          return (
+            <a
+              href={`https://wa.me/${SHOP_WHATSAPP}?text=${msg}`}
+              target="_blank"
+              rel="noreferrer"
+              className="w-full py-4 bg-green-600 text-white rounded-2xl font-black text-sm flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all"
+            >
+              <MessageCircle size={18} fill="currentColor" /> WhatsApp 確認訂單
+            </a>
+          );
+        })()}
+
         <button type="button" onClick={onViewOrders} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm">{t.success.viewOrders}</button>
       </div>
     </div>
@@ -424,8 +459,10 @@ const App: React.FC = () => {
 
   // --- Routing & Auth Logic ---
   const [isAdminRoute, setIsAdminRoute] = useState(window.location.hash === '#admin');
+  const [isSetupRoute, setIsSetupRoute] = useState(window.location.hash === '#setup');
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [adminLoginForm, setAdminLoginForm] = useState({ username: '', password: '' });
+  const [isAppLoading, setIsAppLoading] = useState(true);
   
   const [view, setView] = useState<'store' | 'orders' | 'profile' | 'checkout' | 'success'>(
     () => (typeof window !== 'undefined' && (window.location.pathname === '/success' || window.location.hash === '#success') ? 'success' : 'store')
@@ -471,7 +508,10 @@ const App: React.FC = () => {
   const [members, setMembers] = useState<UserType[]>([]);
   const [slideshowItems, setSlideshowItems] = useState<SlideshowItem[]>(DEFAULT_SLIDESHOW);
   const [editingSlideshow, setEditingSlideshow] = useState<SlideshowItem | null>(null);
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const [cart, setCart] = useState<CartItem[]>(() => {
+    try { const saved = localStorage.getItem('coolfood_cart'); return saved ? JSON.parse(saved) : []; } catch { return []; }
+  });
+  const [storeSearch, setStoreSearch] = useState('');
   const [deliveryMethod, setDeliveryMethod] = useState<'home' | 'sf_locker'>('home');
 
   // ── 動態運費管理 ──
@@ -559,6 +599,7 @@ const App: React.FC = () => {
       const path = window.location.pathname;
       const search = window.location.search || '';
       setIsAdminRoute(hash === '#admin');
+      setIsSetupRoute(hash === '#setup');
       if (path === '/success' || hash === '#success') {
         const params = new URLSearchParams(search);
         const orderId = params.get('order');
@@ -584,6 +625,11 @@ const App: React.FC = () => {
     const t = setTimeout(() => setHighlightOrderId(null), 4000);
     return () => clearTimeout(t);
   }, [highlightOrderId]);
+
+  // Persist cart to localStorage
+  useEffect(() => {
+    try { localStorage.setItem('coolfood_cart', JSON.stringify(cart)); } catch { /* quota exceeded or private mode */ }
+  }, [cart]);
 
   // Update browser tab title when route changes
   useEffect(() => {
@@ -623,6 +669,39 @@ const App: React.FC = () => {
       });
     }
   }, [siteConfig.logoText, siteConfig.logoUrl]);
+
+  // Product-level JSON-LD for Google rich results
+  useEffect(() => {
+    const existingEl = document.getElementById('ld-json-product');
+    if (!selectedProduct) {
+      if (existingEl) existingEl.remove();
+      return;
+    }
+    const ld = {
+      '@context': 'https://schema.org',
+      '@type': 'Product',
+      name: selectedProduct.name,
+      description: selectedProduct.description || selectedProduct.name,
+      image: isMediaUrl(selectedProduct.image) ? selectedProduct.image : undefined,
+      brand: { '@type': 'Brand', name: siteConfig.logoText },
+      offers: {
+        '@type': 'Offer',
+        priceCurrency: 'HKD',
+        price: selectedProduct.price,
+        availability: (!selectedProduct.trackInventory || selectedProduct.stock > 0) ? 'https://schema.org/InStock' : 'https://schema.org/OutOfStock',
+      },
+    };
+    if (existingEl) {
+      existingEl.textContent = JSON.stringify(ld);
+    } else {
+      const script = document.createElement('script');
+      script.type = 'application/ld+json';
+      script.id = 'ld-json-product';
+      script.textContent = JSON.stringify(ld);
+      document.head.appendChild(script);
+    }
+    return () => { const el = document.getElementById('ld-json-product'); if (el) el.remove(); };
+  }, [selectedProduct, siteConfig.logoText]);
 
   // Load core data from Supabase on mount
   useEffect(() => {
@@ -683,6 +762,24 @@ const App: React.FC = () => {
       } catch {
         console.warn('[shipping/upsell] Failed to load, using fallback values');
       }
+
+      // ── 載入 site_config（定價規則、品牌設定）──
+      try {
+        const { data: cfgRows } = await supabase.from('site_config').select('*');
+        if (cfgRows && cfgRows.length > 0) {
+          const cfgMap: Record<string, any> = {};
+          cfgRows.forEach((r: any) => { cfgMap[r.id] = r.value; });
+          setSiteConfig(prev => ({
+            ...prev,
+            ...(cfgMap.site_branding || {}),
+            pricingRules: cfgMap.pricing_rules ? { ...prev.pricingRules, ...cfgMap.pricing_rules } : prev.pricingRules,
+          }));
+        }
+      } catch {
+        console.warn('[site_config] Failed to load, using defaults');
+      }
+
+      setIsAppLoading(false);
     };
 
     loadCoreData();
@@ -759,13 +856,22 @@ const App: React.FC = () => {
     loadOrderDetails();
   }, [inspectingOrder]);
 
-  const handleAdminLogin = (e: React.FormEvent) => {
+  const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (adminLoginForm.username === '1990' && adminLoginForm.password === '1990') {
+    try {
+      const { data, error } = await supabase
+        .from('members')
+        .select('*')
+        .eq('phone_number', adminLoginForm.username)
+        .eq('role', 'admin')
+        .single();
+      if (error || !data) { showToast('帳號或密碼錯誤', 'error'); return; }
+      const ok = await verifyPassword(adminLoginForm.password, data.password_hash || '');
+      if (!ok) { showToast('帳號或密碼錯誤', 'error'); return; }
       setIsAdminAuthenticated(true);
       showToast('後台登入成功');
-    } else {
-      showToast('帳號或密碼錯誤', 'error');
+    } catch {
+      showToast('登入失敗，請稍後再試', 'error');
     }
   };
 
@@ -1799,6 +1905,21 @@ const App: React.FC = () => {
       return;
     }
     if (isRedirectingToPayment) return;
+
+    // Stock check: verify items are still in stock before payment
+    const outOfStock: string[] = [];
+    for (const item of cart) {
+      const current = products.find(p => p.id === item.id);
+      if (!current) { outOfStock.push(item.name); continue; }
+      if (current.trackInventory && current.stock < item.qty) {
+        outOfStock.push(`${item.name}（剩餘 ${current.stock} 件）`);
+      }
+    }
+    if (outOfStock.length > 0) {
+      showToast(`以下產品庫存不足：${outOfStock.join('、')}`, 'error');
+      return;
+    }
+
     const { subtotal, deliveryFee, total } = pricingData;
     const orderIdNum = Date.now();
     const orderIdDisplay = `ORD-${orderIdNum}`;
@@ -1932,6 +2053,22 @@ const App: React.FC = () => {
       showToast(error.message || '訂單提交失敗', 'error');
       return;
     }
+
+    // Decrement stock for tracked-inventory products (fire-and-forget, non-blocking)
+    for (const item of cart) {
+      const prod = products.find(p => p.id === item.id);
+      if (prod?.trackInventory && prod.stock > 0) {
+        supabase.rpc('decrement_stock', { p_id: item.id, p_qty: item.qty }).then(({ error: stockErr }) => {
+          if (stockErr) console.warn(`[stock] Failed to decrement ${item.id}:`, stockErr.message);
+        });
+      }
+    }
+    // Update local product state immediately
+    setProducts(prev => prev.map(p => {
+      const cartItem = cart.find(c => c.id === p.id);
+      if (cartItem && p.trackInventory) return { ...p, stock: Math.max(0, p.stock - cartItem.qty) };
+      return p;
+    }));
 
     if (user && useDraft && checkoutSaveNewAddressAsDefault && checkoutAddressDraft) {
       handleSaveAddress(user.id, checkoutAddressDraft, true, true);
@@ -2094,6 +2231,17 @@ const App: React.FC = () => {
       p.id.toLowerCase().includes(adminProductSearch.toLowerCase())
     );
   }, [products, adminProductSearch]);
+
+  const filteredStoreProducts = useMemo(() => {
+    if (!storeSearch.trim()) return products;
+    const q = storeSearch.toLowerCase();
+    return products.filter(p =>
+      p.name.toLowerCase().includes(q) ||
+      (p.description || '').toLowerCase().includes(q) ||
+      p.tags.some(t => t.toLowerCase().includes(q)) ||
+      (p.origin || '').toLowerCase().includes(q)
+    );
+  }, [products, storeSearch]);
 
   const filteredAdminOrders = useMemo(() => {
     return orders.filter(o => {
@@ -2284,12 +2432,13 @@ const App: React.FC = () => {
         </div>
         <div className="space-y-4">
           <div>
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">帳號</label>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">管理員電話號碼</label>
             <input
               value={adminLoginForm.username}
               onChange={e => setAdminLoginForm({ ...adminLoginForm, username: e.target.value })}
               className="w-full px-4 py-3 bg-slate-50 rounded-2xl border border-slate-100 font-bold text-sm"
-              placeholder="輸入帳號"
+              placeholder="輸入電話號碼"
+              inputMode="tel"
             />
           </div>
           <div>
@@ -2315,19 +2464,24 @@ const App: React.FC = () => {
 
   const renderAdminModuleContent = () => {
     switch (adminModule) {
-      case 'dashboard':
+      case 'dashboard': {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const todayRevenue = orders.filter(o => o.date.startsWith(todayStr) && ['paid','processing','ready_for_pickup','shipping','completed'].includes(o.status)).reduce((s, o) => s + o.total, 0);
+        const pendingCount = orders.filter(o => o.status === 'paid' || o.status === 'processing').length;
+        const lowStockCount = products.filter(p => p.trackInventory && p.stock < 10).length;
+        const totalMembers = members.length;
         return (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 animate-fade-in">
             {[
-              { label: '今日營收', value: '$12,450', icon: <DollarSign className="text-emerald-500" />, trend: '+12.5%' },
-              { label: '待處理訂單', value: '24', icon: <Package className="text-amber-500" />, trend: '-2' },
-              { label: '新增會員', value: '156', icon: <Users className="text-blue-500" />, trend: '+18' },
-              { label: '庫存預警', value: '8', icon: <AlertTriangle className="text-rose-500" />, trend: '需補貨' }
+              { label: '今日營收', value: `$${todayRevenue.toLocaleString()}`, icon: <DollarSign className="text-emerald-500" />, trend: `${orders.filter(o => o.date.startsWith(todayStr)).length} 單` },
+              { label: '待處理訂單', value: String(pendingCount), icon: <Package className="text-amber-500" />, trend: pendingCount > 0 ? '需處理' : '全部完成' },
+              { label: '會員總數', value: String(totalMembers), icon: <Users className="text-blue-500" />, trend: `${members.filter(m => m.tier === 'Gold' || m.tier === 'VIP').length} VIP/Gold` },
+              { label: '庫存預警', value: String(lowStockCount), icon: <AlertTriangle className="text-rose-500" />, trend: lowStockCount > 0 ? '需補貨' : '充足' }
             ].map((stat, i) => (
               <div key={i} className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm space-y-2">
                 <div className="flex justify-between items-start">
                   <div className="p-3 bg-slate-50 rounded-2xl">{stat.icon}</div>
-                  <span className="text-[10px] font-black text-emerald-500 bg-emerald-50 px-2 py-1 rounded-lg">{stat.trend}</span>
+                  <span className={`text-[10px] font-black px-2 py-1 rounded-lg ${stat.label === '庫存預警' && lowStockCount > 0 ? 'text-rose-500 bg-rose-50' : 'text-emerald-500 bg-emerald-50'}`}>{stat.trend}</span>
                 </div>
                 <div>
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{stat.label}</p>
@@ -2356,6 +2510,7 @@ const App: React.FC = () => {
             </div>
           </div>
         );
+      }
       case 'inventory': return renderInventoryModule();
       case 'orders':
         const allFilteredIds = new Set(filteredAdminOrders.map(o => o.id));
@@ -2598,8 +2753,9 @@ const App: React.FC = () => {
                   </button>
                   <button onClick={async () => {
                     try {
-                      // TODO: Persist pricingRules to Supabase (e.g. a site_config table)
-                      showToast('定價規則已儲存（前端生效中）');
+                      await supabase.from('site_config').upsert({ id: 'pricing_rules', value: siteConfig.pricingRules });
+                      await supabase.from('site_config').upsert({ id: 'site_branding', value: { logoText: siteConfig.logoText, logoIcon: siteConfig.logoIcon, logoUrl: siteConfig.logoUrl, accentColor: siteConfig.accentColor } });
+                      showToast('定價規則已儲存');
                     } catch (err: any) {
                       showToast(`儲存失敗：${err.message}`, 'error');
                     }
@@ -2697,6 +2853,12 @@ const App: React.FC = () => {
                      </div>
                    </div>
                 </div>
+                <button onClick={async () => {
+                  try {
+                    await supabase.from('site_config').upsert({ id: 'site_branding', value: { logoText: siteConfig.logoText, logoIcon: siteConfig.logoIcon, logoUrl: siteConfig.logoUrl, accentColor: siteConfig.accentColor } });
+                    showToast('品牌設定已儲存');
+                  } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
+                }} className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2"><Save size={16}/> 儲存品牌設定</button>
              </div>
              <div className="bg-white p-10 rounded-[3.5rem] border border-slate-100 shadow-sm space-y-6">
                 <div className="flex items-center gap-3"><div className="p-3 bg-amber-50 text-amber-600 rounded-2xl"><Percent size={20}/></div><h3 className="text-xl font-black">定價管理</h3></div>
@@ -2849,7 +3011,7 @@ const App: React.FC = () => {
                <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-1 -mt-2">
                  {selectedProduct.gallery.map((url, i) => (
                    <div key={i} className="w-16 h-16 rounded-xl overflow-hidden border border-slate-100 flex-shrink-0">
-                     <img src={url} alt="" className="w-full h-full object-cover" />
+                     <img src={url} loading="lazy" alt="" className="w-full h-full object-cover" />
                    </div>
                  ))}
                </div>
@@ -2857,11 +3019,31 @@ const App: React.FC = () => {
              <div className="space-y-2">
                <h3 className="text-2xl font-black text-slate-900 leading-tight">{selectedProduct.name}</h3>
                <div className="flex flex-wrap gap-2">
-                 {selectedProduct.tags.map(t => <span key={t} className="px-2.5 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-black border border-blue-100 uppercase tracking-tight">{t}</span>)}
+                 {selectedProduct.tags.map(tg => <span key={tg} className="px-2.5 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-black border border-blue-100 uppercase tracking-tight">{tg}</span>)}
                </div>
+               {(selectedProduct.origin || selectedProduct.weight) && (
+                 <div className="flex gap-3 text-[11px] text-slate-400 font-bold">
+                   {selectedProduct.origin && <span>產地：{selectedProduct.origin}</span>}
+                   {selectedProduct.weight && <span>重量：{selectedProduct.weight}</span>}
+                 </div>
+               )}
              </div>
+             {selectedProduct.description && (
+               <p className="text-sm text-slate-600 font-medium leading-relaxed">{selectedProduct.description}</p>
+             )}
+             {selectedProduct.recipes && selectedProduct.recipes.length > 0 && (
+               <div className="space-y-2">
+                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5"><BookOpen size={12} /> 推薦食譜</p>
+                 {selectedProduct.recipes.map((recipe, ri) => (
+                   <div key={ri} className="p-3 bg-blue-50/50 rounded-xl border border-blue-100/50">
+                     <p className="text-xs font-black text-slate-700">{recipe.title}</p>
+                     {recipe.ingredients.length > 0 && <p className="text-[10px] text-slate-400 font-bold mt-1">材料：{recipe.ingredients.join('、')}</p>}
+                   </div>
+                 ))}
+               </div>
+             )}
              <div className="flex items-center justify-between p-6 bg-slate-900 text-white rounded-[2.5rem] shadow-xl">
-               <div><p className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1">精選價</p><p className="text-3xl font-black">${selectedProduct.price}</p></div>
+               <div><p className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1">精選價</p><p className="text-3xl font-black">${getPrice(selectedProduct)}</p>{getPrice(selectedProduct) < selectedProduct.price && <p className="text-xs text-white/40 line-through">${selectedProduct.price}</p>}</div>
                <button onClick={() => { updateCart(selectedProduct, 1); setSelectedProduct(null); showToast('已加入購物車'); }} className={`${accentClass} text-white px-10 py-5 rounded-[1.5rem] font-black text-sm shadow-2xl active:scale-95 transition-all`}>立即選購</button>
              </div>
           </div>
@@ -3532,7 +3714,7 @@ const App: React.FC = () => {
             return (
               <div key={p.id} className="flex-shrink-0 w-40 bg-slate-50 rounded-2xl border border-slate-100 p-3 space-y-2.5 hover:border-orange-200 transition-all">
                 <div className="w-full h-20 bg-white rounded-xl border border-slate-50 flex items-center justify-center text-3xl overflow-hidden">
-                  {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt={p.name} /> : <span>{p.image || '📦'}</span>}
+                  {isMediaUrl(p.image) ? <img src={p.image} loading="lazy" className="w-full h-full object-cover" alt={p.name} /> : <span>{p.image || '📦'}</span>}
                 </div>
                 <p className="text-xs font-black text-slate-700 truncate">{p.name}</p>
                 <div className="flex items-center justify-between">
@@ -3554,6 +3736,18 @@ const App: React.FC = () => {
 
   const renderCheckoutView = () => {
     const { subtotal, deliveryFee, total } = pricingData;
+    if (cart.length === 0) {
+      return (
+        <div className="flex-1 bg-slate-50 min-h-screen flex flex-col items-center justify-center gap-6 animate-fade-in px-6">
+          <div className="w-24 h-24 bg-slate-100 rounded-full flex items-center justify-center"><ShoppingBag size={40} className="text-slate-300" /></div>
+          <div className="text-center space-y-2">
+            <h2 className="text-xl font-black text-slate-800">購物車是空的</h2>
+            <p className="text-sm text-slate-400 font-bold">快去挑選心水凍肉吧！</p>
+          </div>
+          <button onClick={() => setView('store')} className="px-8 py-3 bg-blue-600 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all">返回商店</button>
+        </div>
+      );
+    }
     return (
       <div className="flex-1 bg-slate-50 min-h-screen pb-48 overflow-y-auto animate-fade-in">
         <header className="bg-white/95 backdrop-blur-md sticky top-0 z-40 px-4 py-4 border-b border-slate-100 flex items-center justify-between">
@@ -3738,7 +3932,7 @@ const App: React.FC = () => {
                {cart.map(item => (
                  <div key={item.id} className="py-3 flex gap-3 items-center">
                    <div className="w-14 h-14 bg-slate-50 rounded-xl flex items-center justify-center flex-shrink-0 border border-slate-100 overflow-hidden">
-                     {isMediaUrl(item.image) ? <img src={item.image} alt="" className="w-full h-full object-cover" /> : <span className="text-2xl">{item.image}</span>}
+                     {isMediaUrl(item.image) ? <img src={item.image} loading="lazy" alt="" className="w-full h-full object-cover" /> : <span className="text-2xl">{item.image}</span>}
                    </div>
                    <div className="flex-1 min-w-0">
                      <p className="text-xs font-black text-slate-800">{item.name}</p>
@@ -3776,7 +3970,7 @@ const App: React.FC = () => {
         <div className="flex items-center gap-2">
           <button onClick={handleReorderClick} className="p-2 bg-amber-50 text-amber-600 rounded-full border border-amber-100 active:scale-90 transition-transform" title="一鍵回購"><Clock size={18} /></button>
           <button onClick={() => setLang(lang === 'zh-HK' ? 'en' : 'zh-HK')} className="px-2.5 py-1.5 bg-slate-100 text-slate-600 rounded-full border border-slate-200 text-[10px] font-black uppercase tracking-wider hover:bg-slate-200 transition-colors">{lang === 'zh-HK' ? 'EN' : '中'}</button>
-          <a href="https://wa.me/85212345678" target="_blank" rel="noreferrer" className="p-2 bg-green-50 text-green-600 rounded-full border border-green-100"><MessageCircle size={18} fill="currentColor" /></a>
+          <a href={`https://wa.me/${SHOP_WHATSAPP}`} target="_blank" rel="noreferrer" className="p-2 bg-green-50 text-green-600 rounded-full border border-green-100"><MessageCircle size={18} fill="currentColor" /></a>
           {user ? (
              <button onClick={() => setView('profile')} className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-full border border-slate-100"><Wallet size={14} className={textAccentClass} /><span className="text-xs font-bold text-slate-700">${user.walletBalance}</span></button>
           ) : (
@@ -3784,6 +3978,13 @@ const App: React.FC = () => {
           )}
         </div>
       </header>
+      <div className="px-3 py-2 bg-white border-b border-slate-100">
+        <div className="relative">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" />
+          <input value={storeSearch} onChange={e => setStoreSearch(e.target.value)} placeholder="搜尋產品..." className="w-full pl-9 pr-8 py-2.5 bg-slate-50 rounded-xl text-sm font-bold text-slate-800 border border-slate-100 focus:border-blue-300 focus:bg-white transition-all outline-none" />
+          {storeSearch && <button onClick={() => setStoreSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded-full bg-slate-200 text-slate-400 active:scale-90"><X size={12} /></button>}
+        </div>
+      </div>
       <div className="flex-1 flex overflow-hidden">
         <aside className="bg-white border-r border-slate-100 overflow-y-auto hide-scrollbar flex flex-col items-center py-1 w-16">
           {categories.map(cat => (
@@ -3835,17 +4036,17 @@ const App: React.FC = () => {
               <div key={cat.id} ref={el => { catRefs.current[cat.id] = el; }}>
                 <h3 className="font-bold text-slate-900 flex items-center gap-2 mb-2 text-sm sticky top-[0px] bg-white py-2 z-10 border-b border-slate-50"><span className="text-lg">{cat.icon}</span> {cat.name}</h3>
                 <div className="divide-y divide-slate-100 bg-white rounded-2xl overflow-hidden shadow-sm">
-                  {products.filter(p => p.categories.includes(cat.id)).length === 0 && (
-                    <div className="p-6 text-center text-slate-400 font-bold">{t.store.noCategoryProducts}</div>
+                  {filteredStoreProducts.filter(p => p.categories.includes(cat.id)).length === 0 && (
+                    <div className="p-6 text-center text-slate-400 font-bold">{storeSearch ? '搜尋無結果' : t.store.noCategoryProducts}</div>
                   )}
-                  {products.filter(p => p.categories.includes(cat.id)).map(p => {
+                  {filteredStoreProducts.filter(p => p.categories.includes(cat.id)).map(p => {
                     const itemInCart = cart.find(i => i.id === p.id);
                     const qty = itemInCart?.qty || 0;
                     const isOfferMet = p.bulkDiscount && qty >= p.bulkDiscount.threshold;
                     return (
                       <div key={p.id} onClick={() => setSelectedProduct(p)} className="flex gap-4 py-4 px-3 hover:bg-slate-50 transition-all cursor-pointer group">
                         <div className="w-24 h-24 bg-slate-50 rounded-xl flex items-center justify-center text-5xl relative overflow-hidden flex-shrink-0 border border-slate-100 group-hover:shadow-inner transition-all">
-                           {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt={p.imageAlt || p.name} /> : <span className="text-5xl">{p.image}</span>}
+                           {isMediaUrl(p.image) ? <img src={p.image} loading="lazy" className="w-full h-full object-cover" alt={p.imageAlt || p.name} /> : <span className="text-5xl">{p.image}</span>}
                            {p.recipes && p.recipes.length > 0 && <div className="absolute top-1 right-1 w-6 h-6 bg-white/90 backdrop-blur rounded-full flex items-center justify-center text-blue-600 shadow-sm"><BookOpen size={12}/></div>}
                         </div>
                         <div className="flex-1 flex flex-col justify-between py-0.5 min-w-0">
@@ -3896,6 +4097,32 @@ const App: React.FC = () => {
       )}
     </div>
   );
+
+  // ── Setup route: only accessible when no admin exists ──
+  if (isSetupRoute) {
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-slate-50 flex items-center justify-center"><div className="animate-spin w-8 h-8 border-4 border-slate-200 border-t-blue-600 rounded-full" /></div>}>
+        <LazySetupPage />
+      </Suspense>
+    );
+  }
+
+  // ── Splash screen: shown while initial data loads ──
+  if (isAppLoading && !isAdminRoute) {
+    return (
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center gap-6">
+        <div className="w-20 h-20 bg-blue-600 rounded-2xl flex items-center justify-center text-white shadow-2xl overflow-hidden">
+          {isMediaUrl(siteConfig.logoUrl) ? <img src={siteConfig.logoUrl} alt="" className="w-full h-full object-contain p-2" /> : <span className="text-4xl">{siteConfig.logoIcon}</span>}
+        </div>
+        <h1 className="text-xl font-black text-slate-900 tracking-tight">{siteConfig.logoText}</h1>
+        <div className="flex gap-1.5">
+          <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
+          <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
+          <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" />
+        </div>
+      </div>
+    );
+  }
 
   if (isAdminRoute && !isAdminAuthenticated) return renderAdminLogin();
 
@@ -4001,6 +4228,9 @@ const App: React.FC = () => {
               setSuccessWaybillLoading={setSuccessWaybillLoading}
               highlightOrderId={highlightOrderId}
               orders={orders}
+              cart={cart}
+              total={pricingData.total}
+              deliveryMethod={deliveryMethod}
               onViewOrders={() => { if (window.history.replaceState) window.history.replaceState({}, '', '/'); setView('orders'); const latestId = orders.length > 0 ? orders[0].id : null; if (latestId) setHighlightOrderId(latestId); }}
               onRefreshOrders={fetchOrders}
             />
@@ -4144,7 +4374,7 @@ const App: React.FC = () => {
                       </div>
                     )}
                   </div>
-                  <button onClick={() => window.location.hash = 'admin'} className="w-full flex justify-between items-center p-6 bg-slate-900 rounded-[2.5rem] text-white font-bold shadow-xl active:scale-95 transition-all"><div className="flex items-center gap-3"><ShieldCheck size={20} className="text-blue-400"/> {t.profile.openAdmin}</div><ArrowUpRight size={18} className="text-slate-400"/></button>
+                  {/* Admin access: navigate to yoursite.com/#admin */}
                 </div>
                 <button onClick={() => { setUser(null); try { localStorage.removeItem('coolfood_member_id'); } catch { /* ignore */ } setView('store'); showToast(t.profile.loggedOut); }} className="w-full py-5 bg-white text-rose-500 rounded-[2rem] font-black border border-rose-50 shadow-sm active:scale-95 transition-all hover:bg-rose-50">{t.profile.logout}</button>
              </div>

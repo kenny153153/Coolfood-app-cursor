@@ -198,3 +198,27 @@ CREATE POLICY "Allow full access on notification_logs"
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS seo_title TEXT;
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS seo_description TEXT;
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS image_alt TEXT;
+
+-- =============================================
+-- Atomic stock decrement function (prevents overselling via race conditions)
+-- =============================================
+CREATE OR REPLACE FUNCTION decrement_stock(p_id TEXT, p_qty INTEGER)
+RETURNS void AS $$
+BEGIN
+  UPDATE public.products
+  SET stock = GREATEST(0, stock - p_qty)
+  WHERE id = p_id AND track_inventory = true;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- =============================================
+-- Site Config key-value store (pricing rules, branding, etc.)
+-- =============================================
+CREATE TABLE IF NOT EXISTS public.site_config (
+  id TEXT PRIMARY KEY,
+  value JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+ALTER TABLE public.site_config ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Public read site_config" ON public.site_config FOR SELECT USING (true);
+CREATE POLICY "Admin write site_config" ON public.site_config FOR ALL USING (true);
