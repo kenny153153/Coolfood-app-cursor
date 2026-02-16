@@ -190,13 +190,16 @@ export interface SupabaseSlideshowRow {
   sort_order: number;
 }
 
+export type PricingTier = 'guest' | 'member' | 'wallet';
+
 export interface GlobalPricingRules {
-  memberDiscountPercent: number; // e.g. 15 for 15% off
+  memberDiscountPercent: number;  // 會員折扣 %（如 5 = 減 5%）
+  walletDiscountPercent: number;  // 錢包折扣 %（如 5 = 再減 5%）
   autoApplyMemberPrice: boolean;
-  roundToNearest: number; // e.g. 0.1 or 1
-  excludedProductIds?: string[];
+  roundToNearest: number;         // 四捨五入至最接近整數
+  excludedProductIds?: string[];  // 不參與自動折扣的產品 ID
   excludedCategoryIds?: string[];
-  markupPercent?: number; // Global markup on base cost
+  markupPercent?: number;
 }
 
 export interface DeliveryTier {
@@ -224,6 +227,7 @@ export interface ShippingConfig {
 export interface SiteConfig {
   logoText: string;
   logoIcon: string;
+  logoUrl?: string;       // Uploaded logo image URL (Supabase Storage)
   accentColor?: string;
   pricingRules?: GlobalPricingRules;
   deliveryRules?: DeliveryRules;

@@ -15,7 +15,7 @@ import {
 import { GoogleGenAI } from "@google/genai";
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
-import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig } from './types';
+import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier } from './types';
 import { useI18n, Language } from './i18n';
 import { supabase } from './supabaseClient';
 import {
@@ -31,6 +31,7 @@ import {
   normalizeOrderStatus
 } from './supabaseMappers';
 import { hashPassword, verifyPassword } from './authHelpers';
+import { uploadImage, uploadImages, deleteImage, isMediaUrl } from './imageUpload';
 
 /** Format address for display using new required fields. */
 const formatAddressLine = (addr: UserAddress): string => {
@@ -166,8 +167,35 @@ const Toast: React.FC<{ message: string; type: 'success' | 'error'; onClose: () 
   );
 };
 
-const getEffectiveUnitPrice = (p: Product, qty: number, isWallet: boolean) => {
-  let base = isWallet ? p.memberPrice : p.price;
+/**
+ * 三層定價引擎
+ * Guest  → 折扣價(如有) 或 售價
+ * Member → 上述基礎 × (1 - 會員折扣%)
+ * Wallet → 上述會員價 × (1 - 錢包折扣%)
+ */
+const getEffectiveUnitPrice = (
+  p: Product, qty: number,
+  tier: PricingTier = 'guest',
+  memberPct: number = 0,
+  walletPct: number = 0,
+  excludedIds?: string[]
+) => {
+  // 1. 基礎價：有手動折扣價且低於售價則用折扣價，否則用售價
+  const hasDiscount = p.memberPrice > 0 && p.memberPrice < p.price;
+  let base = hasDiscount ? p.memberPrice : p.price;
+
+  // 2. 自動折扣（排除的產品不適用）
+  const isExcluded = excludedIds?.includes(p.id);
+  if (!isExcluded) {
+    if (tier === 'wallet') {
+      if (memberPct > 0) base = base * (1 - memberPct / 100);
+      if (walletPct > 0) base = base * (1 - walletPct / 100);
+    } else if (tier === 'member') {
+      if (memberPct > 0) base = base * (1 - memberPct / 100);
+    }
+  }
+
+  // 3. 批量折扣（疊加在最終價上）
   if (p.bulkDiscount && qty >= p.bulkDiscount.threshold) {
     if (p.bulkDiscount.type === 'percent') {
       return Math.round(base * (1 - p.bulkDiscount.value / 100));
@@ -175,7 +203,8 @@ const getEffectiveUnitPrice = (p: Product, qty: number, isWallet: boolean) => {
       return p.bulkDiscount.value;
     }
   }
-  return base;
+
+  return Math.round(base);
 };
 
 const getOrderStatusLabel = (status: OrderStatus | string, t?: { orderStatus: Record<string, string> }) => {
@@ -402,7 +431,7 @@ const App: React.FC = () => {
     () => (typeof window !== 'undefined' && (window.location.pathname === '/success' || window.location.hash === '#success') ? 'success' : 'store')
   );
   const [isRedirectingToPayment, setIsRedirectingToPayment] = useState(false);
-  const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'settings'>('dashboard');
+  const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'pricing' | 'settings'>('dashboard');
   const [inventorySubTab, setInventorySubTab] = useState<'products' | 'categories' | 'rules'>('products');
   const [ordersStatusFilter, setOrdersStatusFilter] = useState<'all' | OrderStatus>('all');
   const [isAdminSidebarOpen, setIsAdminSidebarOpen] = useState(false);
@@ -414,7 +443,8 @@ const App: React.FC = () => {
     logoIcon: '❄️',
     accentColor: 'blue',
     pricingRules: {
-      memberDiscountPercent: 10,
+      memberDiscountPercent: 0,
+      walletDiscountPercent: 0,
       autoApplyMemberPrice: true,
       roundToNearest: 1,
       excludedProductIds: [],
@@ -561,8 +591,38 @@ const App: React.FC = () => {
       document.title = `Fridge-Link | 管理後台 (${window.location.href})`;
       return;
     }
-    document.title = 'Fridge-Link | 香港冷凍肉專門店';
-  }, [isAdminRoute]);
+    document.title = `${siteConfig.logoText} | 香港冷凍肉專門店`;
+  }, [isAdminRoute, siteConfig.logoText]);
+
+  useEffect(() => {
+    const title = `${siteConfig.logoText} | 香港冷凍肉專門店`;
+    const desc = `${siteConfig.logoText} - 香港冷凍肉專門店，新鮮急凍直送到家，順豐冷鏈配送`;
+    const logoUrl = siteConfig.logoUrl || '';
+    const updateMeta = (id: string, attr: string, value: string) => {
+      const el = document.getElementById(id);
+      if (el) el.setAttribute(attr, value);
+    };
+    updateMeta('og-title', 'content', title);
+    updateMeta('og-description', 'content', desc);
+    updateMeta('og-image', 'content', logoUrl);
+    updateMeta('tw-title', 'content', title);
+    updateMeta('tw-description', 'content', desc);
+    updateMeta('tw-image', 'content', logoUrl);
+    if (logoUrl) {
+      updateMeta('dynamic-favicon', 'href', logoUrl);
+      updateMeta('apple-touch-icon', 'href', logoUrl);
+    }
+    const ldEl = document.getElementById('ld-json-org');
+    if (ldEl) {
+      ldEl.textContent = JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'Organization',
+        name: siteConfig.logoText,
+        url: window.location.origin,
+        logo: logoUrl,
+      });
+    }
+  }, [siteConfig.logoText, siteConfig.logoUrl]);
 
   // Load core data from Supabase on mount
   useEffect(() => {
@@ -864,11 +924,21 @@ const App: React.FC = () => {
   }, []);
 
   const isUsingWallet = user && user.walletBalance > 0;
+
+  // ── 定價上下文（三層：訪客 / 會員 / 錢包）──
+  const pricingTier: PricingTier = isUsingWallet ? 'wallet' : user ? 'member' : 'guest';
+  const memberPct = siteConfig.pricingRules?.memberDiscountPercent || 0;
+  const walletPct = siteConfig.pricingRules?.walletDiscountPercent || 0;
+  const pricingExcluded = siteConfig.pricingRules?.excludedProductIds;
+
+  // 便利包裝：快速取得當前使用者看到的價格
+  const getPrice = (p: Product, qty: number = 1) =>
+    getEffectiveUnitPrice(p, qty, pricingTier, memberPct, walletPct, pricingExcluded);
   
   const pricingData = useMemo(() => {
     let subtotal = 0;
     cart.forEach(item => {
-      subtotal += getEffectiveUnitPrice(item, item.qty, !!isUsingWallet) * item.qty;
+      subtotal += getEffectiveUnitPrice(item, item.qty, pricingTier, memberPct, walletPct, pricingExcluded) * item.qty;
     });
 
     // 動態運費：根據配送方式從 shipping_configs 讀取 fee / threshold
@@ -893,7 +963,7 @@ const App: React.FC = () => {
       deliveryThreshold: deliveryConfig.threshold,
       deliveryFee_delivery: deliveryConfig.fee,
     };
-  }, [cart, isUsingWallet, deliveryMethod, shippingConfigs]);
+  }, [cart, pricingTier, memberPct, walletPct, pricingExcluded, deliveryMethod, shippingConfigs]);
 
   // ── 湊單推薦產品（已過濾掉購物車中的商品）──
   const upsellProducts = useMemo(() => {
@@ -1736,7 +1806,7 @@ const App: React.FC = () => {
     const orderDate = new Date().toISOString().slice(0, 10);
 
     const lineItems: OrderLineItem[] = cart.map(item => {
-      const unitPrice = getEffectiveUnitPrice(item, item.qty, !!isUsingWallet);
+      const unitPrice = getPrice(item, item.qty);
       const lineTotal = unitPrice * item.qty;
       return { product_id: item.id, name: item.name, unit_price: unitPrice, qty: item.qty, line_total: lineTotal, image: item.image ?? null };
     });
@@ -1917,12 +1987,32 @@ const App: React.FC = () => {
     }
   };
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>, callback: (data: string) => void) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => { callback(reader.result as string); };
-      reader.readAsDataURL(file);
+  const [imageUploading, setImageUploading] = useState<string | null>(null);
+
+  const handleImageUpload = async (
+    files: FileList | null,
+    storagePath: string,
+    onSuccess: (urls: string[]) => void,
+    opts?: { multi?: boolean; uploadKey?: string }
+  ) => {
+    if (!files || files.length === 0) return;
+    const key = opts?.uploadKey || storagePath;
+    setImageUploading(key);
+    try {
+      if (opts?.multi) {
+        const urls = await uploadImages(Array.from(files), storagePath);
+        onSuccess(urls);
+      } else {
+        const file = files[0];
+        const ext = file.type.startsWith('image/') ? 'webp' : (file.name.split('.').pop() || 'bin');
+        const fullPath = `${storagePath}/main-${Date.now()}.${ext}`;
+        const url = await uploadImage(file, fullPath);
+        onSuccess([url]);
+      }
+    } catch (err: any) {
+      showToast(err.message || '上傳失敗', 'error');
+    } finally {
+      setImageUploading(null);
     }
   };
 
@@ -2069,11 +2159,11 @@ const App: React.FC = () => {
                     <tr key={p.id} className="hover:bg-slate-50 transition-colors">
                       <td className="px-6 py-4 flex items-center gap-3">
                         <div className="w-10 h-10 rounded-lg overflow-hidden flex items-center justify-center bg-slate-50 border border-slate-100">
-                          {p.image.startsWith('data') ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-xl">{p.image}</span>}
+                          {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-xl">{p.image}</span>}
                         </div>
                         <div className="flex flex-col">
                            <span className="font-bold text-slate-800">{p.name}</span>
-                           <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">${p.price} / VIP: ${p.memberPrice}</span>
+                           <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">${p.price}{p.memberPrice > 0 && p.memberPrice < p.price ? ` / 折扣: $${p.memberPrice}` : ''}</span>
                         </div>
                       </td>
                       <td className="px-6 py-4">
@@ -2153,8 +2243,9 @@ const App: React.FC = () => {
       {inventorySubTab === 'rules' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 animate-fade-in pb-12">
            <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm">
-             <h4 className="text-lg font-black mb-4">規則管理已啟動</h4>
-             <p className="text-sm text-slate-400">請前往系統設定調整全局定價與配送規則。</p>
+             <h4 className="text-lg font-black mb-4">定價管理</h4>
+             <p className="text-sm text-slate-400 mb-4">會員折扣、錢包折扣與產品排除已移至獨立模組。</p>
+             <button onClick={() => setAdminModule('pricing')} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-sm active:scale-95 transition-all">前往價錢設定</button>
            </div>
         </div>
       )}
@@ -2433,6 +2524,127 @@ const App: React.FC = () => {
              </div>
           </div>
         );
+      case 'pricing':
+        return (
+          <div className="space-y-8 animate-fade-in pb-20">
+            {/* ── 定價規則卡片 ── */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                <div className="flex items-center gap-2"><div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><Tag size={18}/></div><h4 className="font-black text-sm">會員折扣</h4></div>
+                <p className="text-[10px] text-slate-400 font-bold">登入會員後，在售價/折扣價基礎上自動減價</p>
+                <div className="flex items-center gap-2">
+                  <input type="number" min="0" max="50" step="1" value={siteConfig.pricingRules?.memberDiscountPercent || ''} onChange={e => setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, memberDiscountPercent: Number(e.target.value) || 0}})} placeholder="0" className="flex-1 p-4 bg-slate-50 rounded-2xl font-black text-xl text-center border border-slate-100 focus:ring-2 focus:ring-blue-100" />
+                  <span className="text-2xl font-black text-slate-300">%</span>
+                </div>
+                <p className="text-[9px] text-slate-300 font-bold">填 0 或留空 = 會員不額外減價</p>
+              </div>
+              <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                <div className="flex items-center gap-2"><div className="p-2.5 bg-purple-50 text-purple-600 rounded-xl"><Wallet size={18}/></div><h4 className="font-black text-sm">錢包折扣</h4></div>
+                <p className="text-[10px] text-slate-400 font-bold">使用預付錢包餘額付款時，在會員價基礎上再減</p>
+                <div className="flex items-center gap-2">
+                  <input type="number" min="0" max="50" step="1" value={siteConfig.pricingRules?.walletDiscountPercent || ''} onChange={e => setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, walletDiscountPercent: Number(e.target.value) || 0}})} placeholder="0" className="flex-1 p-4 bg-slate-50 rounded-2xl font-black text-xl text-center border border-slate-100 focus:ring-2 focus:ring-purple-100" />
+                  <span className="text-2xl font-black text-slate-300">%</span>
+                </div>
+                <p className="text-[9px] text-slate-300 font-bold">疊加在會員折扣之上，填 0 = 不額外減</p>
+              </div>
+              <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                <div className="flex items-center gap-2"><div className="p-2.5 bg-slate-100 text-slate-600 rounded-xl"><Zap size={18}/></div><h4 className="font-black text-sm">定價預覽</h4></div>
+                <p className="text-[10px] text-slate-400 font-bold">以 $100 售價為例</p>
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between items-center p-2.5 bg-slate-50 rounded-xl"><span className="text-slate-500 font-bold">🛒 訪客</span><span className="font-black text-slate-900">$100</span></div>
+                  <div className="flex justify-between items-center p-2.5 bg-blue-50 rounded-xl"><span className="text-blue-600 font-bold">👤 會員</span><span className="font-black text-blue-700">${Math.round(100 * (1 - (siteConfig.pricingRules?.memberDiscountPercent || 0) / 100))}</span></div>
+                  <div className="flex justify-between items-center p-2.5 bg-purple-50 rounded-xl"><span className="text-purple-600 font-bold">💳 錢包</span><span className="font-black text-purple-700">${Math.round(100 * (1 - (siteConfig.pricingRules?.memberDiscountPercent || 0) / 100) * (1 - (siteConfig.pricingRules?.walletDiscountPercent || 0) / 100))}</span></div>
+                </div>
+              </div>
+            </div>
+
+            {/* ── 全產品定價矩陣 ── */}
+            <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden">
+              <div className="p-8 pb-4 flex items-center justify-between">
+                <div className="flex items-center gap-3"><div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><ClipboardList size={18}/></div><h4 className="font-black text-lg">全產品定價一覽</h4></div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => {
+                    const allIds = products.map(p => p.id);
+                    const current = siteConfig.pricingRules?.excludedProductIds || [];
+                    if (current.length === 0) {
+                      setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, excludedProductIds: allIds}});
+                      showToast('已排除全部產品');
+                    } else {
+                      setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, excludedProductIds: []}});
+                      showToast('已對全部產品實行折扣');
+                    }
+                  }} className="px-4 py-2 bg-slate-100 rounded-xl text-xs font-black text-slate-600 hover:bg-slate-200 transition-colors">
+                    {(siteConfig.pricingRules?.excludedProductIds?.length || 0) > 0 ? '✓ 全部實行' : '✗ 全部排除'}
+                  </button>
+                  <button onClick={async () => {
+                    try {
+                      // TODO: Persist pricingRules to Supabase (e.g. a site_config table)
+                      showToast('定價規則已儲存（前端生效中）');
+                    } catch (err: any) {
+                      showToast(`儲存失敗：${err.message}`, 'error');
+                    }
+                  }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Save size={14}/> 儲存</button>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                      <th className="text-left px-6 py-3 w-10">參與</th>
+                      <th className="text-left px-4 py-3">產品</th>
+                      <th className="text-right px-4 py-3">售價</th>
+                      <th className="text-right px-4 py-3">折扣價</th>
+                      <th className="text-right px-4 py-3 text-blue-500">會員價</th>
+                      <th className="text-right px-4 py-3 text-purple-500">錢包價</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {products.map(p => {
+                      const excluded = siteConfig.pricingRules?.excludedProductIds?.includes(p.id) || false;
+                      const hasDiscount = p.memberPrice > 0 && p.memberPrice < p.price;
+                      const base = hasDiscount ? p.memberPrice : p.price;
+                      const mPct = siteConfig.pricingRules?.memberDiscountPercent || 0;
+                      const wPct = siteConfig.pricingRules?.walletDiscountPercent || 0;
+                      const memberP = excluded ? base : Math.round(base * (1 - mPct / 100));
+                      const walletP = excluded ? base : Math.round(base * (1 - mPct / 100) * (1 - wPct / 100));
+                      return (
+                        <tr key={p.id} className={`hover:bg-slate-50/50 transition-colors ${excluded ? 'opacity-50' : ''}`}>
+                          <td className="px-6 py-3">
+                            <button onClick={() => {
+                              const ids = siteConfig.pricingRules?.excludedProductIds || [];
+                              const newIds = excluded ? ids.filter(x => x !== p.id) : [...ids, p.id];
+                              setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, excludedProductIds: newIds}});
+                            }} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all ${excluded ? 'border-slate-200 bg-white' : 'border-emerald-500 bg-emerald-500 text-white'}`}>
+                              {!excluded && <Check size={12} strokeWidth={3}/>}
+                            </button>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-2">
+                              <div className="w-8 h-8 bg-slate-50 rounded-lg flex items-center justify-center text-base overflow-hidden flex-shrink-0 border border-slate-100">
+                                {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-sm">{p.image || '📦'}</span>}
+                              </div>
+                              <span className="font-bold text-slate-700">{p.name}</span>
+                            </div>
+                          </td>
+                          <td className="text-right px-4 py-3 font-bold text-slate-900">${p.price}</td>
+                          <td className="text-right px-4 py-3">
+                            {hasDiscount ? <span className="font-black text-rose-500">${p.memberPrice}</span> : <span className="text-slate-300">—</span>}
+                          </td>
+                          <td className="text-right px-4 py-3">
+                            {!excluded && mPct > 0 ? <span className="font-black text-blue-600">${memberP}</span> : <span className="text-slate-300">{excluded ? '排除' : `$${base}`}</span>}
+                          </td>
+                          <td className="text-right px-4 py-3">
+                            {!excluded && (mPct > 0 || wPct > 0) ? <span className="font-black text-purple-600">${walletP}</span> : <span className="text-slate-300">{excluded ? '排除' : `$${base}`}</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
       case 'settings':
         return (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-fade-in pb-20">
@@ -2440,15 +2652,36 @@ const App: React.FC = () => {
                 <div className="flex items-center gap-3"><div className="p-3 bg-blue-50 text-blue-600 rounded-2xl"><Globe size={20}/></div><h3 className="text-xl font-black">基本資訊</h3></div>
                 <div className="space-y-6">
                    <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 ml-4 uppercase">商店名稱</label><input value={siteConfig.logoText} onChange={e => setSiteConfig({...siteConfig, logoText: e.target.value})} className="w-full p-4 bg-slate-50 rounded-2xl font-bold" /></div>
-                   <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 ml-4 uppercase">Logo 圖標</label><input value={siteConfig.logoIcon} onChange={e => setSiteConfig({...siteConfig, logoIcon: e.target.value})} className="w-full p-4 bg-slate-50 rounded-2xl font-bold" /></div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-bold text-slate-400 ml-4 uppercase">商店 Logo</label>
+                     <div className="flex items-center gap-4">
+                       <label className={`relative w-20 h-20 rounded-2xl border-2 border-dashed ${imageUploading === 'logo' ? 'border-blue-400 bg-blue-50' : 'border-slate-200 bg-slate-50'} flex items-center justify-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-all overflow-hidden group flex-shrink-0`}>
+                         {imageUploading === 'logo' ? (
+                           <RefreshCw size={20} className="text-blue-500 animate-spin" />
+                         ) : isMediaUrl(siteConfig.logoUrl) ? (
+                           <>
+                             <img src={siteConfig.logoUrl} alt="Logo" className="w-full h-full object-contain p-1" />
+                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"><Upload size={16} className="text-white" /></div>
+                           </>
+                         ) : siteConfig.logoIcon ? (
+                           <span className="text-3xl">{siteConfig.logoIcon}</span>
+                         ) : (
+                           <div className="text-center"><Upload size={16} className="mx-auto text-slate-300 mb-0.5" /><span className="text-[8px] text-slate-400 font-bold">上傳</span></div>
+                         )}
+                         <input type="file" accept="image/*" className="hidden" onChange={e => handleImageUpload(e.target.files, 'branding', async ([url]) => { if (isMediaUrl(siteConfig.logoUrl)) await deleteImage(siteConfig.logoUrl!); setSiteConfig({...siteConfig, logoUrl: url}); }, { uploadKey: 'logo' })} />
+                       </label>
+                       <div className="flex-1 space-y-1.5">
+                         <input value={siteConfig.logoIcon} onChange={e => setSiteConfig({...siteConfig, logoIcon: e.target.value})} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm" placeholder="備用 Emoji 圖標（如 ❄️）" />
+                         <p className="text-[9px] text-slate-400 font-bold ml-1">上傳 Logo 圖片（用於網站標題、瀏覽器圖標、SEO）。Emoji 為備用顯示。</p>
+                       </div>
+                     </div>
+                   </div>
                 </div>
              </div>
-             <div className="bg-white p-10 rounded-[3.5rem] border border-slate-100 shadow-sm space-y-8">
-                <div className="flex items-center gap-3"><div className="p-3 bg-amber-50 text-amber-600 rounded-2xl"><Percent size={20}/></div><h3 className="text-xl font-black">全局定價規則</h3></div>
-                <div className="space-y-6">
-                   <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 ml-4 uppercase">VIP 會員折扣 (%)</label><input type="number" value={siteConfig.pricingRules?.memberDiscountPercent} onChange={e => setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, memberDiscountPercent: Number(e.target.value)}})} className="w-full p-4 bg-slate-50 rounded-2xl font-bold" /></div>
-                   <button onClick={applyGlobalPricingRules} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all">套用並更新所有會員價</button>
-                </div>
+             <div className="bg-white p-10 rounded-[3.5rem] border border-slate-100 shadow-sm space-y-6">
+                <div className="flex items-center gap-3"><div className="p-3 bg-amber-50 text-amber-600 rounded-2xl"><Percent size={20}/></div><h3 className="text-xl font-black">定價管理</h3></div>
+                <p className="text-sm text-slate-400 font-bold">會員折扣、錢包折扣、產品級別排除等定價設定已移至獨立模組。</p>
+                <button onClick={() => setAdminModule('pricing')} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2"><DollarSign size={16}/> 前往價錢設定</button>
              </div>
              {/* ── 運費設置卡片 ── */}
              <div className="bg-white p-10 rounded-[3.5rem] border border-slate-100 shadow-sm space-y-8 lg:col-span-2">
@@ -2498,7 +2731,7 @@ const App: React.FC = () => {
                         <div key={pid} className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl border border-slate-100">
                           <div className="flex items-center gap-3 min-w-0">
                             <div className="w-10 h-10 bg-white rounded-xl border border-slate-100 flex items-center justify-center text-lg overflow-hidden flex-shrink-0">
-                              {p?.image?.startsWith('data') || p?.image?.startsWith('http') ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span>{p?.image || '📦'}</span>}
+                              {isMediaUrl(p?.image) ? <img src={p!.image} className="w-full h-full object-cover" alt="" /> : <span>{p?.image || '📦'}</span>}
                             </div>
                             <div className="min-w-0"><p className="text-sm font-black text-slate-700 truncate">{p?.name || pid}</p><p className="text-[10px] text-slate-400 font-bold">${p?.price ?? '?'}</p></div>
                           </div>
@@ -2588,10 +2821,19 @@ const App: React.FC = () => {
           <div className="bg-white w-full max-w-md rounded-t-[3rem] shadow-2xl p-8 space-y-6 animate-slide-up overflow-y-auto max-h-[90vh] hide-scrollbar" onClick={e => e.stopPropagation()}>
              <div className="flex justify-between items-start">
                <div className="w-32 h-32 bg-slate-50 rounded-[2rem] flex items-center justify-center text-6xl border border-slate-100 overflow-hidden">
-                  {selectedProduct.image.startsWith('data') ? <img src={selectedProduct.image} className="w-full h-full object-cover" alt="" /> : selectedProduct.image}
+                  {isMediaUrl(selectedProduct.image) ? <img src={selectedProduct.image} className="w-full h-full object-cover" alt={selectedProduct.name} /> : selectedProduct.image}
                </div>
                <button onClick={() => setSelectedProduct(null)} className="p-3 bg-slate-100 rounded-full text-slate-400 active:scale-90 transition-transform"><X size={20}/></button>
              </div>
+             {selectedProduct.gallery && selectedProduct.gallery.length > 0 && (
+               <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-1 -mt-2">
+                 {selectedProduct.gallery.map((url, i) => (
+                   <div key={i} className="w-16 h-16 rounded-xl overflow-hidden border border-slate-100 flex-shrink-0">
+                     <img src={url} alt="" className="w-full h-full object-cover" />
+                   </div>
+                 ))}
+               </div>
+             )}
              <div className="space-y-2">
                <h3 className="text-2xl font-black text-slate-900 leading-tight">{selectedProduct.name}</h3>
                <div className="flex flex-wrap gap-2">
@@ -2634,8 +2876,8 @@ const App: React.FC = () => {
                   <input type="number" value={editingProduct.price} onChange={e => setEditingProduct({ ...editingProduct, price: Number(e.target.value) })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">會員價</label>
-                  <input type="number" value={editingProduct.memberPrice} onChange={e => setEditingProduct({ ...editingProduct, memberPrice: Number(e.target.value) })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">折扣價 (留空或 0 = 不設折扣)</label>
+  <input type="number" min="0" value={editingProduct.memberPrice || ''} onChange={e => setEditingProduct({ ...editingProduct, memberPrice: Number(e.target.value) || 0 })} placeholder="留空 = 不設折扣" className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">庫存</label>
@@ -2657,8 +2899,52 @@ const App: React.FC = () => {
                   <input value={editingProduct.tags.join(',')} onChange={e => setEditingProduct({ ...editingProduct, tags: e.target.value.split(',').map(v => v.trim()).filter(Boolean) })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
                 </div>
                 <div className="space-y-2 md:col-span-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">圖片 (Emoji 或 URL)</label>
-                  <input value={editingProduct.image} onChange={e => setEditingProduct({ ...editingProduct, image: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">產品圖片</label>
+                  <div className="flex items-start gap-4">
+                    <label className={`relative flex-shrink-0 w-28 h-28 rounded-2xl border-2 border-dashed ${imageUploading === `product-${editingProduct.id}` ? 'border-blue-400 bg-blue-50' : 'border-slate-200 bg-slate-50'} flex items-center justify-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-all overflow-hidden group`}>
+                      {imageUploading === `product-${editingProduct.id}` ? (
+                        <RefreshCw size={22} className="text-blue-500 animate-spin" />
+                      ) : isMediaUrl(editingProduct.image) ? (
+                        <img src={editingProduct.image} alt="" className="w-full h-full object-cover" />
+                      ) : editingProduct.image ? (
+                        <span className="text-4xl">{editingProduct.image}</span>
+                      ) : (
+                        <div className="text-center"><Upload size={20} className="mx-auto text-slate-300 mb-1" /><span className="text-[9px] text-slate-400 font-bold">上傳圖片</span></div>
+                      )}
+                      {isMediaUrl(editingProduct.image) && <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"><Upload size={18} className="text-white" /></div>}
+                      <input type="file" accept="image/*" className="hidden" onChange={e => handleImageUpload(e.target.files, `products/${editingProduct.id}`, async ([url]) => { if (isMediaUrl(editingProduct.image)) await deleteImage(editingProduct.image); setEditingProduct({ ...editingProduct, image: url }); }, { uploadKey: `product-${editingProduct.id}` })} />
+                    </label>
+                    <div className="flex-1 space-y-2">
+                      <input value={editingProduct.image} onChange={e => setEditingProduct({ ...editingProduct, image: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-xs" placeholder="或貼上圖片 URL / Emoji" />
+                      <p className="text-[9px] text-slate-400 font-bold">點擊左方上傳圖片，或直接輸入 URL / Emoji</p>
+                    </div>
+                  </div>
+                </div>
+                {/* ── 產品相簿 (Gallery) ── */}
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">產品相簿（最多 10 張）</label>
+                  <div className="flex gap-2 flex-wrap">
+                    {(editingProduct.gallery || []).map((url, idx) => (
+                      <div key={idx} className="relative w-20 h-20 rounded-xl overflow-hidden border border-slate-100 group">
+                        <img src={url} alt="" className="w-full h-full object-cover" />
+                        <button type="button" onClick={async () => {
+                          await deleteImage(url);
+                          setEditingProduct({ ...editingProduct, gallery: (editingProduct.gallery || []).filter((_, i) => i !== idx) });
+                        }} className="absolute top-0.5 right-0.5 w-5 h-5 bg-black/60 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X size={10} className="text-white" /></button>
+                      </div>
+                    ))}
+                    {(editingProduct.gallery || []).length < 10 && (
+                      <label className={`w-20 h-20 rounded-xl border-2 border-dashed ${imageUploading === `gallery-${editingProduct.id}` ? 'border-blue-400 bg-blue-50' : 'border-slate-200 bg-slate-50'} flex items-center justify-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-all`}>
+                        {imageUploading === `gallery-${editingProduct.id}` ? <RefreshCw size={16} className="text-blue-500 animate-spin" /> : <Plus size={18} className="text-slate-300" />}
+                        <input type="file" accept="image/*" multiple className="hidden" onChange={e => handleImageUpload(e.target.files, `products/${editingProduct.id}/gallery`, (urls) => {
+                          const current = editingProduct.gallery || [];
+                          const merged = [...current, ...urls].slice(0, 10);
+                          setEditingProduct({ ...editingProduct, gallery: merged });
+                        }, { multi: true, uploadKey: `gallery-${editingProduct.id}` })} />
+                      </label>
+                    )}
+                  </div>
+                  {(editingProduct.gallery || []).length > 0 && <p className="text-[9px] text-slate-400 font-bold">{(editingProduct.gallery || []).length}/10 張 · 懸浮圖片可刪除</p>}
                 </div>
                 <div className="space-y-2 md:col-span-2">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">商品描述</label>
@@ -2738,10 +3024,31 @@ const App: React.FC = () => {
                   <option value="video">影片</option>
                 </select>
               </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">連結 (圖片或影片 URL)</label>
-                <input value={editingSlideshow.url} onChange={e => setEditingSlideshow({ ...editingSlideshow, url: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" placeholder="https://..." />
-              </div>
+              {editingSlideshow.type === 'image' ? (
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">廣告圖片</label>
+                  <label className={`relative block w-full aspect-[2.5/1] rounded-2xl border-2 border-dashed ${imageUploading === `slide-${editingSlideshow.id}` ? 'border-blue-400 bg-blue-50' : 'border-slate-200 bg-slate-50'} flex items-center justify-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-all overflow-hidden group`}>
+                    {imageUploading === `slide-${editingSlideshow.id}` ? (
+                      <div className="flex flex-col items-center gap-2"><RefreshCw size={24} className="text-blue-500 animate-spin" /><span className="text-xs text-blue-500 font-bold">上傳中...</span></div>
+                    ) : isMediaUrl(editingSlideshow.url) ? (
+                      <>
+                        <img src={editingSlideshow.url} alt="" className="w-full h-full object-cover" />
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2"><Upload size={20} className="text-white" /><span className="text-white font-bold text-sm">更換圖片</span></div>
+                      </>
+                    ) : (
+                      <div className="flex flex-col items-center gap-2 text-slate-300"><Upload size={28} /><span className="text-xs font-bold">點擊上傳廣告圖片</span></div>
+                    )}
+                    <input type="file" accept="image/*" className="hidden" onChange={e => handleImageUpload(e.target.files, `slideshow/${editingSlideshow.id}`, async ([url]) => { if (isMediaUrl(editingSlideshow.url)) await deleteImage(editingSlideshow.url); setEditingSlideshow({ ...editingSlideshow, url }); }, { uploadKey: `slide-${editingSlideshow.id}` })} />
+                  </label>
+                  <input value={editingSlideshow.url} onChange={e => setEditingSlideshow({ ...editingSlideshow, url: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-xs" placeholder="或貼上圖片 URL" />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">影片連結 URL</label>
+                  <input value={editingSlideshow.url} onChange={e => setEditingSlideshow({ ...editingSlideshow, url: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" placeholder="https://..." />
+                  {editingSlideshow.url && <video src={editingSlideshow.url} className="w-full aspect-[2.5/1] rounded-xl object-cover bg-slate-100 mt-2" muted controls />}
+                </div>
+              )}
               <div className="space-y-2">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">標題（選填）</label>
                 <input value={editingSlideshow.title || ''} onChange={e => setEditingSlideshow({ ...editingSlideshow, title: e.target.value || undefined })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" placeholder="廣告標題" />
@@ -3149,11 +3456,11 @@ const App: React.FC = () => {
         </div>
         <div className="flex gap-3 overflow-x-auto pb-1 hide-scrollbar -mx-1 px-1">
           {upsellProducts.map(p => {
-            const effectivePrice = getEffectiveUnitPrice(p, 1, !!isUsingWallet);
+            const effectivePrice = getPrice(p);
             return (
               <div key={p.id} className="flex-shrink-0 w-40 bg-slate-50 rounded-2xl border border-slate-100 p-3 space-y-2.5 hover:border-orange-200 transition-all">
                 <div className="w-full h-20 bg-white rounded-xl border border-slate-50 flex items-center justify-center text-3xl overflow-hidden">
-                  {p.image?.startsWith('data') || p.image?.startsWith('http') ? <img src={p.image} className="w-full h-full object-cover" alt={p.name} /> : <span>{p.image || '📦'}</span>}
+                  {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt={p.name} /> : <span>{p.image || '📦'}</span>}
                 </div>
                 <p className="text-xs font-black text-slate-700 truncate">{p.name}</p>
                 <div className="flex items-center justify-between">
@@ -3359,18 +3666,18 @@ const App: React.FC = () => {
                {cart.map(item => (
                  <div key={item.id} className="py-3 flex gap-3 items-center">
                    <div className="w-14 h-14 bg-slate-50 rounded-xl flex items-center justify-center flex-shrink-0 border border-slate-100 overflow-hidden">
-                     {item.image.startsWith('data') || item.image.startsWith('http') ? <img src={item.image} alt="" className="w-full h-full object-cover" /> : <span className="text-2xl">{item.image}</span>}
+                     {isMediaUrl(item.image) ? <img src={item.image} alt="" className="w-full h-full object-cover" /> : <span className="text-2xl">{item.image}</span>}
                    </div>
                    <div className="flex-1 min-w-0">
                      <p className="text-xs font-black text-slate-800">{item.name}</p>
-                     <p className="text-[10px] text-slate-400 font-bold">${getEffectiveUnitPrice(item, item.qty, !!isUsingWallet)} x {item.qty}</p>
+                     <p className="text-[10px] text-slate-400 font-bold">${getPrice(item, item.qty)} x {item.qty}</p>
                    </div>
                    <div className="flex items-center gap-1 rounded-full border border-slate-100 p-1 bg-white">
                      <button type="button" onClick={(e) => { e.stopPropagation(); updateCart(item, -1, e); }} className="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:bg-slate-50 active:scale-90"><Minus size={14}/></button>
                      <span className="w-6 text-center text-xs font-black text-slate-900">{item.qty}</span>
                      <button type="button" onClick={(e) => { e.stopPropagation(); updateCart(item, 1, e); }} className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-900 text-white active:scale-90"><Plus size={14}/></button>
                    </div>
-                   <p className="text-sm font-black text-slate-900 w-14 text-right">${getEffectiveUnitPrice(item, item.qty, !!isUsingWallet) * item.qty}</p>
+                   <p className="text-sm font-black text-slate-900 w-14 text-right">${getPrice(item, item.qty) * item.qty}</p>
                  </div>
                ))}
              </div>
@@ -3393,7 +3700,7 @@ const App: React.FC = () => {
   const renderStoreView = () => (
     <div className="flex flex-col h-screen overflow-hidden bg-white animate-fade-in font-sans">
       <header className="bg-white/95 backdrop-blur-md sticky top-0 z-40 px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-        <div className="flex items-center gap-2"><div className="w-9 h-9 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-lg"><span>{siteConfig.logoIcon}</span></div><h1 className="font-bold text-lg text-slate-900 tracking-tight">{siteConfig.logoText}</h1></div>
+        <div className="flex items-center gap-2"><div className="w-9 h-9 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-lg overflow-hidden">{isMediaUrl(siteConfig.logoUrl) ? <img src={siteConfig.logoUrl} alt={siteConfig.logoText} className="w-full h-full object-contain p-0.5" /> : <span>{siteConfig.logoIcon}</span>}</div><h1 className="font-bold text-lg text-slate-900 tracking-tight">{siteConfig.logoText}</h1></div>
         <div className="flex items-center gap-2">
           <button onClick={handleReorderClick} className="p-2 bg-amber-50 text-amber-600 rounded-full border border-amber-100 active:scale-90 transition-transform" title="一鍵回購"><Clock size={18} /></button>
           <button onClick={() => setLang(lang === 'zh-HK' ? 'en' : 'zh-HK')} className="px-2.5 py-1.5 bg-slate-100 text-slate-600 rounded-full border border-slate-200 text-[10px] font-black uppercase tracking-wider hover:bg-slate-200 transition-colors">{lang === 'zh-HK' ? 'EN' : '中'}</button>
@@ -3466,7 +3773,7 @@ const App: React.FC = () => {
                     return (
                       <div key={p.id} onClick={() => setSelectedProduct(p)} className="flex gap-4 py-4 px-3 hover:bg-slate-50 transition-all cursor-pointer group">
                         <div className="w-24 h-24 bg-slate-50 rounded-xl flex items-center justify-center text-5xl relative overflow-hidden flex-shrink-0 border border-slate-100 group-hover:shadow-inner transition-all">
-                           {p.image.startsWith('data') ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-5xl">{p.image}</span>}
+                           {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt={p.name} /> : <span className="text-5xl">{p.image}</span>}
                            {p.recipes && p.recipes.length > 0 && <div className="absolute top-1 right-1 w-6 h-6 bg-white/90 backdrop-blur rounded-full flex items-center justify-center text-blue-600 shadow-sm"><BookOpen size={12}/></div>}
                         </div>
                         <div className="flex-1 flex flex-col justify-between py-0.5 min-w-0">
@@ -3477,7 +3784,16 @@ const App: React.FC = () => {
                               </div>
                            </div>
                            <div className="flex items-end justify-between mt-2">
-                              <div className="flex items-center gap-2"><p className={`text-base font-bold ${isUsingWallet ? 'text-slate-300 text-xs line-through' : 'text-slate-900'}`}>${p.price}</p>{isUsingWallet && <p className="text-base font-bold text-rose-500 animate-fade-in">${p.memberPrice}</p>}</div>
+                              <div className="flex items-center gap-2">
+                                {(() => {
+                                  const yourPrice = getPrice(p);
+                                  const showOriginal = yourPrice < p.price;
+                                  return (<>
+                                    <p className={`text-base font-bold ${showOriginal ? 'text-slate-300 text-xs line-through' : 'text-slate-900'}`}>${p.price}</p>
+                                    {showOriginal && <p className="text-base font-bold text-rose-500 animate-fade-in">${yourPrice}</p>}
+                                  </>);
+                                })()}
+                              </div>
                               <div className={`flex items-center rounded-full p-1 border transition-all ${isOfferMet ? 'bg-amber-400 border-amber-500 scale-105 shadow-md ring-2 ring-amber-200' : 'bg-white border-slate-100 shadow-sm'}`}>
                                 {qty > 0 && (
                                   <><button onClick={(e) => updateCart(p, -1, e)} className={`w-8 h-8 flex items-center justify-center transition-colors active:scale-75 ${isOfferMet ? 'text-white' : 'text-slate-300'}`}><Minus size={16}/></button><span className={`mx-2 text-sm font-black w-4 text-center ${isOfferMet ? 'text-white' : 'text-slate-900'}`}>{qty}</span></>
@@ -3579,6 +3895,7 @@ const App: React.FC = () => {
                  { id: 'orders', label: t.admin.orders, icon: <Truck size={20}/> },
                  { id: 'members', label: t.admin.members, icon: <Users size={20}/> },
                  { id: 'slideshow', label: t.admin.slideshow, icon: <ImageIcon size={20}/> },
+                 { id: 'pricing', label: '價錢設定', icon: <DollarSign size={20}/> },
                  { id: 'settings', label: t.admin.settings, icon: <Settings size={20}/> }
                ].map(item => (
                  <button
@@ -3596,7 +3913,7 @@ const App: React.FC = () => {
             </button>
           </aside>
           <main className="flex-1 min-w-0 p-6 md:p-10 overflow-y-auto bg-[#f8fafc] hide-scrollbar">
-            <header className="flex justify-between items-center mb-10"><div><h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: t.admin.dashboard, inventory: t.admin.inventory, orders: t.admin.orders, members: t.admin.members, slideshow: t.admin.slideshow, settings: t.admin.settings } as Record<string, string>)[adminModule] || adminModule}</h1><p className="text-slate-400 font-bold text-sm">{t.admin.realtimeAdmin}</p></div><div className="flex items-center gap-4"><button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button><button onClick={() => showToast('帳戶功能開發中', 'error')} className="w-12 h-12 bg-slate-200 rounded-2xl border border-slate-100"></button></div></header>
+            <header className="flex justify-between items-center mb-10"><div><h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: t.admin.dashboard, inventory: t.admin.inventory, orders: t.admin.orders, members: t.admin.members, slideshow: t.admin.slideshow, pricing: '價錢設定', settings: t.admin.settings } as Record<string, string>)[adminModule] || adminModule}</h1><p className="text-slate-400 font-bold text-sm">{t.admin.realtimeAdmin}</p></div><div className="flex items-center gap-4"><button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button><button onClick={() => showToast('帳戶功能開發中', 'error')} className="w-12 h-12 bg-slate-200 rounded-2xl border border-slate-100"></button></div></header>
             {renderAdminModuleContent()}
           </main>
         </>

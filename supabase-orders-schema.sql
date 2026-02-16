@@ -157,3 +157,36 @@ CREATE POLICY "Allow full access on notification_logs"
   ON public.notification_logs FOR ALL
   USING (true)
   WITH CHECK (true);
+
+-- =============================================
+-- Supabase Storage: 'media' bucket setup
+-- =============================================
+-- Run these in the Supabase Dashboard > Storage:
+--
+-- 1. Create a PUBLIC bucket named "media"
+--    Dashboard > Storage > New Bucket > Name: media > Public: ON
+--
+-- 2. Add storage policies via SQL Editor:
+--
+-- Allow public read access (anonymous)
+-- INSERT INTO storage.policies (bucket_id, name, definition, operation)
+-- VALUES ('media', 'Public read', '(true)', 'SELECT');
+--
+-- Allow uploads (adjust auth as needed)
+-- INSERT INTO storage.policies (bucket_id, name, definition, operation)
+-- VALUES ('media', 'Allow uploads', '(true)', 'INSERT');
+--
+-- Allow updates (replace existing images)
+-- INSERT INTO storage.policies (bucket_id, name, definition, operation)
+-- VALUES ('media', 'Allow updates', '(true)', 'UPDATE');
+--
+-- Allow deletes (clean up old images)
+-- INSERT INTO storage.policies (bucket_id, name, definition, operation)
+-- VALUES ('media', 'Allow deletes', '(true)', 'DELETE');
+--
+-- File structure in the bucket:
+--   media/
+--     products/{productId}/main-{timestamp}.webp
+--     products/{productId}/gallery/{timestamp}-{index}.webp
+--     slideshow/{slideId}/main-{timestamp}.webp
+--     branding/main-{timestamp}.webp
