@@ -2017,10 +2017,20 @@ const App: React.FC = () => {
   };
 
   const downloadCSVTemplate = () => {
-    const headers = ['id', 'name', 'price', 'memberPrice', 'stock', 'categories', 'trackInventory'];
-    const sample = ['P-001', '澳洲M5和牛肉眼', '350', '298', '10', 'beef', 'true'];
-    const csvContent = [headers.join(','), sample.join(',')].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const headers = ['id', 'name', 'price', 'memberPrice', 'stock', 'categories', 'tags', 'trackInventory', 'description', 'origin', 'weight', 'image', 'imageAlt', 'seoTitle', 'seoDescription'];
+    const sample1 = ['', '澳洲M5和牛肉眼', '350', '298', '10', 'beef|wagyu', '急凍|牛扒', 'true', '頂級和牛肉眼扒', '澳洲', '300g', '', '澳洲M5和牛肉眼 急凍真空包裝', '澳洲M5和牛肉眼 | 香港急凍肉網購', '新鮮急凍澳洲M5和牛肉眼扒，順豐冷鏈配送到家'];
+    const sample2 = ['', '安格斯牛扒', '120', '', '20', 'beef', '牛扒|安格斯', 'true', '優質安格斯牛扒', '美國', '250g', '', '', '', ''];
+    const instructions = [
+      '# 使用說明：',
+      '# 1. id 留空則自動生成（推薦），填寫則用你自訂的 ID',
+      '# 2. categories 和 tags 用 | (直線) 分隔多個值，例如: beef|wagyu',
+      '# 3. memberPrice 留空或填 0 = 不設折扣',
+      '# 4. trackInventory 填 true 或 false',
+      '# 5. image 可填圖片 URL，留空則預設為 emoji',
+      '# 6. SEO 欄位選填，有助 Google 搜尋排名',
+    ];
+    const csvContent = [instructions.join('\n'), headers.join(','), sample1.join(','), sample2.join(',')].join('\n');
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
@@ -2034,17 +2044,27 @@ const App: React.FC = () => {
       const reader = new FileReader();
       reader.onload = async (event) => {
         const text = event.target?.result as string;
-        const lines = text.split('\n').filter(l => l.trim().length > 0);
+        const lines = text.split('\n').filter(l => l.trim().length > 0 && !l.trim().startsWith('#'));
+        if (lines.length < 2) { showToast('CSV 格式錯誤：缺少標題列或資料列', 'error'); return; }
         const headers = lines[0].split(',').map(h => h.trim());
+        const existingIds = new Set(products.map(p => p.id));
         const newProducts: Product[] = lines.slice(1).map(line => {
           const values = line.split(',').map(v => v.trim());
-          const p: any = { tags: [], image: '🥩', recipes: [] };
+          const p: any = { tags: [], image: '🥩', recipes: [], categories: [], trackInventory: true, memberPrice: 0, stock: 0, price: 0 };
           headers.forEach((h, i) => {
-            if (h === 'categories') p[h] = values[i].split('|');
-            else if (h === 'price' || h === 'memberPrice' || h === 'stock') p[h] = Number(values[i]);
-            else if (h === 'trackInventory') p[h] = values[i].toLowerCase() === 'true';
-            else p[h] = values[i];
+            const val = values[i] || '';
+            if (h === 'categories') p.categories = val ? val.split('|').map((v: string) => v.trim()).filter(Boolean) : [];
+            else if (h === 'tags') p.tags = val ? val.split('|').map((v: string) => v.trim()).filter(Boolean) : [];
+            else if (h === 'price' || h === 'memberPrice' || h === 'stock') p[h] = Number(val) || 0;
+            else if (h === 'trackInventory') p[h] = val ? val.toLowerCase() === 'true' : true;
+            else if (val) p[h] = val;
           });
+          if (!p.id || p.id === '') {
+            let autoId = 'P-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+            while (existingIds.has(autoId)) autoId = 'P-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+            p.id = autoId;
+            existingIds.add(autoId);
+          }
           return p as Product;
         });
         const success = await upsertProducts(newProducts);
@@ -2132,7 +2152,7 @@ const App: React.FC = () => {
                 <Upload size={16}/> 批量上傳 CSV
                 <input type="file" accept=".csv" className="hidden" onChange={handleCSVUpload} />
               </label>
-              <button onClick={() => setEditingProduct({ id: 'P-'+Date.now(), name: '', price: 0, memberPrice: 0, stock: 0, categories: [], tags: [], image: '🥩', trackInventory: true, recipes: [] })} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 transition-all">
+              <button onClick={() => setEditingProduct({ id: 'P-'+Date.now(), name: '', price: 0, memberPrice: 0, stock: 0, categories: [], tags: [], image: '🥩', trackInventory: true, recipes: [], seoTitle: '', seoDescription: '', imageAlt: '' })} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 transition-all">
                 <Plus size={16}/> 上架新產品
               </button>
             </div>
@@ -2821,7 +2841,7 @@ const App: React.FC = () => {
           <div className="bg-white w-full max-w-md rounded-t-[3rem] shadow-2xl p-8 space-y-6 animate-slide-up overflow-y-auto max-h-[90vh] hide-scrollbar" onClick={e => e.stopPropagation()}>
              <div className="flex justify-between items-start">
                <div className="w-32 h-32 bg-slate-50 rounded-[2rem] flex items-center justify-center text-6xl border border-slate-100 overflow-hidden">
-                  {isMediaUrl(selectedProduct.image) ? <img src={selectedProduct.image} className="w-full h-full object-cover" alt={selectedProduct.name} /> : selectedProduct.image}
+                  {isMediaUrl(selectedProduct.image) ? <img src={selectedProduct.image} className="w-full h-full object-cover" alt={selectedProduct.imageAlt || selectedProduct.name} /> : selectedProduct.image}
                </div>
                <button onClick={() => setSelectedProduct(null)} className="p-3 bg-slate-100 rounded-full text-slate-400 active:scale-90 transition-transform"><X size={20}/></button>
              </div>
@@ -2876,8 +2896,9 @@ const App: React.FC = () => {
                   <input type="number" value={editingProduct.price} onChange={e => setEditingProduct({ ...editingProduct, price: Number(e.target.value) })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">折扣價 (留空或 0 = 不設折扣)</label>
-  <input type="number" min="0" value={editingProduct.memberPrice || ''} onChange={e => setEditingProduct({ ...editingProduct, memberPrice: Number(e.target.value) || 0 })} placeholder="留空 = 不設折扣" className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">折扣價</label>
+                  <input type="number" min="0" value={editingProduct.memberPrice || ''} onChange={e => setEditingProduct({ ...editingProduct, memberPrice: Number(e.target.value) || 0 })} placeholder="留空 = 不設折扣" className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
+                  <p className="text-[9px] text-slate-400 font-bold leading-relaxed">留空或填 0 = 不設折扣，以售價出售。<br/>例如售價 $100，填 <span className="text-blue-600">90</span> = 以 $90 出售（減 $10）。<br/>折扣價為所有客人可見的特價，會員/錢包折扣會在此基礎上再計算。</p>
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">庫存</label>
@@ -2890,9 +2911,38 @@ const App: React.FC = () => {
                     <option value="false">否</option>
                   </select>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">分類 (逗號分隔)</label>
-                  <input value={editingProduct.categories.join(',')} onChange={e => setEditingProduct({ ...editingProduct, categories: e.target.value.split(',').map(v => v.trim()).filter(Boolean) })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">產品分類</label>
+                  <div className="flex flex-wrap gap-2">
+                    {categories.map(cat => {
+                      const isSelected = editingProduct.categories.includes(cat.id);
+                      return (
+                        <button key={cat.id} type="button" onClick={() => {
+                          const next = isSelected
+                            ? editingProduct.categories.filter(c => c !== cat.id)
+                            : [...editingProduct.categories, cat.id];
+                          setEditingProduct({ ...editingProduct, categories: next });
+                        }} className={`px-3 py-1.5 rounded-xl text-xs font-black border transition-all ${isSelected ? 'bg-blue-600 text-white border-blue-600 shadow-md' : 'bg-slate-50 text-slate-500 border-slate-200 hover:border-blue-300'}`}>
+                          {cat.icon} {cat.name}
+                        </button>
+                      );
+                    })}
+                    <button type="button" onClick={() => {
+                      const newName = prompt('輸入新分類名稱：');
+                      if (!newName?.trim()) return;
+                      const newId = newName.trim().toLowerCase().replace(/\s+/g, '-');
+                      if (categories.find(c => c.id === newId)) {
+                        if (!editingProduct.categories.includes(newId)) setEditingProduct({ ...editingProduct, categories: [...editingProduct.categories, newId] });
+                        return;
+                      }
+                      const newCat = { id: newId, name: newName.trim(), icon: '📦' };
+                      upsertCategory(newCat);
+                      setEditingProduct({ ...editingProduct, categories: [...editingProduct.categories, newId] });
+                    }} className="px-3 py-1.5 rounded-xl text-xs font-black border-2 border-dashed border-slate-300 text-slate-400 hover:border-blue-400 hover:text-blue-500 transition-all flex items-center gap-1">
+                      <Plus size={12} /> 新增分類
+                    </button>
+                  </div>
+                  {editingProduct.categories.length === 0 && <p className="text-[9px] text-amber-500 font-bold">尚未選擇分類</p>}
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">標籤 (逗號分隔)</label>
@@ -2919,6 +2969,28 @@ const App: React.FC = () => {
                       <p className="text-[9px] text-slate-400 font-bold">點擊左方上傳圖片，或直接輸入 URL / Emoji</p>
                     </div>
                   </div>
+                </div>
+                {/* ── SEO 圖片 & 搜尋引擎優化 ── */}
+                <div className="space-y-3 md:col-span-2 p-4 bg-gradient-to-r from-emerald-50/60 to-blue-50/60 rounded-2xl border border-emerald-100/60">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Search size={14} className="text-emerald-600" />
+                    <label className="text-[10px] font-bold text-emerald-700 uppercase tracking-widest">Google SEO 優化</label>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-500 ml-1">圖片 Alt 文字 <span className="text-slate-300">（Google 圖片搜尋用，描述圖片內容）</span></label>
+                    <input value={editingProduct.imageAlt || ''} onChange={e => setEditingProduct({ ...editingProduct, imageAlt: e.target.value })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" placeholder={`例：${editingProduct.name || '澳洲M5和牛肉眼'} - 急凍真空包裝`} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-500 ml-1">SEO 標題 <span className="text-slate-300">（Google 搜尋結果的標題，留空則用產品名稱）</span></label>
+                    <input value={editingProduct.seoTitle || ''} onChange={e => setEditingProduct({ ...editingProduct, seoTitle: e.target.value })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" placeholder={`例：${editingProduct.name || '澳洲M5和牛肉眼'} | 香港急凍肉網購`} />
+                    {(editingProduct.seoTitle || '').length > 0 && <p className={`text-[8px] font-bold ml-1 ${(editingProduct.seoTitle || '').length > 60 ? 'text-red-500' : 'text-slate-300'}`}>{(editingProduct.seoTitle || '').length}/60 字元{(editingProduct.seoTitle || '').length > 60 ? ' ⚠️ 太長，Google 會截斷' : ''}</p>}
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-500 ml-1">SEO 描述 <span className="text-slate-300">（Google 搜尋結果的描述文字，建議 50-160 字元）</span></label>
+                    <textarea value={editingProduct.seoDescription || ''} onChange={e => setEditingProduct({ ...editingProduct, seoDescription: e.target.value })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100 min-h-[60px]" placeholder={`例：新鮮急凍${editingProduct.name || '澳洲M5和牛肉眼'}，順豐冷鏈配送，真空包裝保持鮮度。`} />
+                    {(editingProduct.seoDescription || '').length > 0 && <p className={`text-[8px] font-bold ml-1 ${(editingProduct.seoDescription || '').length > 160 ? 'text-red-500' : (editingProduct.seoDescription || '').length < 50 ? 'text-amber-500' : 'text-emerald-500'}`}>{(editingProduct.seoDescription || '').length}/160 字元{(editingProduct.seoDescription || '').length > 160 ? ' ⚠️ 太長' : (editingProduct.seoDescription || '').length < 50 ? ' ⚠️ 太短，建議 50+ 字元' : ' ✓ 長度適中'}</p>}
+                  </div>
+                  <p className="text-[8px] text-slate-400 font-bold leading-relaxed">以上欄位有助你的產品在 Google 搜尋及 Google 圖片搜尋排名更高。填寫時以客人會搜尋的關鍵字為主。</p>
                 </div>
                 {/* ── 產品相簿 (Gallery) ── */}
                 <div className="space-y-2 md:col-span-2">
@@ -3773,7 +3845,7 @@ const App: React.FC = () => {
                     return (
                       <div key={p.id} onClick={() => setSelectedProduct(p)} className="flex gap-4 py-4 px-3 hover:bg-slate-50 transition-all cursor-pointer group">
                         <div className="w-24 h-24 bg-slate-50 rounded-xl flex items-center justify-center text-5xl relative overflow-hidden flex-shrink-0 border border-slate-100 group-hover:shadow-inner transition-all">
-                           {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt={p.name} /> : <span className="text-5xl">{p.image}</span>}
+                           {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt={p.imageAlt || p.name} /> : <span className="text-5xl">{p.image}</span>}
                            {p.recipes && p.recipes.length > 0 && <div className="absolute top-1 right-1 w-6 h-6 bg-white/90 backdrop-blur rounded-full flex items-center justify-center text-blue-600 shadow-sm"><BookOpen size={12}/></div>}
                         </div>
                         <div className="flex-1 flex flex-col justify-between py-0.5 min-w-0">

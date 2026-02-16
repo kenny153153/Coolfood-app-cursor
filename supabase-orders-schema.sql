@@ -190,3 +190,11 @@ CREATE POLICY "Allow full access on notification_logs"
 --     products/{productId}/gallery/{timestamp}-{index}.webp
 --     slideshow/{slideId}/main-{timestamp}.webp
 --     branding/main-{timestamp}.webp
+
+-- =============================================
+-- Products table: SEO columns migration
+-- =============================================
+-- Run these if the products table already exists and needs new SEO columns:
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS seo_title TEXT;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS seo_description TEXT;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS image_alt TEXT;

@@ -27,7 +27,10 @@ export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
   recipes: row.recipes ?? undefined,
   bulkDiscount: row.bulk_discount ?? undefined,
   origin: row.origin ?? undefined,
-  weight: row.weight ?? undefined
+  weight: row.weight ?? undefined,
+  seoTitle: row.seo_title ?? undefined,
+  seoDescription: row.seo_description ?? undefined,
+  imageAlt: row.image_alt ?? undefined
 });
 
 export const mapProductToRow = (product: Product): SupabaseProductRow => ({
@@ -45,7 +48,10 @@ export const mapProductToRow = (product: Product): SupabaseProductRow => ({
   recipes: product.recipes ?? null,
   bulk_discount: product.bulkDiscount ?? null,
   origin: product.origin ?? null,
-  weight: product.weight ?? null
+  weight: product.weight ?? null,
+  seo_title: product.seoTitle ?? null,
+  seo_description: product.seoDescription ?? null,
+  image_alt: product.imageAlt ?? null
 });
 
 export const mapCategoryRowToCategory = (row: SupabaseCategoryRow): Category => ({

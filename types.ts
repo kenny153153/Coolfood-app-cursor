@@ -41,6 +41,9 @@ export interface Product {
   bulkDiscount?: BulkDiscount;
   origin?: string;
   weight?: string;
+  seoTitle?: string;        // SEO: custom page title for search engines
+  seoDescription?: string;  // SEO: meta description for search engines
+  imageAlt?: string;        // SEO: alt text for the main product image
 }
 
 export interface CartItem extends Product {
@@ -143,6 +146,9 @@ export interface SupabaseProductRow {
   bulk_discount?: BulkDiscount | null;
   origin?: string | null;
   weight?: string | null;
+  seo_title?: string | null;
+  seo_description?: string | null;
+  image_alt?: string | null;
 }
 
 /** Supabase public.categories table – column names must match (snake_case). */
