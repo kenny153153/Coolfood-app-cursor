@@ -50,15 +50,14 @@ const SetupPage: React.FC = () => {
 
       const passwordHash = await hashPassword(form.password);
       const { error: insertError } = await supabase.from('members').insert({
+        id: `u-${Date.now()}`,
         name: form.name.trim(),
         phone_number: form.phone.trim(),
         role: 'admin',
         password_hash: passwordHash,
         tier: 'VIP',
         wallet_balance: 0,
-        total_spent: 0,
         points: 0,
-        join_date: new Date().toISOString().slice(0, 10),
       });
 
       if (insertError) {
