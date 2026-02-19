@@ -43,7 +43,6 @@ const translations = {
       shippingAddress: '收貨地址',
       registerForAddress: '註冊會員可以記錄預設地址，下次結帳更快捷。',
       goToProfile: '前往會員頁',
-      addressLabel: '地址標籤（選填，如：屋企、公司）',
       district: '地區（如：九龍、旺角）',
       street: '街道／門牌',
       building: '大廈名稱',
@@ -122,8 +121,6 @@ const translations = {
     address: {
       newAddress: '新增地址',
       editAddress: '編輯地址',
-      label: '標籤',
-      labelPlaceholder: '如：屋企、公司',
       districtRequired: '地區 *',
       selectDistrict: '請選擇地區',
       addressRequired: '地址 *',
@@ -395,7 +392,7 @@ const translations = {
       shippingAddress: 'Shipping Address',
       registerForAddress: 'Register to save your default address for faster checkout next time.',
       goToProfile: 'Go to Profile',
-      addressLabel: 'Address label (optional, e.g. Home, Office)',
+
       district: 'District (e.g. Kowloon, Mong Kok)',
       street: 'Street / Number',
       building: 'Building name',
@@ -474,8 +471,6 @@ const translations = {
     address: {
       newAddress: 'New Address',
       editAddress: 'Edit Address',
-      label: 'Label',
-      labelPlaceholder: 'e.g. Home, Office',
       districtRequired: 'District *',
       selectDistrict: 'Select district',
       addressRequired: 'Address *',

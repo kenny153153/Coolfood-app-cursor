@@ -198,6 +198,8 @@ CREATE POLICY "Allow full access on notification_logs"
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS seo_title TEXT;
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS seo_description TEXT;
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS image_alt TEXT;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS name_en TEXT;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS description_en TEXT;
 
 -- =============================================
 -- Atomic stock decrement function (prevents overselling via race conditions)

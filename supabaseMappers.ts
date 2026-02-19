@@ -30,7 +30,9 @@ export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
   weight: row.weight ?? undefined,
   seoTitle: row.seo_title ?? undefined,
   seoDescription: row.seo_description ?? undefined,
-  imageAlt: row.image_alt ?? undefined
+  imageAlt: row.image_alt ?? undefined,
+  nameEn: row.name_en ?? undefined,
+  descriptionEn: row.description_en ?? undefined,
 });
 
 export const mapProductToRow = (product: Product): SupabaseProductRow => ({
@@ -51,7 +53,9 @@ export const mapProductToRow = (product: Product): SupabaseProductRow => ({
   weight: product.weight ?? null,
   seo_title: product.seoTitle ?? null,
   seo_description: product.seoDescription ?? null,
-  image_alt: product.imageAlt ?? null
+  image_alt: product.imageAlt ?? null,
+  name_en: product.nameEn ?? null,
+  description_en: product.descriptionEn ?? null,
 });
 
 export const mapCategoryRowToCategory = (row: SupabaseCategoryRow): Category => ({

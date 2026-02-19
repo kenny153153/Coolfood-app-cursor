@@ -28,6 +28,7 @@ export interface BulkDiscount {
 export interface Product {
   id: string;
   name: string;
+  nameEn?: string;
   categories: string[]; // Changed from string to string[]
   price: number;
   memberPrice: number;
@@ -36,6 +37,7 @@ export interface Product {
   tags: string[];
   image: string; // Base64 or URL
   description?: string;
+  descriptionEn?: string;
   gallery?: string[];
   recipes?: Recipe[];
   bulkDiscount?: BulkDiscount;
@@ -53,7 +55,6 @@ export interface CartItem extends Product {
 /** Detailed address for retail (e.g. Hong Kong). Use formatAddressLine() for display. */
 export interface UserAddress {
   id: string;
-  label: string;
   /** Legacy single-line; prefer district + street + building + floor + flat */
   detail?: string;
   district?: string;   // 地區 e.g. 九龍、旺角
@@ -149,6 +150,8 @@ export interface SupabaseProductRow {
   seo_title?: string | null;
   seo_description?: string | null;
   image_alt?: string | null;
+  name_en?: string | null;
+  description_en?: string | null;
 }
 
 /** Supabase public.categories table – column names must match (snake_case). */

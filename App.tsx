@@ -34,6 +34,7 @@ import { hashPassword, verifyPassword } from './authHelpers';
 import { uploadImage, uploadImages, deleteImage, isMediaUrl } from './imageUpload';
 
 const LazySetupPage = lazy(() => import('./SetupPage'));
+import AdminLanguagePanel from './AdminLanguagePanel';
 
 /** Format address for display using new required fields. */
 const formatAddressLine = (addr: UserAddress): string => {
@@ -58,7 +59,6 @@ const isAddressCompleteForOrder = (a: UserAddress): boolean => {
 /** Empty address with all detailed fields for forms. */
 const emptyAddress = (): UserAddress => ({
   id: 'a-' + Date.now(),
-  label: '',
   detail: '',
   district: '',
   floor: '',
@@ -108,28 +108,38 @@ function parseReverseGeocodeResults(
   const parsedFirst = comps?.length ? parseAddressComponents(comps) : { district: '', street: '', building: '' };
   let { district, street, building } = parsedFirst;
 
-  if ((!district || !street) && formatted) {
-    const parts = formatted.split(/[,，]/).map((p: string) => p.trim()).filter(Boolean);
-    if (!district && parts[0]) district = parts[0];
-    if (!street && parts.length >= 2) street = parts.slice(1, 3).join(' ').trim();
+  // Scan ALL results for richer data (Google spreads info across multiple results)
+  for (let i = 1; i < Math.min(results.length, 6); i++) {
+    const c = results[i]?.address_components;
+    if (!c?.length) continue;
+    const parsed = parseAddressComponents(c);
+    if (!building && parsed.building) building = parsed.building;
+    if (!street && parsed.street) street = parsed.street;
+    if (!district && parsed.district) district = parsed.district;
+    if (building && street && district) break;
   }
-  if (!building && results.length > 1) {
-    for (let i = 1; i < results.length; i++) {
-      const c = results[i]?.address_components;
-      if (c?.length) {
-        const b = parseAddressComponents(c).building;
-        if (b) {
-          building = b;
-          break;
-        }
+
+  // Fallback: parse formatted_address string (format: "building, street, district, city, country")
+  if ((!district || !street || !building) && formatted) {
+    const parts = formatted.split(/[,，]/).map((p: string) => p.trim()).filter(Boolean);
+    // HK format is typically: "Building, Street Number, District, Hong Kong"
+    if (!building && parts.length >= 3) {
+      const candidate = parts[0];
+      const looksLikeBuilding = candidate.length > 0 && candidate.length <= 80 && !/^\d+\s*[-–]?\s*$/.test(candidate);
+      if (looksLikeBuilding) building = candidate;
+    }
+    if (!street && parts.length >= 2) {
+      street = parts.length >= 3 ? parts[1] : parts[0];
+    }
+    if (!district) {
+      // District is usually the 3rd-to-last segment (before city and country)
+      const districtIdx = Math.max(0, parts.length - 3);
+      if (parts[districtIdx] && parts[districtIdx] !== building && parts[districtIdx] !== street) {
+        district = parts[districtIdx];
       }
     }
   }
-  if (!building && formatted) {
-    const firstSegment = formatted.split(/[,，]/)[0]?.trim() ?? '';
-    const looksLikeBuilding = firstSegment.length > 0 && firstSegment.length <= 80 && !/^\d+\s*[-–]?\s*$/.test(firstSegment);
-    if (looksLikeBuilding) building = firstSegment;
-  }
+
   return { district, street, building };
 }
 
@@ -456,6 +466,8 @@ const DEFAULT_SLIDESHOW: SlideshowItem[] = [
 
 const App: React.FC = () => {
   const { lang, setLang, t } = useI18n();
+  const pName = useCallback((p: Product) => (lang === 'en' && p.nameEn) ? p.nameEn : p.name, [lang]);
+  const pDesc = useCallback((p: Product) => (lang === 'en' && p.descriptionEn) ? p.descriptionEn : (p.description || ''), [lang]);
 
   // --- Routing & Auth Logic ---
   const [isAdminRoute, setIsAdminRoute] = useState(window.location.hash === '#admin');
@@ -468,7 +480,7 @@ const App: React.FC = () => {
     () => (typeof window !== 'undefined' && (window.location.pathname === '/success' || window.location.hash === '#success') ? 'success' : 'store')
   );
   const [isRedirectingToPayment, setIsRedirectingToPayment] = useState(false);
-  const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'pricing' | 'settings'>('dashboard');
+  const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'pricing' | 'language' | 'settings'>('dashboard');
   const [inventorySubTab, setInventorySubTab] = useState<'products' | 'categories' | 'rules'>('products');
   const [ordersStatusFilter, setOrdersStatusFilter] = useState<'all' | OrderStatus>('all');
   const [isAdminSidebarOpen, setIsAdminSidebarOpen] = useState(false);
@@ -1816,9 +1828,23 @@ const App: React.FC = () => {
               return;
             }
             const { district, street, building } = parseReverseGeocodeResults(results);
-            const detail = [street, building].filter(Boolean).join(' ');
-            setCheckoutAddressDraft(prev => prev ? { ...prev, district: district || prev.district, detail: detail || prev.detail } : prev);
-            if (district || detail) showToast('已填入地址，請補上樓層及室號');
+            const fullDetail = [building, street].filter(Boolean).join(', ');
+            setCheckoutAddressDraft(prev => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                district: district || prev.district,
+                detail: fullDetail || prev.detail,
+                street: street || prev.street,
+                building: building || prev.building,
+              };
+            });
+            const filled: string[] = [];
+            if (district) filled.push('地區');
+            if (building) filled.push('大廈');
+            if (street) filled.push('街道');
+            if (filled.length > 0) showToast(`已填入${filled.join('、')}，請補上樓層及室號`);
+            else showToast('未能取得詳細地址，請手動填寫', 'error');
           });
         } catch {
           clearTimeout(timeoutId);
@@ -2092,13 +2118,14 @@ const App: React.FC = () => {
       const airwallexEnv = (import.meta.env.VITE_AIRWALLEX_ENV as string) || 'demo';
       if (airwallexEnv === 'demo') console.log('Airwallex Sandbox Mode Active');
       const { payments } = await init({ env: airwallexEnv as 'demo' | 'prod', enabledElements: ['payments'] });
+      const orderedMethods = ['apple_pay', 'googlepay', 'alipayhk', 'payme', 'card', 'fps'];
       payments.redirectToCheckout({
         intent_id,
         client_secret,
         currency,
         country_code,
         successUrl,
-        methods: ['card', 'fps'],
+        methods: orderedMethods as any,
       });
     } catch (e) {
       setIsRedirectingToPayment(false);
@@ -2953,6 +2980,22 @@ const App: React.FC = () => {
              </div>
           </div>
         );
+      case 'language':
+        return (
+          <div className="space-y-8 animate-fade-in pb-20">
+            <div className="bg-white p-10 rounded-[3.5rem] border border-slate-100 shadow-sm space-y-6">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl"><Globe size={20}/></div>
+                <div>
+                  <h3 className="text-xl font-black">語言翻譯管理</h3>
+                  <p className="text-xs text-slate-400 font-bold">管理前台的中英文翻譯。產品翻譯請到「編輯產品」設定。</p>
+                </div>
+              </div>
+              {/* Translation overrides stored in site_config */}
+              <AdminLanguagePanel products={products} setProducts={setProducts} showToast={showToast} />
+            </div>
+          </div>
+        );
       default: return null;
     }
   };
@@ -3003,7 +3046,7 @@ const App: React.FC = () => {
           <div className="bg-white w-full max-w-md rounded-t-[3rem] shadow-2xl p-8 space-y-6 animate-slide-up overflow-y-auto max-h-[90vh] hide-scrollbar" onClick={e => e.stopPropagation()}>
              <div className="flex justify-between items-start">
                <div className="w-32 h-32 bg-slate-50 rounded-[2rem] flex items-center justify-center text-6xl border border-slate-100 overflow-hidden">
-                  {isMediaUrl(selectedProduct.image) ? <img src={selectedProduct.image} className="w-full h-full object-cover" alt={selectedProduct.imageAlt || selectedProduct.name} /> : selectedProduct.image}
+                  {isMediaUrl(selectedProduct.image) ? <img src={selectedProduct.image} className="w-full h-full object-cover" alt={selectedProduct.imageAlt || pName(selectedProduct)} /> : selectedProduct.image}
                </div>
                <button onClick={() => setSelectedProduct(null)} className="p-3 bg-slate-100 rounded-full text-slate-400 active:scale-90 transition-transform"><X size={20}/></button>
              </div>
@@ -3017,7 +3060,7 @@ const App: React.FC = () => {
                </div>
              )}
              <div className="space-y-2">
-               <h3 className="text-2xl font-black text-slate-900 leading-tight">{selectedProduct.name}</h3>
+               <h3 className="text-2xl font-black text-slate-900 leading-tight">{pName(selectedProduct)}</h3>
                <div className="flex flex-wrap gap-2">
                  {selectedProduct.tags.map(tg => <span key={tg} className="px-2.5 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-black border border-blue-100 uppercase tracking-tight">{tg}</span>)}
                </div>
@@ -3028,8 +3071,8 @@ const App: React.FC = () => {
                  </div>
                )}
              </div>
-             {selectedProduct.description && (
-               <p className="text-sm text-slate-600 font-medium leading-relaxed">{selectedProduct.description}</p>
+             {(pDesc(selectedProduct)) && (
+               <p className="text-sm text-slate-600 font-medium leading-relaxed">{pDesc(selectedProduct)}</p>
              )}
              {selectedProduct.recipes && selectedProduct.recipes.length > 0 && (
                <div className="space-y-2">
@@ -3204,6 +3247,22 @@ const App: React.FC = () => {
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">商品描述</label>
                   <textarea value={editingProduct.description || ''} onChange={e => setEditingProduct({ ...editingProduct, description: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold min-h-[100px]" />
                 </div>
+                {/* ── English Translation ── */}
+                <div className="space-y-3 md:col-span-2 p-4 bg-gradient-to-r from-blue-50/60 to-indigo-50/60 rounded-2xl border border-blue-100/60">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Globe size={14} className="text-blue-600" />
+                    <label className="text-[10px] font-bold text-blue-700 uppercase tracking-widest">English Translation</label>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-500 ml-1">Product Name (EN)</label>
+                    <input value={editingProduct.nameEn || ''} onChange={e => setEditingProduct({ ...editingProduct, nameEn: e.target.value })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" placeholder={`e.g. Australian M5 Wagyu Ribeye`} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-500 ml-1">Description (EN)</label>
+                    <textarea value={editingProduct.descriptionEn || ''} onChange={e => setEditingProduct({ ...editingProduct, descriptionEn: e.target.value })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100 min-h-[60px]" placeholder="English product description" />
+                  </div>
+                  <p className="text-[8px] text-slate-400 font-bold leading-relaxed">When the customer switches language to English, these will be displayed instead of the Chinese name/description.</p>
+                </div>
               </div>
             </div>
             <div className="p-8 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
@@ -3338,10 +3397,6 @@ const App: React.FC = () => {
               <button onClick={() => setAddressEditor(null)} className="p-3 bg-white/10 rounded-full hover:bg-white/20 transition-all text-white"><X size={20}/></button>
             </div>
             <div className="p-10 space-y-4">
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">標籤</label>
-                <input value={addressEditor.address.label} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, label: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" placeholder="如：屋企、公司" />
-              </div>
               <div className="space-y-2">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">地區 *</label>
                 <select value={addressEditor.address.district ?? ''} onChange={e => setAddressEditor({ ...addressEditor, address: { ...addressEditor.address, district: e.target.value } })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold">
@@ -3714,13 +3769,13 @@ const App: React.FC = () => {
             return (
               <div key={p.id} className="flex-shrink-0 w-40 bg-slate-50 rounded-2xl border border-slate-100 p-3 space-y-2.5 hover:border-orange-200 transition-all">
                 <div className="w-full h-20 bg-white rounded-xl border border-slate-50 flex items-center justify-center text-3xl overflow-hidden">
-                  {isMediaUrl(p.image) ? <img src={p.image} loading="lazy" className="w-full h-full object-cover" alt={p.name} /> : <span>{p.image || '📦'}</span>}
+                  {isMediaUrl(p.image) ? <img src={p.image} loading="lazy" className="w-full h-full object-cover" alt={pName(p)} /> : <span>{p.image || '📦'}</span>}
                 </div>
-                <p className="text-xs font-black text-slate-700 truncate">{p.name}</p>
+                <p className="text-xs font-black text-slate-700 truncate">{pName(p)}</p>
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-black text-orange-600">${effectivePrice}</span>
                   <button
-                    onClick={() => { updateCart(p, 1); showToast(`已加入 ${p.name}`); }}
+                    onClick={() => { updateCart(p, 1); showToast(`已加入 ${pName(p)}`); }}
                     className="px-3 py-1.5 bg-orange-500 text-white rounded-xl text-[10px] font-black shadow-md active:scale-90 transition-all whitespace-nowrap"
                   >
                     + 加購
@@ -3749,214 +3804,201 @@ const App: React.FC = () => {
       );
     }
     return (
-      <div className="flex-1 bg-slate-50 min-h-screen pb-48 overflow-y-auto animate-fade-in">
-        <header className="bg-white/95 backdrop-blur-md sticky top-0 z-40 px-4 py-4 border-b border-slate-100 flex items-center justify-between">
-          <button onClick={() => setView('store')} className="p-2 hover:bg-slate-50 rounded-full transition-colors"><ChevronLeft size={24} /></button>
-          <h2 className="text-lg font-black text-slate-900">{t.checkout.confirmOrder}</h2><div className="w-10"></div>
+      <div className="flex-1 bg-slate-100 min-h-screen pb-48 overflow-y-auto animate-fade-in">
+        {/* Header */}
+        <header className="bg-white sticky top-0 z-40 px-4 py-3.5 border-b border-slate-200/60 flex items-center justify-between">
+          <button onClick={() => setView('store')} className="p-2 -ml-1 hover:bg-slate-50 rounded-full transition-colors"><ChevronLeft size={22} className="text-slate-700" /></button>
+          <h2 className="text-base font-black text-slate-900 tracking-tight">{lang === 'en' ? 'Checkout' : '結帳'}</h2>
+          <div className="w-10" />
         </header>
-        <div className="p-6 space-y-6">
-          <section className="bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-sm space-y-4">
-            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><MapPin size={14}/> {t.checkout.deliveryInfo}</h3>
-            {deliveryMethod === 'sf_locker' ? (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-2"><button onClick={() => setDeliveryMethod('home')} className="py-3 px-4 border border-slate-100 rounded-2xl text-xs font-bold text-slate-400">{t.checkout.homeDelivery}</button><button onClick={() => setDeliveryMethod('sf_locker')} className="py-3 px-4 bg-blue-600 rounded-2xl text-xs font-black text-white shadow-lg">{t.checkout.sfLocker}</button></div>
-                {/* 二級下拉：第一層選地區，第二層選自提點 */}
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">選擇地區</label>
-                    <select
-                      value={selectedLockerDistrict}
-                      onChange={(e) => { setSelectedLockerDistrict(e.target.value); setSelectedLockerCode(''); }}
-                      className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-blue-100 focus:border-blue-200 transition-all"
-                    >
-                      <option value="">— 請選擇地區 —</option>
-                      {SF_COLD_DISTRICT_NAMES.map(d => <option key={d} value={d}>{d}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">選擇冷運自提點</label>
-                    <select
-                      value={selectedLockerCode}
-                      onChange={(e) => setSelectedLockerCode(e.target.value)}
-                      disabled={!selectedLockerDistrict}
-                      className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-blue-100 focus:border-blue-200 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      <option value="">{selectedLockerDistrict ? '— 請選擇自提點 —' : '— 請先選擇地區 —'}</option>
-                      {lockerPointsForDistrict.map(p => (
-                        <option key={p.code} value={p.code}>{p.area} · {p.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                  {selectedLockerPoint && (
-                    <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 space-y-1.5 animate-fade-in">
-                      <p className="text-xs font-black text-blue-800">{selectedLockerPoint.name}</p>
-                      <p className="text-[11px] font-bold text-blue-600 leading-relaxed">{selectedLockerPoint.address}</p>
-                      <p className="text-[10px] font-bold text-blue-500">
-                        點碼：{selectedLockerPoint.code} ｜ 營業：{selectedLockerPoint.hours.weekday}（平日）/ {selectedLockerPoint.hours.weekend}（週末）
-                      </p>
-                    </div>
-                  )}
-                </div>
+
+        <div className="p-4 sm:p-6 space-y-3">
+          {/* ─── Section 1: Delivery Method ─── */}
+          <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
+            <div className="px-5 pt-5 pb-3">
+              <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">{lang === 'en' ? 'Delivery' : '配送方式'}</p>
+            </div>
+            <div className="px-5 pb-5">
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => setDeliveryMethod('home')} className={`py-3.5 px-4 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 ${deliveryMethod === 'home' ? 'bg-slate-900 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                  <Truck size={14} /> {t.checkout.homeDelivery}
+                </button>
+                <button onClick={() => setDeliveryMethod('sf_locker')} className={`py-3.5 px-4 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 ${deliveryMethod === 'sf_locker' ? 'bg-slate-900 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                  <Package size={14} /> {t.checkout.sfLocker}
+                </button>
               </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-2"><button onClick={() => setDeliveryMethod('home')} className="py-3 px-4 bg-blue-600 rounded-2xl text-xs font-black text-white shadow-lg">{t.checkout.homeDelivery}</button><button onClick={() => setDeliveryMethod('sf_locker')} className="py-3 px-4 border border-slate-100 rounded-2xl text-xs font-bold text-slate-400">{t.checkout.sfLocker}</button></div>
-                {isChangingAddress && user ? (
-                  <div className="space-y-5 animate-fade-in">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs font-black text-slate-700">改用其他地址／填寫新地址</p>
-                      <button type="button" onClick={() => { setIsChangingAddress(false); setCheckoutAddressDraft(null); }} className="py-2 px-4 border border-slate-200 rounded-xl text-slate-500 text-xs font-black min-h-[44px]">返回</button>
-                    </div>
-                    {user.addresses && user.addresses.length > 0 ? (
-                      <div className="space-y-3">
-                        <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">已儲存地址</p>
-                        <div className="space-y-3 divide-y divide-slate-100">
-                          {user.addresses.map(addr => {
-                            const isSelected = (checkoutSelectedAddressId ?? user.addresses!.find(a => a.isDefault)?.id) === addr.id;
-                            return (
-                              <button type="button" key={addr.id} onClick={() => { setCheckoutSelectedAddressId(addr.id); setIsChangingAddress(false); }} className={`w-full p-4 rounded-2xl border-2 text-left transition-all min-h-[56px] flex items-center justify-between active:scale-[0.99] -mt-px first:mt-0 pt-4 ${isSelected ? 'border-blue-500 bg-blue-50/50' : 'border-slate-100 bg-white hover:border-slate-200 shadow-sm'}`}>
-                                <div className="min-w-0 flex-1">
-                                  <p className="text-xs font-black text-slate-900">{addr.label || (addr.isDefault ? '預設地址' : '其他地址')}</p>
-                                  <p className="text-[11px] text-slate-600 font-bold mt-1 leading-relaxed">{formatAddressLine(addr)}</p>
-                                  <p className="text-[10px] text-slate-400 font-bold mt-1">{addr.contactName} · {addr.phone}</p>
-                                </div>
-                                {isSelected && <span className="flex-shrink-0 ml-2 text-blue-600 font-black text-sm">✓</span>}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ) : null}
-                    <div className="pt-2 border-t border-slate-100">
-                      <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-3">新增地址</p>
-                      <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
-                        {checkoutAddressDraft ? (
-                          <>
-                            <input value={checkoutAddressDraft.label} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, label: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="地址標籤（選填，如：屋企、公司）" />
-                            <div className="flex gap-2 items-center">
-                              <select value={checkoutAddressDraft.district ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, district: e.target.value })} className="flex-1 p-3 bg-white rounded-xl font-bold text-sm border border-slate-100">
-                                <option value="">選擇地區 *</option>
-                                {HK_DISTRICTS.map(d => <option key={d} value={d}>{d}</option>)}
-                              </select>
-                              <button type="button" onClick={handleLocateMe} disabled={isLocatingAddress} title="以目前位置自動填入地址" className="flex-shrink-0 w-12 h-12 flex items-center justify-center bg-white border border-slate-100 rounded-xl font-bold text-slate-600 hover:bg-slate-50 hover:border-slate-200 disabled:opacity-50 transition-all" aria-label="定位填入地址">
-                                {isLocatingAddress ? <RefreshCw size={20} className="animate-spin text-blue-600" /> : <Crosshair size={20} />}
-                              </button>
-                            </div>
-                            <input value={checkoutAddressDraft.detail ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, detail: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="地址 *（街道／門牌／村屋等）" />
-                            <div className="grid grid-cols-2 gap-2">
-                              <input value={checkoutAddressDraft.floor ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, floor: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="樓層 *" />
-                              <input value={checkoutAddressDraft.flat ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, flat: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="室／單位 *" />
-                            </div>
-                            <input value={checkoutAddressDraft.contactName} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, contactName: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="收件人名稱 *" />
-                            <input type="tel" value={checkoutAddressDraft.phone} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, phone: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="手機號碼 *" />
-                            <input value={checkoutAddressDraft.altContactName ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, altContactName: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="後備收件人（選填）" />
-                            <input type="tel" value={checkoutAddressDraft.altPhone ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, altPhone: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="後備收件人手機號碼（選填）" />
-                            <label className="flex items-center gap-3 min-h-[44px] cursor-pointer">
-                              <input type="checkbox" checked={checkoutSaveNewAddressAsDefault} onChange={e => setCheckoutSaveNewAddressAsDefault(e.target.checked)} className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
-                              <span className="text-xs font-bold text-slate-700">下次結帳時設為預設地址</span>
-                            </label>
-                            <button type="button" onClick={() => { if (!isAddressCompleteForOrder(checkoutAddressDraft)) { showToast('請填寫地區、地址、樓層、單位、收件人及手機號碼', 'error'); return; } handleSaveAddress(user.id, checkoutAddressDraft, true, checkoutSaveNewAddressAsDefault); setCheckoutSelectedAddressId(checkoutAddressDraft.id); setIsChangingAddress(false); setCheckoutAddressDraft(null); showToast('已保存地址'); }} className="w-full py-3 bg-slate-800 text-white rounded-xl font-black text-sm min-h-[48px]">保存並使用</button>
-                          </>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                ) : showCheckoutAddressForm && checkoutAddressDraft ? (
-                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3 animate-fade-in">
-                    {!user && (
-                      <p className="text-[11px] text-slate-500 font-bold">
-                        註冊會員可以記錄預設地址，下次結帳更快捷。
-                        <button type="button" onClick={() => setView('profile')} className="text-blue-600 underline ml-1 hover:text-blue-700">前往會員頁</button>
-                      </p>
-                    )}
-                    <input value={checkoutAddressDraft.label} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, label: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="地址標籤（選填，如：屋企、公司）" />
-                    <div className="flex gap-2 items-center">
-                      <input value={checkoutAddressDraft.district ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, district: e.target.value })} className="flex-1 p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="地區（如：九龍、旺角）" />
-                      <button type="button" onClick={handleLocateMe} disabled={isLocatingAddress} title="以目前位置自動填入地址" className="flex-shrink-0 w-12 h-12 flex items-center justify-center bg-white border border-slate-100 rounded-xl font-bold text-slate-600 hover:bg-slate-50 hover:border-slate-200 disabled:opacity-50 transition-all" aria-label="定位填入地址">
-                        {isLocatingAddress ? <RefreshCw size={20} className="animate-spin text-blue-600" /> : <Crosshair size={20} />}
-                      </button>
-                    </div>
-                    <input ref={streetInputRef} value={checkoutAddressDraft.street ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, street: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="街道／門牌" autoComplete="off" />
-                    <input value={checkoutAddressDraft.building ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, building: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="大廈名稱" />
-                    <div className="grid grid-cols-2 gap-2">
-                      <input value={checkoutAddressDraft.floor ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, floor: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="樓層" />
-                      <input value={checkoutAddressDraft.flat ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, flat: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="室／單位" />
-                    </div>
-                    <input value={checkoutAddressDraft.contactName} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, contactName: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="聯絡人姓名 *" />
-                    <input type="tel" value={checkoutAddressDraft.phone} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, phone: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-100" placeholder="聯絡電話 *" />
-                    {user && (
-                      <label className="flex items-center gap-3 min-h-[44px] cursor-pointer">
-                        <input type="checkbox" checked={checkoutSaveNewAddressAsDefault} onChange={e => setCheckoutSaveNewAddressAsDefault(e.target.checked)} className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
-                        <span className="text-xs font-bold text-slate-700">下次結帳時設為預設地址</span>
-                      </label>
-                    )}
-                    <div className="flex gap-2">
-                      <button type="button" onClick={() => { setShowCheckoutAddressForm(false); setCheckoutAddressDraft(null); }} className="flex-1 py-3 border border-slate-200 rounded-xl font-black text-xs text-slate-500 min-h-[44px]">取消</button>
-                      {user ? (
-                        <button type="button" onClick={() => { if (!isAddressCompleteForOrder(checkoutAddressDraft)) { showToast('請填寫聯絡人、電話及至少一項地址', 'error'); return; } handleSaveAddress(user.id, checkoutAddressDraft, true, checkoutSaveNewAddressAsDefault); setCheckoutSelectedAddressId(checkoutAddressDraft.id); setShowCheckoutAddressForm(false); setCheckoutAddressDraft(null); showToast('已保存地址'); }} className="flex-1 py-3 bg-slate-800 text-white rounded-xl font-black text-xs min-h-[44px]">保存並使用</button>
-                      ) : null}
-                    </div>
-                  </div>
-                ) : user?.addresses && user.addresses.length > 0 ? (
-                  <div className="space-y-3">
-                    <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                      {(() => {
-                        const addr = getCheckoutDeliveryAddress();
-                        if (!addr) return null;
-                        return (
-                          <>
-                            <p className="text-xs font-black text-slate-900">{addr.label || (addr.isDefault ? '預設地址' : '收貨地址')}</p>
-                            <p className="text-[11px] text-slate-500 font-bold mt-1">{formatAddressLine(addr)}</p>
-                            <p className="text-[11px] text-slate-500 font-bold mt-0.5">{addr.contactName} · {addr.phone}</p>
-                          </>
-                        );
-                      })()}
-                    </div>
-                    <button type="button" onClick={() => { setIsChangingAddress(true); setCheckoutAddressDraft({ ...emptyAddress(), contactName: user?.name || '', phone: user?.phoneNumber || '' }); }} className="w-full min-h-[52px] py-4 border-2 border-slate-200 rounded-2xl text-slate-600 text-sm font-black flex items-center justify-center gap-2 active:scale-[0.98] transition-transform">
-                      改用其他地址／填寫新地址
-                    </button>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    <button type="button" onClick={() => { setShowCheckoutAddressForm(true); setCheckoutAddressDraft({ ...emptyAddress(), contactName: user?.name || '', phone: user?.phoneNumber || '' }); }} className="w-full min-h-[52px] py-4 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400 text-xs font-black flex items-center justify-center gap-2">
-                      填寫收貨地址 <ChevronDown size={14} />
-                    </button>
+            </div>
+          </section>
+
+          {/* ─── Section 2: Address / Locker ─── */}
+          <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
+            <div className="px-5 pt-5 pb-3">
+              <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">{deliveryMethod === 'sf_locker' ? (lang === 'en' ? 'Pickup Point' : '自提點') : (lang === 'en' ? 'Delivery Address' : '收貨地址')}</p>
+            </div>
+            <div className="px-5 pb-5">
+            {deliveryMethod === 'sf_locker' ? (
+              <div className="space-y-3">
+                <select value={selectedLockerDistrict} onChange={(e) => { setSelectedLockerDistrict(e.target.value); setSelectedLockerCode(''); }} className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all">
+                  <option value="">— {lang === 'en' ? 'Select district' : '選擇地區'} —</option>
+                  {SF_COLD_DISTRICT_NAMES.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+                <select value={selectedLockerCode} onChange={(e) => setSelectedLockerCode(e.target.value)} disabled={!selectedLockerDistrict} className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all disabled:opacity-40">
+                  <option value="">{selectedLockerDistrict ? `— ${lang === 'en' ? 'Select pickup point' : '選擇自提點'} —` : `— ${lang === 'en' ? 'Select district first' : '請先選擇地區'} —`}</option>
+                  {lockerPointsForDistrict.map(p => (<option key={p.code} value={p.code}>{p.area} · {p.name}</option>))}
+                </select>
+                {selectedLockerPoint && (
+                  <div className="bg-blue-50 rounded-xl p-4 space-y-1 animate-fade-in">
+                    <p className="text-xs font-black text-blue-900">{selectedLockerPoint.name}</p>
+                    <p className="text-[11px] font-bold text-blue-700 leading-relaxed">{selectedLockerPoint.address}</p>
+                    <p className="text-[10px] font-bold text-blue-500">{selectedLockerPoint.code} · {selectedLockerPoint.hours.weekday}（平日）/ {selectedLockerPoint.hours.weekend}（週末）</p>
                   </div>
                 )}
               </div>
+            ) : (
+              <div className="space-y-3">
+                {isChangingAddress && user ? (
+                  <div className="space-y-4 animate-fade-in">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-black text-slate-700">{lang === 'en' ? 'Change address' : '更改地址'}</p>
+                      <button type="button" onClick={() => { setIsChangingAddress(false); setCheckoutAddressDraft(null); }} className="py-1.5 px-3 bg-slate-100 rounded-lg text-slate-500 text-[10px] font-black">{lang === 'en' ? 'Back' : '返回'}</button>
+                    </div>
+                    {user.addresses && user.addresses.length > 0 && (
+                      <div className="space-y-2">
+                        {user.addresses.map(addr => {
+                          const isSelected = (checkoutSelectedAddressId ?? user.addresses!.find(a => a.isDefault)?.id) === addr.id;
+                          return (
+                            <button type="button" key={addr.id} onClick={() => { setCheckoutSelectedAddressId(addr.id); setIsChangingAddress(false); }} className={`w-full p-3.5 rounded-xl border-2 text-left transition-all flex items-center justify-between ${isSelected ? 'border-blue-500 bg-blue-50/50' : 'border-slate-100 hover:border-slate-200'}`}>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-[11px] text-slate-600 font-bold leading-relaxed">{formatAddressLine(addr)}</p>
+                                <p className="text-[10px] text-slate-400 font-bold mt-0.5">{addr.contactName} · {addr.phone}</p>
+                              </div>
+                              {isSelected && <Check size={16} className="flex-shrink-0 ml-2 text-blue-600" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div className="pt-2 border-t border-slate-100">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">{lang === 'en' ? 'New address' : '新增地址'}</p>
+                      {checkoutAddressDraft && (
+                        <div className="space-y-2.5">
+                          <div className="flex gap-2 items-center">
+                            <select value={checkoutAddressDraft.district ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, district: e.target.value })} className="flex-1 p-3 bg-slate-50 rounded-xl font-bold text-sm border border-slate-200">
+                              <option value="">{lang === 'en' ? 'District *' : '選擇地區 *'}</option>
+                              {HK_DISTRICTS.map(d => <option key={d} value={d}>{d}</option>)}
+                            </select>
+                            <button type="button" onClick={handleLocateMe} disabled={isLocatingAddress} className="flex-shrink-0 w-11 h-11 flex items-center justify-center bg-slate-50 border border-slate-200 rounded-xl text-slate-500 hover:bg-slate-100 disabled:opacity-50 transition-all"><Crosshair size={18} /></button>
+                          </div>
+                          <input value={checkoutAddressDraft.detail ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, detail: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold text-sm border border-slate-200" placeholder={lang === 'en' ? 'Address *' : '地址 *（街道／門牌）'} />
+                          <div className="grid grid-cols-2 gap-2">
+                            <input value={checkoutAddressDraft.floor ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, floor: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold text-sm border border-slate-200" placeholder={lang === 'en' ? 'Floor *' : '樓層 *'} />
+                            <input value={checkoutAddressDraft.flat ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, flat: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold text-sm border border-slate-200" placeholder={lang === 'en' ? 'Unit *' : '室／單位 *'} />
+                          </div>
+                          <input value={checkoutAddressDraft.contactName} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, contactName: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold text-sm border border-slate-200" placeholder={lang === 'en' ? 'Recipient *' : '收件人名稱 *'} />
+                          <input type="tel" value={checkoutAddressDraft.phone} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, phone: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold text-sm border border-slate-200" placeholder={lang === 'en' ? 'Phone *' : '手機號碼 *'} />
+                          <label className="flex items-center gap-2.5 cursor-pointer"><input type="checkbox" checked={checkoutSaveNewAddressAsDefault} onChange={e => setCheckoutSaveNewAddressAsDefault(e.target.checked)} className="w-4 h-4 rounded border-slate-300 text-blue-600" /><span className="text-[11px] font-bold text-slate-500">{lang === 'en' ? 'Set as default' : '設為預設地址'}</span></label>
+                          <button type="button" onClick={() => { if (!isAddressCompleteForOrder(checkoutAddressDraft)) { showToast(lang === 'en' ? 'Please fill in all required fields' : '請填寫地區、地址、樓層、單位、收件人及手機號碼', 'error'); return; } handleSaveAddress(user.id, checkoutAddressDraft, true, checkoutSaveNewAddressAsDefault); setCheckoutSelectedAddressId(checkoutAddressDraft.id); setIsChangingAddress(false); setCheckoutAddressDraft(null); showToast(lang === 'en' ? 'Address saved' : '已保存地址'); }} className="w-full py-3 bg-slate-900 text-white rounded-xl font-black text-xs">{lang === 'en' ? 'Save & Use' : '保存並使用'}</button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : showCheckoutAddressForm && checkoutAddressDraft ? (
+                  <div className="space-y-2.5 animate-fade-in">
+                    {!user && (
+                      <p className="text-[10px] text-slate-400 font-bold">
+                        {lang === 'en' ? 'Register to save your address.' : '註冊會員可以記錄預設地址。'}
+                        <button type="button" onClick={() => setView('profile')} className="text-blue-600 underline ml-1">{lang === 'en' ? 'Sign up' : '前往會員頁'}</button>
+                      </p>
+                    )}
+                    <div className="flex gap-2 items-center">
+                      <input value={checkoutAddressDraft.district ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, district: e.target.value })} className="flex-1 p-3 bg-slate-50 rounded-xl font-bold text-sm border border-slate-200" placeholder={lang === 'en' ? 'District' : '地區'} />
+                      <button type="button" onClick={handleLocateMe} disabled={isLocatingAddress} className="flex-shrink-0 w-11 h-11 flex items-center justify-center bg-slate-50 border border-slate-200 rounded-xl text-slate-500 hover:bg-slate-100 disabled:opacity-50 transition-all">{isLocatingAddress ? <RefreshCw size={16} className="animate-spin text-blue-600" /> : <Crosshair size={18} />}</button>
+                    </div>
+                    <input ref={streetInputRef} value={checkoutAddressDraft.street ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, street: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold text-sm border border-slate-200" placeholder={lang === 'en' ? 'Street' : '街道／門牌'} autoComplete="off" />
+                    <input value={checkoutAddressDraft.building ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, building: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold text-sm border border-slate-200" placeholder={lang === 'en' ? 'Building' : '大廈名稱'} />
+                    <div className="grid grid-cols-2 gap-2">
+                      <input value={checkoutAddressDraft.floor ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, floor: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold text-sm border border-slate-200" placeholder={lang === 'en' ? 'Floor' : '樓層'} />
+                      <input value={checkoutAddressDraft.flat ?? ''} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, flat: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold text-sm border border-slate-200" placeholder={lang === 'en' ? 'Unit' : '室／單位'} />
+                    </div>
+                    <input value={checkoutAddressDraft.contactName} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, contactName: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold text-sm border border-slate-200" placeholder={lang === 'en' ? 'Contact name *' : '聯絡人姓名 *'} />
+                    <input type="tel" value={checkoutAddressDraft.phone} onChange={e => setCheckoutAddressDraft({ ...checkoutAddressDraft, phone: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold text-sm border border-slate-200" placeholder={lang === 'en' ? 'Phone *' : '聯絡電話 *'} />
+                    {user && (<label className="flex items-center gap-2.5 cursor-pointer"><input type="checkbox" checked={checkoutSaveNewAddressAsDefault} onChange={e => setCheckoutSaveNewAddressAsDefault(e.target.checked)} className="w-4 h-4 rounded border-slate-300 text-blue-600" /><span className="text-[11px] font-bold text-slate-500">{lang === 'en' ? 'Set as default' : '設為預設地址'}</span></label>)}
+                    <div className="flex gap-2">
+                      <button type="button" onClick={() => { setShowCheckoutAddressForm(false); setCheckoutAddressDraft(null); }} className="flex-1 py-3 bg-slate-100 rounded-xl font-black text-xs text-slate-500">{lang === 'en' ? 'Cancel' : '取消'}</button>
+                      {user && (<button type="button" onClick={() => { if (!isAddressCompleteForOrder(checkoutAddressDraft)) { showToast(lang === 'en' ? 'Please fill required fields' : '請填寫聯絡人、電話及至少一項地址', 'error'); return; } handleSaveAddress(user.id, checkoutAddressDraft, true, checkoutSaveNewAddressAsDefault); setCheckoutSelectedAddressId(checkoutAddressDraft.id); setShowCheckoutAddressForm(false); setCheckoutAddressDraft(null); showToast(lang === 'en' ? 'Saved' : '已保存地址'); }} className="flex-1 py-3 bg-slate-900 text-white rounded-xl font-black text-xs">{lang === 'en' ? 'Save & Use' : '保存並使用'}</button>)}
+                    </div>
+                  </div>
+                ) : user?.addresses && user.addresses.length > 0 ? (
+                  <div className="space-y-2.5">
+                    {(() => {
+                      const addr = getCheckoutDeliveryAddress();
+                      if (!addr) return null;
+                      return (
+                        <div className="p-3.5 bg-slate-50 rounded-xl">
+                          <p className="text-[11px] text-slate-600 font-bold leading-relaxed">{formatAddressLine(addr)}</p>
+                          <p className="text-[10px] text-slate-400 font-bold mt-0.5">{addr.contactName} · {addr.phone}</p>
+                        </div>
+                      );
+                    })()}
+                    <button type="button" onClick={() => { setIsChangingAddress(true); setCheckoutAddressDraft({ ...emptyAddress(), contactName: user?.name || '', phone: user?.phoneNumber || '' }); }} className="w-full py-3 bg-slate-100 rounded-xl text-slate-600 text-xs font-black flex items-center justify-center gap-1.5 hover:bg-slate-200 transition-colors">
+                      <Edit size={13} /> {lang === 'en' ? 'Change address' : '更改地址'}
+                    </button>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => { setShowCheckoutAddressForm(true); setCheckoutAddressDraft({ ...emptyAddress(), contactName: user?.name || '', phone: user?.phoneNumber || '' }); }} className="w-full py-3.5 border-2 border-dashed border-slate-200 rounded-xl text-slate-400 text-xs font-black flex items-center justify-center gap-1.5">
+                    <MapPin size={13} /> {lang === 'en' ? 'Enter delivery address' : '填寫收貨地址'}
+                  </button>
+                )}
+              </div>
             )}
-          </section>
-          <section className="bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-sm space-y-4">
-             <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><ShoppingBag size={14}/> 產品摘要</h3>
-             <div className="divide-y divide-slate-50">
-               {cart.map(item => (
-                 <div key={item.id} className="py-3 flex gap-3 items-center">
-                   <div className="w-14 h-14 bg-slate-50 rounded-xl flex items-center justify-center flex-shrink-0 border border-slate-100 overflow-hidden">
-                     {isMediaUrl(item.image) ? <img src={item.image} loading="lazy" alt="" className="w-full h-full object-cover" /> : <span className="text-2xl">{item.image}</span>}
-                   </div>
-                   <div className="flex-1 min-w-0">
-                     <p className="text-xs font-black text-slate-800">{item.name}</p>
-                     <p className="text-[10px] text-slate-400 font-bold">${getPrice(item, item.qty)} x {item.qty}</p>
-                   </div>
-                   <div className="flex items-center gap-1 rounded-full border border-slate-100 p-1 bg-white">
-                     <button type="button" onClick={(e) => { e.stopPropagation(); updateCart(item, -1, e); }} className="w-8 h-8 flex items-center justify-center rounded-full text-slate-400 hover:bg-slate-50 active:scale-90"><Minus size={14}/></button>
-                     <span className="w-6 text-center text-xs font-black text-slate-900">{item.qty}</span>
-                     <button type="button" onClick={(e) => { e.stopPropagation(); updateCart(item, 1, e); }} className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-900 text-white active:scale-90"><Plus size={14}/></button>
-                   </div>
-                   <p className="text-sm font-black text-slate-900 w-14 text-right">${getPrice(item, item.qty) * item.qty}</p>
-                 </div>
-               ))}
-             </div>
-          </section>
-          <UpsellNudge />
-          <section className="bg-slate-900 p-8 rounded-[3rem] text-white space-y-6 shadow-2xl">
-            <div className="space-y-3">
-              <div className="flex justify-between text-xs font-bold text-white/40 uppercase tracking-widest"><span>商品小計</span><span>${subtotal}</span></div>
-              <div className="flex justify-between text-xs font-bold text-white/40 uppercase tracking-widest"><span>預估運費</span><span>{deliveryFee === 0 ? '免運費' : `$${deliveryFee}`}</span></div>
-              <FreeShippingNudge />
-              <div className="pt-4 border-t border-white/10 flex justify-between items-end"><span className="text-sm font-black uppercase tracking-widest">總金額</span><span className="text-4xl font-black text-blue-400">${total}</span></div>
             </div>
-            <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || (deliveryMethod === 'sf_locker' && !selectedLockerPoint) || isRedirectingToPayment} onClick={handleSubmitOrder} className="w-full py-5 bg-blue-600 rounded-[2rem] font-black text-lg shadow-xl active:scale-95 transition-all disabled:opacity-30 flex items-center justify-center gap-3">{isRedirectingToPayment ? <RefreshCw size={20} className="animate-spin" /> : <CreditCard size={20}/>} {isRedirectingToPayment ? t.checkout.redirecting : t.checkout.payNow}</button>
+          </section>
+
+          {/* ─── Section 3: Order Items ─── */}
+          <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
+            <div className="px-5 pt-5 pb-2">
+              <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">{lang === 'en' ? 'Items' : '商品明細'} · {cart.reduce((s, i) => s + i.qty, 0)}</p>
+            </div>
+            <div className="px-5 pb-4 divide-y divide-slate-100">
+              {cart.map(item => (
+                <div key={item.id} className="py-3 flex gap-3 items-center">
+                  <div className="w-12 h-12 bg-slate-50 rounded-lg flex items-center justify-center flex-shrink-0 border border-slate-100 overflow-hidden">
+                    {isMediaUrl(item.image) ? <img src={item.image} loading="lazy" alt="" className="w-full h-full object-cover" /> : <span className="text-xl">{item.image}</span>}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-bold text-slate-800 leading-tight">{item.name}</p>
+                    <p className="text-[10px] text-slate-400 font-bold">${getPrice(item, item.qty)} x {item.qty}</p>
+                  </div>
+                  <div className="flex items-center gap-0.5 rounded-full border border-slate-200 p-0.5 bg-slate-50">
+                    <button type="button" onClick={(e) => { e.stopPropagation(); updateCart(item, -1, e); }} className="w-7 h-7 flex items-center justify-center rounded-full text-slate-400 hover:bg-white active:scale-90 transition-all"><Minus size={12}/></button>
+                    <span className="w-5 text-center text-[11px] font-black text-slate-900">{item.qty}</span>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); updateCart(item, 1, e); }} className="w-7 h-7 flex items-center justify-center rounded-full bg-slate-900 text-white active:scale-90 transition-all"><Plus size={12}/></button>
+                  </div>
+                  <p className="text-sm font-black text-slate-900 w-14 text-right">${getPrice(item, item.qty) * item.qty}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <UpsellNudge />
+
+          {/* ─── Section 4: Summary & Pay ─── */}
+          <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
+            <div className="px-5 pt-5 pb-5 space-y-3">
+              <div className="flex justify-between text-xs font-bold text-slate-400"><span>{lang === 'en' ? 'Subtotal' : '商品小計'}</span><span className="text-slate-700">${subtotal}</span></div>
+              <div className="flex justify-between text-xs font-bold text-slate-400"><span>{lang === 'en' ? 'Shipping' : '運費'}</span><span className={deliveryFee === 0 ? 'text-emerald-600 font-black' : 'text-slate-700'}>{deliveryFee === 0 ? (lang === 'en' ? 'Free' : '免運費') : `$${deliveryFee}`}</span></div>
+              <FreeShippingNudge />
+              <div className="pt-3 border-t border-slate-100 flex justify-between items-end">
+                <span className="text-xs font-black text-slate-400 uppercase tracking-widest">{lang === 'en' ? 'Total' : '合計'}</span>
+                <span className="text-2xl font-black text-slate-900">${total}</span>
+              </div>
+            </div>
+            <div className="px-5 pb-5">
+              <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || (deliveryMethod === 'sf_locker' && !selectedLockerPoint) || isRedirectingToPayment} onClick={handleSubmitOrder} className="w-full py-4 bg-blue-600 text-white rounded-xl font-black text-sm shadow-lg active:scale-[0.98] transition-all disabled:opacity-30 flex items-center justify-center gap-2">
+                {isRedirectingToPayment ? <RefreshCw size={16} className="animate-spin" /> : <Lock size={16} />}
+                {isRedirectingToPayment ? (lang === 'en' ? 'Redirecting...' : '轉接中...') : (lang === 'en' ? `Pay $${total}` : `支付 $${total}`)}
+              </button>
+            </div>
           </section>
         </div>
       </div>
@@ -4046,12 +4088,12 @@ const App: React.FC = () => {
                     return (
                       <div key={p.id} onClick={() => setSelectedProduct(p)} className="flex gap-4 py-4 px-3 hover:bg-slate-50 transition-all cursor-pointer group">
                         <div className="w-24 h-24 bg-slate-50 rounded-xl flex items-center justify-center text-5xl relative overflow-hidden flex-shrink-0 border border-slate-100 group-hover:shadow-inner transition-all">
-                           {isMediaUrl(p.image) ? <img src={p.image} loading="lazy" className="w-full h-full object-cover" alt={p.imageAlt || p.name} /> : <span className="text-5xl">{p.image}</span>}
+                           {isMediaUrl(p.image) ? <img src={p.image} loading="lazy" className="w-full h-full object-cover" alt={p.imageAlt || pName(p)} /> : <span className="text-5xl">{p.image}</span>}
                            {p.recipes && p.recipes.length > 0 && <div className="absolute top-1 right-1 w-6 h-6 bg-white/90 backdrop-blur rounded-full flex items-center justify-center text-blue-600 shadow-sm"><BookOpen size={12}/></div>}
                         </div>
                         <div className="flex-1 flex flex-col justify-between py-0.5 min-w-0">
                            <div className="flex justify-between items-start">
-                              <div className="flex-1 min-w-0"><h4 className="font-bold text-slate-900 text-[15px] leading-tight group-hover:text-blue-600 transition-colors flex items-center gap-2">{p.name}</h4>
+                              <div className="flex-1 min-w-0"><h4 className="font-bold text-slate-900 text-[15px] leading-tight group-hover:text-blue-600 transition-colors flex items-center gap-2">{pName(p)}</h4>
                                 {p.tags && p.tags.length > 0 && (<div className="flex flex-wrap gap-1 mt-1.5">{p.tags.map(tag => (<span key={tag} className="px-1.5 py-0.5 bg-blue-50 text-blue-600 border border-blue-100 rounded text-[9px] font-bold uppercase tracking-tight">{tag}</span>))}</div>)}
                                 {p.bulkDiscount && (<p className="text-[10px] font-black text-rose-500 uppercase tracking-tight mt-1 animate-pulse">{p.bulkDiscount.threshold}件+ 即減 {p.bulkDiscount.value}{p.bulkDiscount.type === 'percent' ? '%' : '元'}</p>)}
                               </div>
@@ -4195,6 +4237,7 @@ const App: React.FC = () => {
                  { id: 'members', label: t.admin.members, icon: <Users size={20}/> },
                  { id: 'slideshow', label: t.admin.slideshow, icon: <ImageIcon size={20}/> },
                  { id: 'pricing', label: '價錢設定', icon: <DollarSign size={20}/> },
+                 { id: 'language', label: '語言翻譯', icon: <Globe size={20}/> },
                  { id: 'settings', label: t.admin.settings, icon: <Settings size={20}/> }
                ].map(item => (
                  <button
@@ -4212,7 +4255,7 @@ const App: React.FC = () => {
             </button>
           </aside>
           <main className="flex-1 min-w-0 p-6 md:p-10 overflow-y-auto bg-[#f8fafc] hide-scrollbar">
-            <header className="flex justify-between items-center mb-10"><div><h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: t.admin.dashboard, inventory: t.admin.inventory, orders: t.admin.orders, members: t.admin.members, slideshow: t.admin.slideshow, pricing: '價錢設定', settings: t.admin.settings } as Record<string, string>)[adminModule] || adminModule}</h1><p className="text-slate-400 font-bold text-sm">{t.admin.realtimeAdmin}</p></div><div className="flex items-center gap-4"><button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button><button onClick={() => showToast('帳戶功能開發中', 'error')} className="w-12 h-12 bg-slate-200 rounded-2xl border border-slate-100"></button></div></header>
+            <header className="flex justify-between items-center mb-10"><div><h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: t.admin.dashboard, inventory: t.admin.inventory, orders: t.admin.orders, members: t.admin.members, slideshow: t.admin.slideshow, pricing: '價錢設定', language: '語言翻譯', settings: t.admin.settings } as Record<string, string>)[adminModule] || adminModule}</h1><p className="text-slate-400 font-bold text-sm">{t.admin.realtimeAdmin}</p></div><div className="flex items-center gap-4"><button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button><button onClick={() => showToast('帳戶功能開發中', 'error')} className="w-12 h-12 bg-slate-200 rounded-2xl border border-slate-100"></button></div></header>
             {renderAdminModuleContent()}
           </main>
         </>
@@ -4361,7 +4404,7 @@ const App: React.FC = () => {
                         {user.addresses?.map(addr => (
                           <div key={addr.id} onClick={() => handleSetDefaultAddress(user.id, addr.id)} className={`p-5 rounded-[2rem] border transition-all cursor-pointer group relative ${addr.isDefault ? 'bg-white border-blue-400 shadow-lg ring-1 ring-blue-400' : 'bg-white border-slate-100 hover:border-blue-200'}`}>
                             <div className="flex justify-between items-start mb-2">
-                              <div className="flex items-center gap-2"><span className="font-black text-slate-900 text-xs">{addr.label}</span>{addr.isDefault && <span className="px-2 py-0.5 bg-blue-600 text-white text-[8px] font-black uppercase rounded-full">{t.profile.default}</span>}</div>
+                              <div className="flex items-center gap-2"><span className="font-black text-slate-900 text-xs">{addr.isDefault ? '預設地址' : '其他地址'}</span>{addr.isDefault && <span className="px-2 py-0.5 bg-blue-600 text-white text-[8px] font-black uppercase rounded-full">{t.profile.default}</span>}</div>
                               <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
                                 <button type="button" onClick={() => setAddressEditor({ address: { ...addr }, isNew: false, ownerId: user.id })} className="p-2 rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors" aria-label="編輯"><Edit size={14}/></button>
                                 <button type="button" onClick={() => handleDeleteAddress(user.id, addr.id)} className="p-2 rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-500 transition-colors" aria-label="刪除"><Trash2 size={14}/></button>
