@@ -70,6 +70,12 @@ const emptyAddress = (): UserAddress => ({
   isDefault: false
 });
 
+function isMobileDevice(): boolean {
+  if (typeof navigator === 'undefined' || typeof window === 'undefined') return false;
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+    || ('ontouchstart' in window && window.innerWidth <= 768);
+}
+
 /** Detect app language for Google API calls. Returns 'zh-HK' or 'en'. */
 function getAppLanguage(): 'zh-HK' | 'en' {
   if (typeof document !== 'undefined' && document.documentElement?.lang) {
@@ -597,6 +603,7 @@ const App: React.FC = () => {
   } | null>(null);
   const airwallexDropinRef = useRef<HTMLDivElement>(null);
   const airwallexElementRef = useRef<any>(null);
+  const [checkoutStep, setCheckoutStep] = useState<'details' | 'payment'>('details');
 
   // Slideshow (store-front ad carousel)
   const [slideshowIndex, setSlideshowIndex] = useState(0);
@@ -655,6 +662,17 @@ const App: React.FC = () => {
   useEffect(() => {
     try { localStorage.setItem('coolfood_cart', JSON.stringify(cart)); } catch { /* quota exceeded or private mode */ }
   }, [cart]);
+
+  // Clear cart when landing on success page (e.g. redirect from payment app)
+  useEffect(() => {
+    if (view === 'success' && typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.has('order') || params.has('payment_intent_id')) {
+        setCart([]);
+        setCheckoutStep('details');
+      }
+    }
+  }, []);
 
   // Update browser tab title when route changes
   useEffect(() => {
@@ -2115,21 +2133,19 @@ const App: React.FC = () => {
     }
 
     setOrders(prev => [...prev, newOrder]);
-    setCart([]);
-    setShowCheckoutAddressForm(false);
-    setCheckoutAddressDraft(null);
-    setIsChangingAddress(false);
     if (typeof window !== 'undefined' && intent_id) {
       try { window.sessionStorage.setItem('airwallex_payment_intent_id', intent_id); } catch { /* ignore */ }
     }
     setPaymentModalData({ intent_id, client_secret, currency, country_code, orderIdDisplay });
+    setCheckoutStep('payment');
     setIsRedirectingToPayment(false);
   };
 
-  // Mount Airwallex Drop-in Element when payment modal opens
+  // Mount Airwallex Drop-in Element inline when payment step is active
   useEffect(() => {
     if (!paymentModalData || !airwallexDropinRef.current) return;
     let destroyed = false;
+    const mobile = isMobileDevice();
     const mountDropin = async () => {
       try {
         const sdk = await import('@airwallex/components-sdk');
@@ -2140,20 +2156,34 @@ const App: React.FC = () => {
         const successUrl = typeof window !== 'undefined'
           ? `${window.location.origin}/success?order=${encodeURIComponent(paymentModalData.orderIdDisplay)}&payment_intent_id=${encodeURIComponent(paymentModalData.intent_id)}`
           : 'https://coolfood-app-cursor.vercel.app/success';
-        const element = await payments.createElement('dropIn', {
+        const dropInOptions: Record<string, any> = {
           intent_id: paymentModalData.intent_id,
           client_secret: paymentModalData.client_secret,
           currency: paymentModalData.currency,
           country_code: paymentModalData.country_code,
-          methods: ['apple_pay', 'googlepay', 'alipayhk', 'payme', 'card', 'fps'] as any,
+          methods: ['apple_pay', 'googlepay', 'alipayhk', 'payme', 'card', 'fps'],
           appearance: { variables: { colorBackground: '#ffffff', colorText: '#1e293b', colorBrand: '#2563eb' } },
           authFormContainer: 'airwallex-auth-form',
-        } as any);
+        };
+        if (mobile) {
+          dropInOptions.autoRedirect = true;
+          dropInOptions.successUrl = successUrl;
+          dropInOptions.failUrl = typeof window !== 'undefined' ? window.location.href : undefined;
+          dropInOptions.cancelUrl = typeof window !== 'undefined' ? window.location.href : undefined;
+          dropInOptions.returnUrl = successUrl;
+        }
+        const element = await payments.createElement('dropIn', dropInOptions as any);
         if (destroyed) { element?.destroy?.(); return; }
         airwallexElementRef.current = element;
+
         element.on('success', async (e: any) => {
           const intentResult = e?.detail?.intent ?? e?.detail;
           console.log('[Airwallex] Payment success', intentResult?.id);
+          setCart([]);
+          setCheckoutStep('details');
+          setShowCheckoutAddressForm(false);
+          setCheckoutAddressDraft(null);
+          setIsChangingAddress(false);
           setPaymentModalData(null);
           try { element.destroy(); } catch { /* ignore */ }
           airwallexElementRef.current = null;
@@ -2170,10 +2200,24 @@ const App: React.FC = () => {
           }
           setView('success');
         });
+
         element.on('error', (e: any) => {
           console.error('[Airwallex] Payment error', e?.detail);
           showToast(e?.detail?.message || 'Payment failed, please try again.', 'error');
         });
+
+        element.on('cancel', () => {
+          console.log('[Airwallex] Payment cancelled by user');
+        });
+
+        // Handle redirect-based methods (AlipayHK, PayMe, FPS) on mobile
+        (element as any).on('redirect', (e: any) => {
+          const redirectUrl = e?.detail?.url || e?.detail?.next_action?.url;
+          if (redirectUrl && typeof window !== 'undefined') {
+            window.location.href = redirectUrl;
+          }
+        });
+
         if (airwallexDropinRef.current && !destroyed) {
           element.mount(airwallexDropinRef.current);
         }
@@ -2181,6 +2225,7 @@ const App: React.FC = () => {
         console.error('[Airwallex] Drop-in mount failed', e);
         showToast('Payment system error. Please try again.', 'error');
         setPaymentModalData(null);
+        setCheckoutStep('details');
       }
     };
     mountDropin();
@@ -3344,24 +3389,7 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Airwallex Drop-in Payment Modal */}
-      {paymentModalData && (
-        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-[7000] flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[95vh] animate-scale-up">
-            <div className="px-6 pt-6 pb-4 border-b border-slate-100 flex justify-between items-center">
-              <div>
-                <h4 className="text-lg font-black text-slate-900">{lang === 'en' ? 'Complete Payment' : '完成付款'}</h4>
-                <p className="text-[10px] font-bold text-slate-400 mt-0.5">{paymentModalData.orderIdDisplay} · {paymentModalData.currency}</p>
-              </div>
-              <button onClick={() => { setPaymentModalData(null); try { airwallexElementRef.current?.destroy?.(); } catch {} airwallexElementRef.current = null; }} className="p-2 rounded-full hover:bg-slate-100 transition-colors text-slate-400"><X size={18}/></button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-6">
-              <div ref={airwallexDropinRef} id="airwallex-dropin" className="min-h-[200px]" />
-              <div id="airwallex-auth-form" />
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Payment modal removed — Airwallex drop-in is now inline in checkout view */}
 
       {editingProduct && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[6000] flex items-center justify-center p-6 animate-fade-in">
@@ -4121,9 +4149,18 @@ const App: React.FC = () => {
     );
   };
 
+  const handleCancelPayment = () => {
+    try { airwallexElementRef.current?.destroy?.(); } catch { /* ignore */ }
+    airwallexElementRef.current = null;
+    setPaymentModalData(null);
+    setCheckoutStep('details');
+  };
+
   const renderCheckoutView = () => {
     const { subtotal, deliveryFee, total } = pricingData;
-    if (cart.length === 0) {
+    const isPaymentStep = checkoutStep === 'payment' && !!paymentModalData;
+
+    if (cart.length === 0 && !isPaymentStep) {
       return (
         <div className="flex-1 bg-slate-50 min-h-screen flex flex-col items-center justify-center gap-6 animate-fade-in px-6">
           <div className="w-24 h-24 bg-slate-100 rounded-full flex items-center justify-center"><ShoppingBag size={40} className="text-slate-300" /></div>
@@ -4135,9 +4172,69 @@ const App: React.FC = () => {
         </div>
       );
     }
+
+    if (isPaymentStep) {
+      return (
+        <div className="flex-1 bg-slate-50 min-h-screen pb-48 overflow-y-auto animate-fade-in">
+          {isRedirectingToPayment && (
+            <div className="fixed inset-0 bg-white/90 backdrop-blur-sm z-[8000] flex flex-col items-center justify-center gap-4 animate-fade-in">
+              <RefreshCw size={32} className="animate-spin text-blue-600" />
+              <p className="text-sm font-black text-slate-700">{lang === 'en' ? 'Preparing payment...' : '正在準備支付...'}</p>
+            </div>
+          )}
+          <header className="bg-white sticky top-0 z-40 px-4 py-3.5 border-b border-slate-200/60 flex items-center justify-between">
+            <button onClick={handleCancelPayment} className="p-2 -ml-1 hover:bg-slate-50 rounded-full transition-colors"><ChevronLeft size={22} className="text-slate-700" /></button>
+            <h2 className="text-base font-black text-slate-900 tracking-tight">{lang === 'en' ? 'Payment' : '選擇付款方式'}</h2>
+            <div className="w-10" />
+          </header>
+
+          <div className="p-4 sm:p-6 space-y-3">
+            <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-5 py-4 flex items-center justify-between">
+                <div>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{paymentModalData.orderIdDisplay}</p>
+                  <p className="text-[11px] font-bold text-slate-500 mt-0.5">
+                    {cart.reduce((s, i) => s + i.qty, 0)} {lang === 'en' ? 'items' : '件商品'}
+                    {deliveryFee > 0 && <span className="text-slate-300 mx-1.5">·</span>}
+                    {deliveryFee > 0 && <span>{lang === 'en' ? 'Shipping' : '運費'} ${deliveryFee}</span>}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{lang === 'en' ? 'Total' : '合計'}</p>
+                  <p className="text-xl font-black text-slate-900">${total}</p>
+                </div>
+              </div>
+            </section>
+
+            <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-5 pt-5 pb-3">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">{lang === 'en' ? 'Payment Method' : '付款方式'}</p>
+              </div>
+              <div className="px-5 pb-6">
+                <div ref={airwallexDropinRef} id="airwallex-dropin" className="min-h-[200px]" />
+                <div id="airwallex-auth-form" />
+              </div>
+            </section>
+
+            <div className="pt-2">
+              <button onClick={handleCancelPayment} className="w-full py-3.5 bg-white text-slate-500 rounded-xl font-black text-xs border border-slate-200 flex items-center justify-center gap-1.5 hover:bg-slate-50 transition-colors active:scale-[0.98]">
+                <ChevronLeft size={14} />
+                {lang === 'en' ? 'Change order / Try another method' : '修改訂單 / 更換付款方式'}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex-1 bg-slate-100 min-h-screen pb-48 overflow-y-auto animate-fade-in">
-        {/* Header */}
+        {isRedirectingToPayment && (
+          <div className="fixed inset-0 bg-white/90 backdrop-blur-sm z-[8000] flex flex-col items-center justify-center gap-4 animate-fade-in">
+            <RefreshCw size={32} className="animate-spin text-blue-600" />
+            <p className="text-sm font-black text-slate-700">{lang === 'en' ? 'Processing payment...' : '正在處理支付...'}</p>
+          </div>
+        )}
         <header className="bg-white sticky top-0 z-40 px-4 py-3.5 border-b border-slate-200/60 flex items-center justify-between">
           <button onClick={() => setView('store')} className="p-2 -ml-1 hover:bg-slate-50 rounded-full transition-colors"><ChevronLeft size={22} className="text-slate-700" /></button>
           <h2 className="text-base font-black text-slate-900 tracking-tight">{lang === 'en' ? 'Checkout' : '結帳'}</h2>
@@ -4326,9 +4423,9 @@ const App: React.FC = () => {
               </div>
             </div>
             <div className="px-5 pb-5">
-              <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || (deliveryMethod === 'sf_locker' && !selectedLockerPoint) || isRedirectingToPayment || !!paymentModalData} onClick={handleSubmitOrder} className="w-full py-4 bg-blue-600 text-white rounded-xl font-black text-sm shadow-lg active:scale-[0.98] transition-all disabled:opacity-30 flex items-center justify-center gap-2">
-                {isRedirectingToPayment ? <RefreshCw size={16} className="animate-spin" /> : <Lock size={16} />}
-                {isRedirectingToPayment ? (lang === 'en' ? 'Processing...' : '處理中...') : (lang === 'en' ? `Pay $${total}` : `支付 $${total}`)}
+              <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || (deliveryMethod === 'sf_locker' && !selectedLockerPoint) || isRedirectingToPayment} onClick={handleSubmitOrder} className="w-full py-4 bg-blue-600 text-white rounded-xl font-black text-sm shadow-lg active:scale-[0.98] transition-all disabled:opacity-30 flex items-center justify-center gap-2">
+                {isRedirectingToPayment ? <RefreshCw size={16} className="animate-spin" /> : <CreditCard size={16} />}
+                {isRedirectingToPayment ? (lang === 'en' ? 'Processing...' : '處理中...') : (lang === 'en' ? `Pay $${total}` : `前往付款 $${total}`)}
               </button>
             </div>
           </section>
