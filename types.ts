@@ -25,6 +25,12 @@ export interface BulkDiscount {
   value: number;
 }
 
+export interface CostItem {
+  id: string;
+  name: string;
+  defaultPrice: number;
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -46,6 +52,8 @@ export interface Product {
   seoTitle?: string;        // SEO: custom page title for search engines
   seoDescription?: string;  // SEO: meta description for search engines
   imageAlt?: string;        // SEO: alt text for the main product image
+  costPrice?: number;       // Raw material / meat cost per unit
+  costItemIds?: string[];   // IDs of applicable CostItem entries (packaging, plates, etc.)
 }
 
 export interface CartItem extends Product {
@@ -152,6 +160,8 @@ export interface SupabaseProductRow {
   image_alt?: string | null;
   name_en?: string | null;
   description_en?: string | null;
+  cost_price?: number | null;
+  cost_item_ids?: string[] | null;
 }
 
 /** Supabase public.categories table – column names must match (snake_case). */

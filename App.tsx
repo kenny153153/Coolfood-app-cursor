@@ -10,12 +10,12 @@ import {
   Check, Filter, List, Video, FileText, ChevronUp, ChevronDown, GripVertical,
   Printer, ExternalLink, Calendar, Hash, UserCheck, CreditCard as CardIcon,
   Award, Smartphone, Mail, Save, PlusCircle, Map, Download, Upload, Zap,
-  Layers, Percent, Globe, Crosshair, Scissors, Phone, Square, CheckSquare
+  Layers, Percent, Globe, Crosshair, Scissors, Phone, Square, CheckSquare, Coins
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
-import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier } from './types';
+import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem } from './types';
 import { useI18n, Language } from './i18n';
 import { supabase } from './supabaseClient';
 import {
@@ -480,7 +480,7 @@ const App: React.FC = () => {
     () => (typeof window !== 'undefined' && (window.location.pathname === '/success' || window.location.hash === '#success') ? 'success' : 'store')
   );
   const [isRedirectingToPayment, setIsRedirectingToPayment] = useState(false);
-  const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'pricing' | 'language' | 'settings'>('dashboard');
+  const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'pricing' | 'costs' | 'language' | 'settings'>('dashboard');
   const [inventorySubTab, setInventorySubTab] = useState<'products' | 'categories' | 'rules'>('products');
   const [ordersStatusFilter, setOrdersStatusFilter] = useState<'all' | OrderStatus>('all');
   const [isAdminSidebarOpen, setIsAdminSidebarOpen] = useState(false);
@@ -574,6 +574,7 @@ const App: React.FC = () => {
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [authForm, setAuthForm] = useState({ email: '', password: '', name: '', phone: '' });
   const [editingMemberPassword, setEditingMemberPassword] = useState('');
+  const [aiDescLoading, setAiDescLoading] = useState(false);
 
   // Address UI States
   const [showAddressDropdown, setShowAddressDropdown] = useState(false);
@@ -590,8 +591,20 @@ const App: React.FC = () => {
   const [successWaybill, setSuccessWaybill] = useState<string | null>(null);
   const [successWaybillLoading, setSuccessWaybillLoading] = useState(false);
 
+  // Airwallex Drop-in payment modal
+  const [paymentModalData, setPaymentModalData] = useState<{
+    intent_id: string; client_secret: string; currency: string; country_code: string; orderIdDisplay: string;
+  } | null>(null);
+  const airwallexDropinRef = useRef<HTMLDivElement>(null);
+  const airwallexElementRef = useRef<any>(null);
+
   // Slideshow (store-front ad carousel)
   const [slideshowIndex, setSlideshowIndex] = useState(0);
+
+  // Cost management
+  const [costItems, setCostItems] = useState<CostItem[]>([]);
+  const [showCostColumns, setShowCostColumns] = useState(false);
+  const [manualPriceEditIds, setManualPriceEditIds] = useState<Set<string>>(new Set());
 
   // AI State
   const [aiAnalysis, setAiAnalysis] = useState<string>('');
@@ -775,7 +788,7 @@ const App: React.FC = () => {
         console.warn('[shipping/upsell] Failed to load, using fallback values');
       }
 
-      // ── 載入 site_config（定價規則、品牌設定）──
+      // ── 載入 site_config（定價規則、品牌設定、成本項目）──
       try {
         const { data: cfgRows } = await supabase.from('site_config').select('*');
         if (cfgRows && cfgRows.length > 0) {
@@ -786,6 +799,7 @@ const App: React.FC = () => {
             ...(cfgMap.site_branding || {}),
             pricingRules: cfgMap.pricing_rules ? { ...prev.pricingRules, ...cfgMap.pricing_rules } : prev.pricingRules,
           }));
+          if (Array.isArray(cfgMap.cost_items)) setCostItems(cfgMap.cost_items);
         }
       } catch {
         console.warn('[site_config] Failed to load, using defaults');
@@ -2105,35 +2119,77 @@ const App: React.FC = () => {
     setShowCheckoutAddressForm(false);
     setCheckoutAddressDraft(null);
     setIsChangingAddress(false);
-    showToast('訂單已提交！正在轉接支付接口...');
-
-    const successUrl = typeof window !== 'undefined'
-      ? `${window.location.origin}/success?order=${encodeURIComponent(orderIdDisplay)}${intent_id ? `&payment_intent_id=${encodeURIComponent(intent_id)}` : ''}`
-      : 'https://coolfood-app-cursor.vercel.app/success';
-    try {
-      if (typeof window !== 'undefined' && intent_id) {
-        try { window.sessionStorage.setItem('airwallex_payment_intent_id', intent_id); } catch { /* ignore */ }
-      }
-      const { init, redirectToCheckout } = await import('@airwallex/components-sdk');
-      const airwallexEnv = (import.meta.env.VITE_AIRWALLEX_ENV as string) || 'demo';
-      if (airwallexEnv === 'demo') console.log('Airwallex Sandbox Mode Active');
-      const { payments } = await init({ env: airwallexEnv as 'demo' | 'prod', enabledElements: ['payments'] });
-      const orderedMethods = ['apple_pay', 'googlepay', 'alipayhk', 'payme', 'card', 'fps'];
-      payments.redirectToCheckout({
-        intent_id,
-        client_secret,
-        currency,
-        country_code,
-        successUrl,
-        methods: orderedMethods as any,
-      });
-    } catch (e) {
-      setIsRedirectingToPayment(false);
-      console.error('Airwallex redirectToCheckout failed', e);
-      const msg = e instanceof Error ? e.message : '';
-      showToast(msg ? `Payment error: ${msg}` : 'Payment system is currently busy, please try again in a moment.', 'error');
+    if (typeof window !== 'undefined' && intent_id) {
+      try { window.sessionStorage.setItem('airwallex_payment_intent_id', intent_id); } catch { /* ignore */ }
     }
+    setPaymentModalData({ intent_id, client_secret, currency, country_code, orderIdDisplay });
+    setIsRedirectingToPayment(false);
   };
+
+  // Mount Airwallex Drop-in Element when payment modal opens
+  useEffect(() => {
+    if (!paymentModalData || !airwallexDropinRef.current) return;
+    let destroyed = false;
+    const mountDropin = async () => {
+      try {
+        const sdk = await import('@airwallex/components-sdk');
+        const airwallexEnv = (import.meta.env.VITE_AIRWALLEX_ENV as string) || 'demo';
+        if (airwallexEnv === 'demo') console.log('Airwallex Sandbox Mode Active');
+        const { payments } = await sdk.init({ env: airwallexEnv as 'demo' | 'prod', enabledElements: ['payments'] });
+        if (destroyed) return;
+        const successUrl = typeof window !== 'undefined'
+          ? `${window.location.origin}/success?order=${encodeURIComponent(paymentModalData.orderIdDisplay)}&payment_intent_id=${encodeURIComponent(paymentModalData.intent_id)}`
+          : 'https://coolfood-app-cursor.vercel.app/success';
+        const element = await payments.createElement('dropIn', {
+          intent_id: paymentModalData.intent_id,
+          client_secret: paymentModalData.client_secret,
+          currency: paymentModalData.currency,
+          country_code: paymentModalData.country_code,
+          methods: ['apple_pay', 'googlepay', 'alipayhk', 'payme', 'card', 'fps'] as any,
+          appearance: { variables: { colorBackground: '#ffffff', colorText: '#1e293b', colorBrand: '#2563eb' } },
+          authFormContainer: 'airwallex-auth-form',
+        } as any);
+        if (destroyed) { element?.destroy?.(); return; }
+        airwallexElementRef.current = element;
+        element.on('success', async (e: any) => {
+          const intentResult = e?.detail?.intent ?? e?.detail;
+          console.log('[Airwallex] Payment success', intentResult?.id);
+          setPaymentModalData(null);
+          try { element.destroy(); } catch { /* ignore */ }
+          airwallexElementRef.current = null;
+          const confirmUrl = `${window.location.origin}/api/confirm-payment`;
+          try {
+            await fetch(confirmUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ orderId: paymentModalData.orderIdDisplay, payment_intent_id: paymentModalData.intent_id }),
+            });
+          } catch { /* non-blocking */ }
+          if (typeof window !== 'undefined') {
+            window.history.replaceState(null, '', `/success?order=${encodeURIComponent(paymentModalData.orderIdDisplay)}&payment_intent_id=${encodeURIComponent(paymentModalData.intent_id)}`);
+          }
+          setView('success');
+        });
+        element.on('error', (e: any) => {
+          console.error('[Airwallex] Payment error', e?.detail);
+          showToast(e?.detail?.message || 'Payment failed, please try again.', 'error');
+        });
+        if (airwallexDropinRef.current && !destroyed) {
+          element.mount(airwallexDropinRef.current);
+        }
+      } catch (e) {
+        console.error('[Airwallex] Drop-in mount failed', e);
+        showToast('Payment system error. Please try again.', 'error');
+        setPaymentModalData(null);
+      }
+    };
+    mountDropin();
+    return () => {
+      destroyed = true;
+      try { airwallexElementRef.current?.destroy?.(); } catch { /* ignore */ }
+      airwallexElementRef.current = null;
+    };
+  }, [paymentModalData]);
 
   // --- Admin Logic ---
 
@@ -2327,6 +2383,41 @@ const App: React.FC = () => {
                 <Upload size={16}/> 批量上傳 CSV
                 <input type="file" accept=".csv" className="hidden" onChange={handleCSVUpload} />
               </label>
+              <button disabled={aiDescLoading} onClick={async () => {
+                const toGenerate = products.filter(p => p.name.trim() && (!p.description || p.description.trim() === ''));
+                if (toGenerate.length === 0) { showToast('所有產品已有描述'); return; }
+                setAiDescLoading(true);
+                try {
+                  const names: Record<string, string> = {};
+                  for (const p of toGenerate.slice(0, 30)) names[p.id] = p.name;
+                  const prompt = `你是一個凍肉零售店的產品描述撰寫員。為以下凍肉產品各撰寫一段繁體中文描述（2-3句），強調品質和口感。回覆 JSON 格式 { "product_id": "描述" }。\n\n${JSON.stringify(names, null, 2)}`;
+                  const geminiKey = (import.meta.env.VITE_GEMINI_API_KEY as string) || process.env.GEMINI_API_KEY || process.env.API_KEY || '';
+                  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.7 } }),
+                  });
+                  if (!response.ok) throw new Error('API error');
+                  const data = await response.json();
+                  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                  const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+                  if (!jsonMatch) throw new Error('Invalid JSON');
+                  const descs = JSON.parse(jsonMatch[0]) as Record<string, string>;
+                  let count = 0;
+                  const updates: Product[] = [];
+                  for (const [pid, desc] of Object.entries(descs)) {
+                    const p = products.find(x => x.id === pid);
+                    if (p && typeof desc === 'string' && desc.trim()) {
+                      updates.push({ ...p, description: desc.trim() });
+                      count++;
+                    }
+                  }
+                  for (const u of updates) upsertProduct(u);
+                  showToast(`AI 已為 ${count} 個產品生成描述`);
+                } catch { showToast('AI 批量生成失敗', 'error'); }
+                setAiDescLoading(false);
+              }} className="px-6 py-3 bg-purple-600 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-sm hover:bg-purple-700 transition-all disabled:opacity-50">
+                {aiDescLoading ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />} AI 批量寫描述
+              </button>
               <button onClick={() => setEditingProduct({ id: 'P-'+Date.now(), name: '', price: 0, memberPrice: 0, stock: 0, categories: [], tags: [], image: '🥩', trackInventory: true, recipes: [], seoTitle: '', seoDescription: '', imageAlt: '' })} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 transition-all">
                 <Plus size={16}/> 上架新產品
               </button>
@@ -2762,9 +2853,12 @@ const App: React.FC = () => {
 
             {/* ── 全產品定價矩陣 ── */}
             <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden">
-              <div className="p-8 pb-4 flex items-center justify-between">
+              <div className="p-8 pb-4 flex items-center justify-between flex-wrap gap-3">
                 <div className="flex items-center gap-3"><div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><ClipboardList size={18}/></div><h4 className="font-black text-lg">全產品定價一覽</h4></div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button onClick={() => setShowCostColumns(v => !v)} className={`px-4 py-2 rounded-xl text-xs font-black transition-colors ${showCostColumns ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                    {showCostColumns ? '隱藏成本' : '顯示成本'}
+                  </button>
                   <button onClick={() => {
                     const allIds = products.map(p => p.id);
                     const current = siteConfig.pricingRules?.excludedProductIds || [];
@@ -2782,6 +2876,7 @@ const App: React.FC = () => {
                     try {
                       await supabase.from('site_config').upsert({ id: 'pricing_rules', value: siteConfig.pricingRules });
                       await supabase.from('site_config').upsert({ id: 'site_branding', value: { logoText: siteConfig.logoText, logoIcon: siteConfig.logoIcon, logoUrl: siteConfig.logoUrl, accentColor: siteConfig.accentColor } });
+                      for (const p of products) { await supabase.from('products').update({ price: p.price, member_price: p.memberPrice }).eq('id', p.id); }
                       showToast('定價規則已儲存');
                     } catch (err: any) {
                       showToast(`儲存失敗：${err.message}`, 'error');
@@ -2799,6 +2894,9 @@ const App: React.FC = () => {
                       <th className="text-right px-4 py-3">折扣價</th>
                       <th className="text-right px-4 py-3 text-blue-500">會員價</th>
                       <th className="text-right px-4 py-3 text-purple-500">錢包價</th>
+                      {showCostColumns && <th className="text-right px-4 py-3 text-amber-500">成本</th>}
+                      {showCostColumns && <th className="text-right px-4 py-3 text-emerald-500">利潤</th>}
+                      <th className="text-center px-3 py-3 w-16">手動</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
@@ -2810,6 +2908,12 @@ const App: React.FC = () => {
                       const wPct = siteConfig.pricingRules?.walletDiscountPercent || 0;
                       const memberP = excluded ? base : Math.round(base * (1 - mPct / 100));
                       const walletP = excluded ? base : Math.round(base * (1 - mPct / 100) * (1 - wPct / 100));
+                      const meatCost = p.costPrice || 0;
+                      const extraCost = (p.costItemIds || []).reduce((sum, cid) => sum + (costItems.find(ci => ci.id === cid)?.defaultPrice || 0), 0);
+                      const totalCost = meatCost + extraCost;
+                      const sellPrice = hasDiscount ? p.memberPrice : p.price;
+                      const profit = sellPrice - totalCost;
+                      const manualEdit = manualPriceEditIds.has(p.id);
                       return (
                         <tr key={p.id} className={`hover:bg-slate-50/50 transition-colors ${excluded ? 'opacity-50' : ''}`}>
                           <td className="px-6 py-3">
@@ -2829,15 +2933,38 @@ const App: React.FC = () => {
                               <span className="font-bold text-slate-700">{p.name}</span>
                             </div>
                           </td>
-                          <td className="text-right px-4 py-3 font-bold text-slate-900">${p.price}</td>
                           <td className="text-right px-4 py-3">
-                            {hasDiscount ? <span className="font-black text-rose-500">${p.memberPrice}</span> : <span className="text-slate-300">—</span>}
+                            {manualEdit ? (
+                              <input type="number" min="0" value={p.price} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, price: Number(e.target.value) || 0 } : x))} className="w-20 p-1 bg-amber-50 rounded-lg font-bold text-right border border-amber-200 text-xs" />
+                            ) : (
+                              <span className="font-bold text-slate-900">${p.price}</span>
+                            )}
+                          </td>
+                          <td className="text-right px-4 py-3">
+                            {manualEdit ? (
+                              <input type="number" min="0" value={p.memberPrice || ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, memberPrice: Number(e.target.value) || 0 } : x))} className="w-20 p-1 bg-amber-50 rounded-lg font-bold text-right border border-amber-200 text-xs" placeholder="—" />
+                            ) : (
+                              hasDiscount ? <span className="font-black text-rose-500">${p.memberPrice}</span> : <span className="text-slate-300">—</span>
+                            )}
                           </td>
                           <td className="text-right px-4 py-3">
                             {!excluded && mPct > 0 ? <span className="font-black text-blue-600">${memberP}</span> : <span className="text-slate-300">{excluded ? '排除' : `$${base}`}</span>}
                           </td>
                           <td className="text-right px-4 py-3">
                             {!excluded && (mPct > 0 || wPct > 0) ? <span className="font-black text-purple-600">${walletP}</span> : <span className="text-slate-300">{excluded ? '排除' : `$${base}`}</span>}
+                          </td>
+                          {showCostColumns && (
+                            <td className="text-right px-4 py-3 font-bold text-amber-600">{totalCost > 0 ? `$${totalCost.toFixed(1)}` : <span className="text-slate-300">—</span>}</td>
+                          )}
+                          {showCostColumns && (
+                            <td className={`text-right px-4 py-3 font-black ${totalCost > 0 ? (profit >= 0 ? 'text-emerald-600' : 'text-rose-600') : 'text-slate-300'}`}>
+                              {totalCost > 0 ? `${profit >= 0 ? '+' : ''}$${profit.toFixed(1)}` : '—'}
+                            </td>
+                          )}
+                          <td className="text-center px-3 py-3">
+                            <button onClick={() => setManualPriceEditIds(prev => { const next = new Set(prev); if (next.has(p.id)) next.delete(p.id); else next.add(p.id); return next; })} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${manualEdit ? 'border-amber-500 bg-amber-500 text-white' : 'border-slate-200 bg-white'}`}>
+                              {manualEdit && <Edit size={10} strokeWidth={3}/>}
+                            </button>
                           </td>
                         </tr>
                       );
@@ -2980,6 +3107,130 @@ const App: React.FC = () => {
              </div>
           </div>
         );
+      case 'costs':
+        return (
+          <div className="space-y-8 animate-fade-in pb-20">
+            {/* Cost Items Configuration */}
+            <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-6">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl"><Coins size={18}/></div>
+                  <div>
+                    <h4 className="font-black text-lg">成本項目</h4>
+                    <p className="text-[10px] text-slate-400 font-bold">定義包裝、配件等附加成本（不含肉品成本，肉品成本在各產品設定）</p>
+                  </div>
+                </div>
+                <button onClick={async () => {
+                  try {
+                    await supabase.from('site_config').upsert({ id: 'cost_items', value: costItems });
+                    showToast('成本項目已儲存');
+                  } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
+                }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Save size={14}/> 儲存</button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                      <th className="text-left px-4 py-3">名稱</th>
+                      <th className="text-right px-4 py-3">單價 ($)</th>
+                      <th className="text-right px-4 py-3 w-20">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {costItems.map((ci) => (
+                      <tr key={ci.id} className="hover:bg-slate-50/50 transition-colors">
+                        <td className="px-4 py-3">
+                          <input value={ci.name} onChange={e => setCostItems(prev => prev.map(x => x.id === ci.id ? { ...x, name: e.target.value } : x))} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100 focus:ring-2 focus:ring-amber-100" />
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <input type="number" min="0" step="0.1" value={ci.defaultPrice} onChange={e => setCostItems(prev => prev.map(x => x.id === ci.id ? { ...x, defaultPrice: Number(e.target.value) || 0 } : x))} className="w-24 p-2 bg-slate-50 rounded-lg font-bold text-xs text-right border border-slate-100 focus:ring-2 focus:ring-amber-100" />
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button onClick={() => setCostItems(prev => prev.filter(x => x.id !== ci.id))} className="p-1.5 text-rose-400 hover:bg-rose-50 rounded-lg transition-colors"><Trash2 size={14}/></button>
+                        </td>
+                      </tr>
+                    ))}
+                    {costItems.length === 0 && (
+                      <tr><td colSpan={3} className="px-4 py-8 text-center text-slate-300 font-bold text-xs">尚無成本項目，點擊下方新增</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <button onClick={() => setCostItems(prev => [...prev, { id: `ci-${Date.now()}`, name: '', defaultPrice: 0 }])} className="px-4 py-2.5 border-2 border-dashed border-slate-200 rounded-xl text-xs font-black text-slate-400 hover:border-amber-400 hover:text-amber-600 transition-all flex items-center gap-1.5"><Plus size={14}/> 新增成本項目</button>
+            </div>
+
+            {/* Per-Product Cost Overview */}
+            <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden">
+              <div className="p-8 pb-4 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><ClipboardList size={18}/></div>
+                  <h4 className="font-black text-lg">產品成本一覽</h4>
+                </div>
+                <button onClick={async () => {
+                  try {
+                    for (const p of products) { await supabase.from('products').update({ cost_price: p.costPrice ?? null, cost_item_ids: p.costItemIds ?? null }).eq('id', p.id); }
+                    showToast('所有產品成本已儲存');
+                  } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
+                }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Save size={14}/> 全部儲存</button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                      <th className="text-left px-4 py-3">產品</th>
+                      <th className="text-right px-4 py-3">肉品成本</th>
+                      {costItems.map(ci => <th key={ci.id} className="text-center px-2 py-3">{ci.name}<br/><span className="text-slate-300">${ci.defaultPrice}</span></th>)}
+                      <th className="text-right px-4 py-3">總成本</th>
+                      <th className="text-right px-4 py-3">售價</th>
+                      <th className="text-right px-4 py-3">利潤</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {products.map(p => {
+                      const meatCost = p.costPrice || 0;
+                      const extraCost = (p.costItemIds || []).reduce((sum, cid) => sum + (costItems.find(ci => ci.id === cid)?.defaultPrice || 0), 0);
+                      const totalCost = meatCost + extraCost;
+                      const sellPrice = (p.memberPrice > 0 && p.memberPrice < p.price) ? p.memberPrice : p.price;
+                      const profit = sellPrice - totalCost;
+                      return (
+                        <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-2">
+                              <div className="w-7 h-7 bg-slate-50 rounded-lg flex items-center justify-center text-sm overflow-hidden flex-shrink-0 border border-slate-100">
+                                {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-xs">{p.image || '📦'}</span>}
+                              </div>
+                              <span className="font-bold text-slate-700 truncate max-w-[120px]">{p.name}</span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <input type="number" min="0" step="0.5" value={p.costPrice ?? ''} onChange={e => { const val = Number(e.target.value) || 0; setProducts(prev => prev.map(x => x.id === p.id ? { ...x, costPrice: val } : x)); }} placeholder="0" className="w-20 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
+                          </td>
+                          {costItems.map(ci => {
+                            const checked = (p.costItemIds || []).includes(ci.id);
+                            return (
+                              <td key={ci.id} className="text-center px-2 py-3">
+                                <button onClick={() => {
+                                  const ids = p.costItemIds || [];
+                                  const next = checked ? ids.filter(x => x !== ci.id) : [...ids, ci.id];
+                                  setProducts(prev => prev.map(x => x.id === p.id ? { ...x, costItemIds: next } : x));
+                                }} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${checked ? 'border-amber-500 bg-amber-500 text-white' : 'border-slate-200 bg-white'}`}>
+                                  {checked && <Check size={12} strokeWidth={3}/>}
+                                </button>
+                              </td>
+                            );
+                          })}
+                          <td className="text-right px-4 py-3 font-bold text-slate-900">${totalCost.toFixed(1)}</td>
+                          <td className="text-right px-4 py-3 font-bold text-slate-700">${sellPrice}</td>
+                          <td className={`text-right px-4 py-3 font-black ${profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{profit >= 0 ? '+' : ''}${profit.toFixed(1)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
       case 'language':
         return (
           <div className="space-y-8 animate-fade-in pb-20">
@@ -3093,6 +3344,25 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* Airwallex Drop-in Payment Modal */}
+      {paymentModalData && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-[7000] flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[95vh] animate-scale-up">
+            <div className="px-6 pt-6 pb-4 border-b border-slate-100 flex justify-between items-center">
+              <div>
+                <h4 className="text-lg font-black text-slate-900">{lang === 'en' ? 'Complete Payment' : '完成付款'}</h4>
+                <p className="text-[10px] font-bold text-slate-400 mt-0.5">{paymentModalData.orderIdDisplay} · {paymentModalData.currency}</p>
+              </div>
+              <button onClick={() => { setPaymentModalData(null); try { airwallexElementRef.current?.destroy?.(); } catch {} airwallexElementRef.current = null; }} className="p-2 rounded-full hover:bg-slate-100 transition-colors text-slate-400"><X size={18}/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              <div ref={airwallexDropinRef} id="airwallex-dropin" className="min-h-[200px]" />
+              <div id="airwallex-auth-form" />
+            </div>
+          </div>
+        </div>
+      )}
+
       {editingProduct && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[6000] flex items-center justify-center p-6 animate-fade-in">
           <div className="bg-white w-full max-w-3xl rounded-[3rem] shadow-2xl overflow-hidden flex flex-col max-h-[95vh] animate-scale-up">
@@ -3124,6 +3394,45 @@ const App: React.FC = () => {
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">折扣價</label>
                   <input type="number" min="0" value={editingProduct.memberPrice || ''} onChange={e => setEditingProduct({ ...editingProduct, memberPrice: Number(e.target.value) || 0 })} placeholder="留空 = 不設折扣" className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
                   <p className="text-[9px] text-slate-400 font-bold leading-relaxed">留空或填 0 = 不設折扣，以售價出售。<br/>例如售價 $100，填 <span className="text-blue-600">90</span> = 以 $90 出售（減 $10）。<br/>折扣價為所有客人可見的特價，會員/錢包折扣會在此基礎上再計算。</p>
+                </div>
+                {/* ── Cost Section ── */}
+                <div className="space-y-3 md:col-span-2 p-4 bg-gradient-to-r from-amber-50/60 to-orange-50/60 rounded-2xl border border-amber-100/60">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Coins size={14} className="text-amber-600" />
+                    <label className="text-[10px] font-bold text-amber-700 uppercase tracking-widest">成本設定</label>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">肉品成本 ($)</label>
+                      <input type="number" min="0" step="0.5" value={editingProduct.costPrice ?? ''} onChange={e => setEditingProduct({ ...editingProduct, costPrice: Number(e.target.value) || 0 })} placeholder="0" className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">總成本</label>
+                      <div className="p-2.5 bg-white rounded-xl font-black text-xs border border-slate-100 text-amber-700">
+                        ${((editingProduct.costPrice || 0) + (editingProduct.costItemIds || []).reduce((s, cid) => s + (costItems.find(ci => ci.id === cid)?.defaultPrice || 0), 0)).toFixed(1)}
+                      </div>
+                    </div>
+                  </div>
+                  {costItems.length > 0 && (
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">附加成本項目</label>
+                      <div className="flex flex-wrap gap-2">
+                        {costItems.map(ci => {
+                          const checked = (editingProduct.costItemIds || []).includes(ci.id);
+                          return (
+                            <button key={ci.id} type="button" onClick={() => {
+                              const ids = editingProduct.costItemIds || [];
+                              const next = checked ? ids.filter(x => x !== ci.id) : [...ids, ci.id];
+                              setEditingProduct({ ...editingProduct, costItemIds: next });
+                            }} className={`px-3 py-1.5 rounded-xl text-xs font-black border transition-all ${checked ? 'bg-amber-500 text-white border-amber-500 shadow-md' : 'bg-white text-slate-500 border-slate-200 hover:border-amber-300'}`}>
+                              {ci.name} (${ci.defaultPrice})
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  {costItems.length === 0 && <p className="text-[8px] text-slate-400 font-bold">到「成本管理」新增包裝、碟、袋等成本項目</p>}
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">庫存</label>
@@ -3244,7 +3553,30 @@ const App: React.FC = () => {
                   {(editingProduct.gallery || []).length > 0 && <p className="text-[9px] text-slate-400 font-bold">{(editingProduct.gallery || []).length}/10 張 · 懸浮圖片可刪除</p>}
                 </div>
                 <div className="space-y-2 md:col-span-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">商品描述</label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">商品描述</label>
+                    <button type="button" disabled={aiDescLoading} onClick={async () => {
+                      if (!editingProduct.name.trim()) { showToast('填寫產品名稱讓 AI 可以跟據名稱作出描述', 'error'); return; }
+                      setAiDescLoading(true);
+                      try {
+                        const prompt = `你是一個凍肉零售店的產品描述撰寫員。請為以下凍肉產品撰寫一段吸引人的繁體中文產品描述（2-3句），強調品質、新鮮度和口感。只回覆描述文字，不要加任何標點符號以外的格式。\n\n產品名稱：${editingProduct.name}`;
+                        const geminiKey = (import.meta.env.VITE_GEMINI_API_KEY as string) || process.env.GEMINI_API_KEY || process.env.API_KEY || '';
+                        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.7 } }),
+                        });
+                        if (!response.ok) throw new Error('API error');
+                        const data = await response.json();
+                        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+                        if (text) { setEditingProduct({ ...editingProduct, description: text }); showToast('AI 已生成描述'); }
+                        else showToast('AI 無法生成描述', 'error');
+                      } catch { showToast('AI 生成失敗，請稍後重試', 'error'); }
+                      setAiDescLoading(false);
+                    }} className="flex items-center gap-1 px-2.5 py-1 bg-purple-50 text-purple-600 rounded-lg text-[9px] font-black hover:bg-purple-100 transition-all disabled:opacity-50">
+                      {aiDescLoading ? <RefreshCw size={10} className="animate-spin" /> : <Sparkles size={10} />}
+                      AI 寫描述
+                    </button>
+                  </div>
                   <textarea value={editingProduct.description || ''} onChange={e => setEditingProduct({ ...editingProduct, description: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold min-h-[100px]" />
                 </div>
                 {/* ── English Translation ── */}
@@ -3994,9 +4326,9 @@ const App: React.FC = () => {
               </div>
             </div>
             <div className="px-5 pb-5">
-              <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || (deliveryMethod === 'sf_locker' && !selectedLockerPoint) || isRedirectingToPayment} onClick={handleSubmitOrder} className="w-full py-4 bg-blue-600 text-white rounded-xl font-black text-sm shadow-lg active:scale-[0.98] transition-all disabled:opacity-30 flex items-center justify-center gap-2">
+              <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || (deliveryMethod === 'sf_locker' && !selectedLockerPoint) || isRedirectingToPayment || !!paymentModalData} onClick={handleSubmitOrder} className="w-full py-4 bg-blue-600 text-white rounded-xl font-black text-sm shadow-lg active:scale-[0.98] transition-all disabled:opacity-30 flex items-center justify-center gap-2">
                 {isRedirectingToPayment ? <RefreshCw size={16} className="animate-spin" /> : <Lock size={16} />}
-                {isRedirectingToPayment ? (lang === 'en' ? 'Redirecting...' : '轉接中...') : (lang === 'en' ? `Pay $${total}` : `支付 $${total}`)}
+                {isRedirectingToPayment ? (lang === 'en' ? 'Processing...' : '處理中...') : (lang === 'en' ? `Pay $${total}` : `支付 $${total}`)}
               </button>
             </div>
           </section>
@@ -4237,6 +4569,7 @@ const App: React.FC = () => {
                  { id: 'members', label: t.admin.members, icon: <Users size={20}/> },
                  { id: 'slideshow', label: t.admin.slideshow, icon: <ImageIcon size={20}/> },
                  { id: 'pricing', label: '價錢設定', icon: <DollarSign size={20}/> },
+                 { id: 'costs', label: '成本管理', icon: <Coins size={20}/> },
                  { id: 'language', label: '語言翻譯', icon: <Globe size={20}/> },
                  { id: 'settings', label: t.admin.settings, icon: <Settings size={20}/> }
                ].map(item => (
@@ -4255,7 +4588,7 @@ const App: React.FC = () => {
             </button>
           </aside>
           <main className="flex-1 min-w-0 p-6 md:p-10 overflow-y-auto bg-[#f8fafc] hide-scrollbar">
-            <header className="flex justify-between items-center mb-10"><div><h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: t.admin.dashboard, inventory: t.admin.inventory, orders: t.admin.orders, members: t.admin.members, slideshow: t.admin.slideshow, pricing: '價錢設定', language: '語言翻譯', settings: t.admin.settings } as Record<string, string>)[adminModule] || adminModule}</h1><p className="text-slate-400 font-bold text-sm">{t.admin.realtimeAdmin}</p></div><div className="flex items-center gap-4"><button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button><button onClick={() => showToast('帳戶功能開發中', 'error')} className="w-12 h-12 bg-slate-200 rounded-2xl border border-slate-100"></button></div></header>
+            <header className="flex justify-between items-center mb-10"><div><h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: t.admin.dashboard, inventory: t.admin.inventory, orders: t.admin.orders, members: t.admin.members, slideshow: t.admin.slideshow, pricing: '價錢設定', costs: '成本管理', language: '語言翻譯', settings: t.admin.settings } as Record<string, string>)[adminModule] || adminModule}</h1><p className="text-slate-400 font-bold text-sm">{t.admin.realtimeAdmin}</p></div><div className="flex items-center gap-4"><button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button><button onClick={() => showToast('帳戶功能開發中', 'error')} className="w-12 h-12 bg-slate-200 rounded-2xl border border-slate-100"></button></div></header>
             {renderAdminModuleContent()}
           </main>
         </>

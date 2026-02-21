@@ -200,6 +200,8 @@ ALTER TABLE public.products ADD COLUMN IF NOT EXISTS seo_description TEXT;
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS image_alt TEXT;
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS name_en TEXT;
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS description_en TEXT;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS cost_price NUMERIC;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS cost_item_ids TEXT[];
 
 -- =============================================
 -- Atomic stock decrement function (prevents overselling via race conditions)

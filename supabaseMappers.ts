@@ -33,6 +33,8 @@ export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
   imageAlt: row.image_alt ?? undefined,
   nameEn: row.name_en ?? undefined,
   descriptionEn: row.description_en ?? undefined,
+  costPrice: row.cost_price ?? undefined,
+  costItemIds: row.cost_item_ids ?? undefined,
 });
 
 export const mapProductToRow = (product: Product): SupabaseProductRow => ({
@@ -56,6 +58,8 @@ export const mapProductToRow = (product: Product): SupabaseProductRow => ({
   image_alt: product.imageAlt ?? null,
   name_en: product.nameEn ?? null,
   description_en: product.descriptionEn ?? null,
+  cost_price: product.costPrice ?? null,
+  cost_item_ids: product.costItemIds ?? null,
 });
 
 export const mapCategoryRowToCategory = (row: SupabaseCategoryRow): Category => ({

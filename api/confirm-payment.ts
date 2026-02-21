@@ -3,6 +3,7 @@
  * 若 payment_intent_id 為空但有 orderId，仍會更新 Supabase 狀態（供 Sandbox 測試）
  */
 import { createClient } from '@supabase/supabase-js';
+import { sendWhatsAppMessage } from './send-whatsapp';
 
 const AIRWALLEX_DEMO = 'https://api-demo.airwallex.com';
 const AIRWALLEX_PROD = 'https://api.airwallex.com';
@@ -168,7 +169,64 @@ export default async function handler(
     const effectiveOrder = updatedRow ?? orderRow;
     console.log('[confirm-payment] Status updated to paid:', effectiveOrder.status);
 
-    // SF API 已解耦：不再自動呼叫順豐，後台流程為 paid → 截單(processing) → 呼叫順豐(ready_for_pickup)
+    // WhatsApp notification (fire-and-forget, never blocks the response)
+    try {
+      const { data: fullOrder } = await supabaseAdmin
+        .from('orders')
+        .select('id,customer_name,customer_phone,total,subtotal,delivery_fee,line_items,delivery_method,delivery_address,delivery_district,contact_name')
+        .eq('id', updateId)
+        .maybeSingle();
+
+      if (fullOrder?.customer_phone) {
+        const oid = orderId || `ORD-${fullOrder.id}`;
+        const items = Array.isArray(fullOrder.line_items) ? fullOrder.line_items : [];
+        const itemLines = items.map((li: any) => `  - ${li.name} x${li.qty}  $${li.line_total}`).join('\n');
+        const deliveryLabel = fullOrder.delivery_method === 'sf_locker' ? '順豐冷運自提' : '送貨上門';
+
+        // Fetch brand name from site_config
+        let brandName = 'Coolfood';
+        try {
+          const { data: brandCfg } = await supabaseAdmin
+            .from('site_config')
+            .select('value')
+            .eq('id', 'site_branding')
+            .maybeSingle();
+          if (brandCfg?.value?.logoText) brandName = brandCfg.value.logoText;
+        } catch { /* use default */ }
+
+        const message =
+          `你好！${brandName} 已收到你嘅訂單 ${oid} 🎉\n\n` +
+          `📦 商品：\n${itemLines}\n\n` +
+          `💰 小計：$${fullOrder.subtotal ?? fullOrder.total}\n` +
+          (fullOrder.delivery_fee ? `🚚 運費：$${fullOrder.delivery_fee}\n` : '') +
+          `💵 合計：$${fullOrder.total}\n` +
+          `📍 配送：${deliveryLabel}\n` +
+          (fullOrder.delivery_address ? `📮 地址：${fullOrder.delivery_district ? fullOrder.delivery_district + ' ' : ''}${fullOrder.delivery_address}\n` : '') +
+          `\n有任何問題可以隨時搵我哋。感謝支持！😊`;
+
+        const waResult = await sendWhatsAppMessage(fullOrder.customer_phone, message);
+
+        // Log to notification_logs
+        await supabaseAdmin.from('notification_logs').insert({
+          order_id: oid,
+          phone_number: fullOrder.customer_phone,
+          status_type: 'paid',
+          content: message,
+          provider: 'ULTRAMSG',
+          delivery_status: waResult.success ? 'SENT' : 'FAILED',
+          created_at: new Date().toISOString(),
+        }).then(({ error: logErr }) => {
+          if (logErr) console.warn('[confirm-payment] notification_logs write failed:', logErr.message);
+        });
+
+        console.log(`[confirm-payment] WhatsApp ${waResult.success ? 'sent' : 'failed'} to ${fullOrder.customer_phone}`);
+      } else {
+        console.log('[confirm-payment] No customer_phone, skip WhatsApp');
+      }
+    } catch (waErr) {
+      console.error('[confirm-payment] WhatsApp notification error (non-blocking):', waErr instanceof Error ? waErr.message : waErr);
+    }
+
     return res.status(200).json({
       success: true,
       orderId,
