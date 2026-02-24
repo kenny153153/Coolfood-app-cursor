@@ -10,12 +10,13 @@ import {
   Check, Filter, List, Video, FileText, ChevronUp, ChevronDown, GripVertical,
   Printer, ExternalLink, Calendar, Hash, UserCheck, CreditCard as CardIcon,
   Award, Smartphone, Mail, Save, PlusCircle, Map, Download, Upload, Zap,
-  Layers, Percent, Globe, Crosshair, Scissors, Phone, Square, CheckSquare, Coins
+  Layers, Percent, Globe, Crosshair, Scissors, Phone, Square, CheckSquare, Coins,
+  UtensilsCrossed, Play, CookingPot
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
-import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem } from './types';
+import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory } from './types';
 import { useI18n, Language } from './i18n';
 import { supabase } from './supabaseClient';
 import {
@@ -28,7 +29,10 @@ import {
   mapUserToMemberRow,
   mapSlideshowRowToItem,
   mapSlideshowItemToRow,
-  normalizeOrderStatus
+  normalizeOrderStatus,
+  mapRecipeRowToRecipe,
+  mapRecipeToRow,
+  mapRecipeCategoryRow
 } from './supabaseMappers';
 import { hashPassword, verifyPassword } from './authHelpers';
 import { uploadImage, uploadImages, deleteImage, isMediaUrl } from './imageUpload';
@@ -486,7 +490,7 @@ const App: React.FC = () => {
     () => (typeof window !== 'undefined' && (window.location.pathname === '/success' || window.location.hash === '#success') ? 'success' : 'store')
   );
   const [isRedirectingToPayment, setIsRedirectingToPayment] = useState(false);
-  const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'pricing' | 'costs' | 'language' | 'settings'>('dashboard');
+  const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'pricing' | 'costs' | 'language' | 'recipes' | 'settings'>('dashboard');
   const [inventorySubTab, setInventorySubTab] = useState<'products' | 'categories' | 'rules'>('products');
   const [ordersStatusFilter, setOrdersStatusFilter] = useState<'all' | OrderStatus>('all');
   const [isAdminSidebarOpen, setIsAdminSidebarOpen] = useState(false);
@@ -539,6 +543,19 @@ const App: React.FC = () => {
   };
   const [shippingConfigs, setShippingConfigs] = useState<Record<string, ShippingConfig>>(SHIPPING_FALLBACKS);
   const [upsellProductIds, setUpsellProductIds] = useState<string[]>([]);
+  
+  // ── 食譜系統 ──
+  const [recipes, setRecipes] = useState<StandaloneRecipe[]>([]);
+  const [recipeCategories, setRecipeCategories] = useState<RecipeCategory[]>([]);
+  const [editingRecipe, setEditingRecipe] = useState<StandaloneRecipe | null>(null);
+  const [editingRecipeCategory, setEditingRecipeCategory] = useState<RecipeCategory | null>(null);
+  const [storeMode, setStoreMode] = useState<'shop' | 'recipes'>('shop');
+  const [selectedRecipe, setSelectedRecipe] = useState<StandaloneRecipe | null>(null);
+  const [recipeProductExpanded, setRecipeProductExpanded] = useState<string | null>(null);
+  const [recipeCategoryFilter, setRecipeCategoryFilter] = useState<string[]>([]);
+  const [recipeAdminSubTab, setRecipeAdminSubTab] = useState<'recipes' | 'categories'>('recipes');
+  const [recipeProductSearch, setRecipeProductSearch] = useState('');
+  const [aiRecipeLoading, setAiRecipeLoading] = useState(false);
   const [selectedLockerDistrict, setSelectedLockerDistrict] = useState('');
   const [selectedLockerCode, setSelectedLockerCode] = useState('');
   const lockerPointsForDistrict = useMemo(() => getPointsByDistrict(selectedLockerDistrict), [selectedLockerDistrict]);
@@ -639,6 +656,23 @@ const App: React.FC = () => {
         if (orderId) {
           setHighlightOrderId(orderId);
           setToast({ message: '多謝惠顧', type: 'success' });
+        }
+      }
+      // /recipes route: switch to recipes view
+      if (path === '/recipes' || path.startsWith('/recipes/')) {
+        setView('store');
+        setStoreMode('recipes');
+        const recipeIdMatch = path.match(/^\/recipes\/(.+)$/);
+        if (recipeIdMatch) {
+          const rid = recipeIdMatch[1];
+          // Will be resolved after recipes load
+          setTimeout(() => {
+            setRecipes(prev => {
+              const found = prev.find(r => r.id === rid);
+              if (found) setSelectedRecipe(found);
+              return prev;
+            });
+          }, 500);
         }
       }
     };
@@ -746,6 +780,67 @@ const App: React.FC = () => {
     return () => { const el = document.getElementById('ld-json-product'); if (el) el.remove(); };
   }, [selectedProduct, siteConfig.logoText]);
 
+  // Recipe-level JSON-LD for Google rich results + URL management
+  useEffect(() => {
+    const existingEl = document.getElementById('ld-json-recipe');
+    if (!selectedRecipe) {
+      if (existingEl) existingEl.remove();
+      return;
+    }
+    // Update URL to /recipes/:id without reloading
+    const recipeUrl = `/recipes/${selectedRecipe.id}`;
+    if (window.location.pathname !== recipeUrl) {
+      window.history.pushState({}, '', recipeUrl);
+    }
+    document.title = `${selectedRecipe.title} | ${t.recipes.recipes} | ${siteConfig.logoText}`;
+    const ld: Record<string, unknown> = {
+      '@context': 'https://schema.org',
+      '@type': 'Recipe',
+      name: selectedRecipe.title,
+      description: selectedRecipe.description || selectedRecipe.title,
+      image: selectedRecipe.mediaUrl && isMediaUrl(selectedRecipe.mediaUrl) ? selectedRecipe.mediaUrl : undefined,
+      cookTime: selectedRecipe.cookingTime > 0 ? `PT${selectedRecipe.cookingTime}M` : undefined,
+      recipeIngredient: [
+        ...selectedRecipe.linkedProductIds.map(pid => products.find(x => x.id === pid)?.name).filter(Boolean),
+        ...selectedRecipe.ingredientsRaw.map(i => `${i.name} ${i.amount}`.trim()),
+      ],
+      recipeInstructions: selectedRecipe.steps.sort((a, b) => a.order - b.order).map(s => ({
+        '@type': 'HowToStep',
+        text: s.content,
+      })),
+      keywords: selectedRecipe.tags.join(', '),
+    };
+    if (existingEl) {
+      existingEl.textContent = JSON.stringify(ld);
+    } else {
+      const script = document.createElement('script');
+      script.type = 'application/ld+json';
+      script.id = 'ld-json-recipe';
+      script.textContent = JSON.stringify(ld);
+      document.head.appendChild(script);
+    }
+    return () => {
+      const el = document.getElementById('ld-json-recipe');
+      if (el) el.remove();
+      // Restore URL when modal closes
+      if (window.location.pathname.startsWith('/recipes/')) {
+        window.history.pushState({}, '', '/');
+        document.title = `${siteConfig.logoText} | 香港冷凍肉專門店`;
+      }
+    };
+  }, [selectedRecipe, siteConfig.logoText, products, t.recipes.recipes]);
+
+  // Update URL when switching to/from recipes mode
+  useEffect(() => {
+    if (storeMode === 'recipes' && window.location.pathname !== '/recipes') {
+      window.history.pushState({}, '', '/recipes');
+      document.title = `${t.recipes.title} | ${siteConfig.logoText}`;
+    } else if (storeMode === 'shop' && window.location.pathname === '/recipes') {
+      window.history.pushState({}, '', '/');
+      document.title = `${siteConfig.logoText} | 香港冷凍肉專門店`;
+    }
+  }, [storeMode, siteConfig.logoText, t.recipes.title]);
+
   // Load core data from Supabase on mount
   useEffect(() => {
     const loadCoreData = async () => {
@@ -804,6 +899,30 @@ const App: React.FC = () => {
         }
       } catch {
         console.warn('[shipping/upsell] Failed to load, using fallback values');
+      }
+
+      // ── 載入食譜資料 ──
+      try {
+        const [recipesRes, linksRes, rcRes] = await Promise.all([
+          supabase.from('recipes').select('*').order('created_at', { ascending: false }),
+          supabase.from('recipe_product_links').select('*'),
+          supabase.from('recipe_categories').select('*').order('sort_order', { ascending: true }),
+        ]);
+        if (!recipesRes.error && recipesRes.data) {
+          const linksMap: Record<string, string[]> = {};
+          if (!linksRes.error && linksRes.data) {
+            linksRes.data.forEach((link: { recipe_id: string; product_id: string }) => {
+              if (!linksMap[link.recipe_id]) linksMap[link.recipe_id] = [];
+              linksMap[link.recipe_id].push(link.product_id);
+            });
+          }
+          setRecipes(recipesRes.data.map((row: SupabaseRecipeRow) => mapRecipeRowToRecipe(row, linksMap[row.id] || [])));
+        }
+        if (!rcRes.error && rcRes.data) {
+          setRecipeCategories(rcRes.data.map(mapRecipeCategoryRow));
+        }
+      } catch {
+        console.warn('[recipes] Failed to load');
       }
 
       // ── 載入 site_config（定價規則、品牌設定、成本項目）──
@@ -1389,6 +1508,145 @@ const App: React.FC = () => {
     }
     setCategories(prev => prev.filter(c => c.id !== categoryId));
     showToast('分類已刪除');
+  };
+
+  // ── 食譜 CRUD ──
+  const upsertRecipe = async (recipe: StandaloneRecipe) => {
+    const row = mapRecipeToRow(recipe);
+    const { data, error } = await supabase
+      .from('recipes')
+      .upsert(row)
+      .select()
+      .single();
+    if (error || !data) {
+      showToast(error?.message || t.recipes.recipeSaveFailed, 'error');
+      return;
+    }
+    // Sync recipe_product_links
+    await supabase.from('recipe_product_links').delete().eq('recipe_id', recipe.id);
+    if (recipe.linkedProductIds.length > 0) {
+      await supabase.from('recipe_product_links').insert(
+        recipe.linkedProductIds.map(pid => ({ recipe_id: recipe.id, product_id: pid }))
+      );
+    }
+    const mapped = mapRecipeRowToRecipe(data as SupabaseRecipeRow, recipe.linkedProductIds);
+    setRecipes(prev => {
+      const idx = prev.findIndex(r => r.id === mapped.id);
+      if (idx === -1) return [mapped, ...prev];
+      const next = [...prev];
+      next[idx] = mapped;
+      return next;
+    });
+    showToast(t.recipes.recipeSaved);
+  };
+
+  const deleteRecipe = async (recipeId: string) => {
+    const { error } = await supabase.from('recipes').delete().eq('id', recipeId);
+    if (error) {
+      showToast(error.message || t.recipes.recipeDeleteFailed, 'error');
+      return;
+    }
+    setRecipes(prev => prev.filter(r => r.id !== recipeId));
+    showToast(t.recipes.recipeDeleted);
+  };
+
+  const getRecipesForProduct = useCallback((productId: string): StandaloneRecipe[] => {
+    return recipes.filter(r => r.linkedProductIds.includes(productId));
+  }, [recipes]);
+
+  const newEmptyRecipe = (): StandaloneRecipe => ({
+    id: crypto.randomUUID(),
+    title: '',
+    description: '',
+    mediaUrl: '',
+    mediaType: 'image',
+    cookingTime: 0,
+    servingSize: '1-2人份',
+    tags: [],
+    categoryIds: [],
+    ingredientsRaw: [],
+    steps: [{ order: 1, content: '' }],
+    linkedProductIds: [],
+  });
+
+  const COMMON_INGREDIENTS = ['薑', '蔥', '蒜', '洋蔥', '豉油', '蠔油', '生粉', '油', '糖', '鹽', '白胡椒', '黑胡椒', '雞粉', '料酒', '醋', '麻油'];
+  const SERVING_SIZES = ['1-2人份', '3-4人份', '5-6人份', '7-8人份'];
+
+  const upsertRecipeCategory = async (cat: RecipeCategory) => {
+    const { data, error } = await supabase
+      .from('recipe_categories')
+      .upsert({ id: cat.id, name: cat.name, icon: cat.icon, sort_order: cat.sortOrder })
+      .select()
+      .single();
+    if (error || !data) { showToast(error?.message || '分類保存失敗', 'error'); return; }
+    const mapped = mapRecipeCategoryRow(data);
+    setRecipeCategories(prev => {
+      const idx = prev.findIndex(c => c.id === mapped.id);
+      if (idx === -1) return [...prev, mapped].sort((a, b) => a.sortOrder - b.sortOrder);
+      const next = [...prev]; next[idx] = mapped; return next;
+    });
+    showToast('食譜分類已保存');
+  };
+
+  const deleteRecipeCategory = async (catId: string) => {
+    const { error } = await supabase.from('recipe_categories').delete().eq('id', catId);
+    if (error) { showToast(error.message || '分類刪除失敗', 'error'); return; }
+    setRecipeCategories(prev => prev.filter(c => c.id !== catId));
+    showToast('食譜分類已刪除');
+  };
+
+  const generateAiRecipe = async (recipe: StandaloneRecipe) => {
+    const title = recipe.title.trim();
+    const linkedNames = recipe.linkedProductIds.map(pid => products.find(x => x.id === pid)?.name).filter(Boolean);
+    if (!title && linkedNames.length === 0) { showToast('請先輸入食譜名稱或選擇關聯產品', 'error'); return; }
+    setAiRecipeLoading(true);
+    try {
+      const context = title
+        ? `食譜名稱：${title}${linkedNames.length > 0 ? `\n主要食材：${linkedNames.join('、')}` : ''}`
+        : `主要食材：${linkedNames.join('、')}`;
+      const prompt = `你是一個專業廚師。根據以下資訊生成一個完整的中式家常菜食譜。回覆嚴格 JSON 格式（不要 markdown），欄位如下：
+{
+  "title": "食譜名稱",
+  "description": "一句話簡介",
+  "cooking_time": 數字(分鐘),
+  "serving_size": "1-2人份 或 3-4人份",
+  "ingredients": [{"name":"食材名","amount":"份量"}],
+  "steps": [{"order":1,"content":"步驟描述"}]
+}
+
+${context}
+
+要求：
+- 繁體中文
+- 食材份量要具體（例如「2片」「1湯匙」）
+- 步驟要詳細實用（4-6步）
+- 如已有食譜名稱就用該名稱，否則根據食材起一個吸引的名稱`;
+      const geminiKey = (import.meta.env.VITE_GEMINI_API_KEY as string) || process.env.GEMINI_API_KEY || process.env.API_KEY || '';
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.7 } }),
+      });
+      if (!response.ok) throw new Error('API error');
+      const data = await response.json();
+      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('Invalid JSON');
+      const parsed = JSON.parse(jsonMatch[0]);
+      const updated: StandaloneRecipe = {
+        ...recipe,
+        title: parsed.title || recipe.title,
+        description: parsed.description || recipe.description,
+        cookingTime: parsed.cooking_time || recipe.cookingTime,
+        servingSize: parsed.serving_size || recipe.servingSize,
+        ingredientsRaw: Array.isArray(parsed.ingredients) ? parsed.ingredients : recipe.ingredientsRaw,
+        steps: Array.isArray(parsed.steps) ? parsed.steps : recipe.steps,
+      };
+      setEditingRecipe(updated);
+      showToast('AI 已生成食譜內容');
+    } catch {
+      showToast('AI 生成失敗，請稍後重試', 'error');
+    }
+    setAiRecipeLoading(false);
   };
 
   const upsertSlideshowItem = async (item: SlideshowItem) => {
@@ -3292,6 +3550,193 @@ const App: React.FC = () => {
             </div>
           </div>
         );
+      case 'recipes':
+        return (
+          <div className="space-y-6 animate-fade-in">
+            {/* Sub-tabs */}
+            <div className="flex gap-2">
+              {[
+                { id: 'recipes' as const, label: '食譜列表', icon: <BookOpen size={16}/> },
+                { id: 'categories' as const, label: '食譜分類', icon: <Layers size={16}/> },
+              ].map(tab => (
+                <button key={tab.id} onClick={() => setRecipeAdminSubTab(tab.id)} className={`px-5 py-3 rounded-2xl text-xs font-black flex items-center gap-2 transition-all ${recipeAdminSubTab === tab.id ? 'bg-slate-900 text-white shadow-lg' : 'bg-white border border-slate-100 text-slate-400'}`}>
+                  {tab.icon} {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {recipeAdminSubTab === 'recipes' ? (
+            <>
+              <div className="flex justify-between items-center gap-3 flex-wrap">
+                <p className="text-slate-400 font-bold text-sm">{recipes.length} 個食譜</p>
+                <div className="flex gap-2">
+                  <button disabled={aiRecipeLoading} onClick={async () => {
+                    setAiRecipeLoading(true);
+                    try {
+                      const prompt = `你是一個專業中式家常菜廚師。請生成 6 個適合香港家庭的食譜（繁體中文）。
+回覆嚴格 JSON 陣列格式（不要 markdown wrapper），每個元素包含：
+{
+  "title": "食譜名稱",
+  "description": "一句話簡介",
+  "cooking_time": 數字(分鐘),
+  "serving_size": "1-2人份 或 3-4人份",
+  "category_ids": ["從以下選：${recipeCategories.map(c => c.id).join(', ')}"],
+  "ingredients": [{"name":"食材名","amount":"份量"}],
+  "steps": [{"order":1,"content":"步驟描述"}]
+}
+
+要求：
+- 多樣化：包含快炒、燉煮、意粉、氣炸鍋等不同類型
+- 每個食譜 4-6 個步驟
+- 食材份量要具體
+- 不要使用特殊/難買的食材`;
+                      const geminiKey = (import.meta.env.VITE_GEMINI_API_KEY as string) || process.env.GEMINI_API_KEY || process.env.API_KEY || '';
+                      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.8 } }),
+                      });
+                      if (!response.ok) throw new Error('API error');
+                      const data = await response.json();
+                      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                      const jsonMatch = rawText.match(/\[[\s\S]*\]/);
+                      if (!jsonMatch) throw new Error('Invalid JSON');
+                      const parsed = JSON.parse(jsonMatch[0]) as any[];
+                      let count = 0;
+                      for (const r of parsed) {
+                        const recipe: StandaloneRecipe = {
+                          id: crypto.randomUUID(),
+                          title: r.title || '',
+                          description: r.description || '',
+                          mediaUrl: '',
+                          mediaType: 'image',
+                          cookingTime: r.cooking_time || 0,
+                          servingSize: r.serving_size || '1-2人份',
+                          tags: [],
+                          categoryIds: Array.isArray(r.category_ids) ? r.category_ids.filter((c: string) => recipeCategories.some(rc => rc.id === c)) : [],
+                          ingredientsRaw: Array.isArray(r.ingredients) ? r.ingredients : [],
+                          steps: Array.isArray(r.steps) ? r.steps : [],
+                          linkedProductIds: [],
+                        };
+                        if (recipe.title) {
+                          await upsertRecipe(recipe);
+                          count++;
+                        }
+                      }
+                      showToast(`AI 已生成 ${count} 個食譜`);
+                    } catch (err) {
+                      showToast('AI 生成失敗，請稍後重試', 'error');
+                    }
+                    setAiRecipeLoading(false);
+                  }} className="px-5 py-3 bg-purple-50 text-purple-600 border border-purple-200 rounded-2xl font-black text-xs flex items-center gap-2 hover:bg-purple-100 transition-all disabled:opacity-50">
+                    {aiRecipeLoading ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                    AI 批量生成食譜
+                  </button>
+                  <button onClick={() => setEditingRecipe(newEmptyRecipe())} className="px-5 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl active:scale-95 transition-all">
+                    <Plus size={16}/> {t.recipes.addRecipe}
+                  </button>
+                </div>
+              </div>
+              {recipes.length === 0 && (
+                <div className="bg-white p-12 rounded-[3rem] border border-slate-100 shadow-sm text-center text-slate-400 font-bold">{t.recipes.noRecipes}</div>
+              )}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {recipes.map(r => (
+                  <div key={r.id} className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden hover:shadow-md transition-all group cursor-pointer" onClick={() => setEditingRecipe(r)}>
+                    {r.mediaUrl && isMediaUrl(r.mediaUrl) && (
+                      <div className="aspect-video bg-slate-100 overflow-hidden">
+                        {r.mediaType === 'video' ? (
+                          <video src={r.mediaUrl} className="w-full h-full object-cover" muted />
+                        ) : (
+                          <img src={r.mediaUrl} alt={r.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                        )}
+                      </div>
+                    )}
+                    <div className="p-5 space-y-2">
+                      <h4 className="font-black text-slate-900 text-base">{r.title || '（未命名）'}</h4>
+                      {r.description && <p className="text-xs text-slate-400 font-medium line-clamp-2">{r.description}</p>}
+                      <div className="flex flex-wrap gap-1.5">
+                        {r.cookingTime > 0 && <span className="px-2 py-0.5 bg-amber-50 text-amber-600 rounded-lg text-[9px] font-black border border-amber-100"><Clock size={9} className="inline mr-0.5" />{r.cookingTime}{t.recipes.minutes}</span>}
+                        {r.categoryIds.map(cid => { const c = recipeCategories.find(x => x.id === cid); return c ? <span key={cid} className="px-2 py-0.5 bg-amber-50 text-amber-700 rounded-lg text-[9px] font-black border border-amber-100">{c.icon} {c.name}</span> : null; })}
+                        {r.tags.map(tag => <span key={tag} className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-lg text-[9px] font-black border border-blue-100">{tag}</span>)}
+                      </div>
+                      <div className="flex items-center gap-2 text-[10px] text-slate-400 font-bold pt-1">
+                        <span>{r.linkedProductIds.length} 關聯產品</span>
+                        <span>·</span>
+                        <span>{r.steps.length} 步驟</span>
+                        <span>·</span>
+                        <span>{r.servingSize}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+            ) : (
+            /* ── Recipe Categories sub-tab ── */
+            <div className="space-y-6">
+              <div className="flex justify-between items-center">
+                <p className="text-slate-400 font-bold text-sm">{recipeCategories.length} 個食譜分類</p>
+                <button onClick={() => setEditingRecipeCategory({ id: '', name: '', icon: '📁', sortOrder: recipeCategories.length })} className="px-5 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl active:scale-95 transition-all">
+                  <Plus size={16}/> 新增分類
+                </button>
+              </div>
+              {recipeCategories.length === 0 && (
+                <div className="bg-white p-12 rounded-[3rem] border border-slate-100 shadow-sm text-center text-slate-400 font-bold">尚未有食譜分類</div>
+              )}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {recipeCategories.map(cat => (
+                  <div key={cat.id} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between hover:shadow-md transition-all">
+                    <div className="flex items-center gap-3">
+                      <span className="text-2xl">{cat.icon}</span>
+                      <div>
+                        <p className="font-black text-slate-900">{cat.name}</p>
+                        <p className="text-[10px] text-slate-400 font-bold">ID: {cat.id} · 排序: {cat.sortOrder}</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={() => setEditingRecipeCategory(cat)} className="p-2 bg-slate-50 rounded-xl text-slate-400 hover:text-blue-600"><Edit size={16} /></button>
+                      <button onClick={() => setConfirmation({ title: '刪除分類', message: `確定刪除「${cat.name}」？`, onConfirm: () => deleteRecipeCategory(cat.id) })} className="p-2 bg-slate-50 rounded-xl text-slate-400 hover:text-rose-600"><Trash2 size={16} /></button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Recipe Category Editor inline */}
+              {editingRecipeCategory && (
+                <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm space-y-4">
+                  <h4 className="font-black text-slate-900">{editingRecipeCategory.id ? '編輯分類' : '新增分類'}</h4>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-400 uppercase">分類 ID</label>
+                      <input value={editingRecipeCategory.id} onChange={e => setEditingRecipeCategory({ ...editingRecipeCategory, id: e.target.value.toLowerCase().replace(/\s+/g, '-') })} className="w-full p-2.5 bg-slate-50 rounded-xl font-bold text-xs" placeholder="例如：airfryer" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-400 uppercase">名稱</label>
+                      <input value={editingRecipeCategory.name} onChange={e => setEditingRecipeCategory({ ...editingRecipeCategory, name: e.target.value })} className="w-full p-2.5 bg-slate-50 rounded-xl font-bold text-xs" placeholder="例如：氣炸鍋" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-400 uppercase">圖示</label>
+                      <input value={editingRecipeCategory.icon} onChange={e => setEditingRecipeCategory({ ...editingRecipeCategory, icon: e.target.value })} className="w-full p-2.5 bg-slate-50 rounded-xl font-bold text-xs" placeholder="🍟" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-400 uppercase">排序</label>
+                      <input type="number" value={editingRecipeCategory.sortOrder} onChange={e => setEditingRecipeCategory({ ...editingRecipeCategory, sortOrder: Number(e.target.value) || 0 })} className="w-full p-2.5 bg-slate-50 rounded-xl font-bold text-xs" />
+                    </div>
+                  </div>
+                  <div className="flex gap-3 justify-end">
+                    <button onClick={() => setEditingRecipeCategory(null)} className="px-5 py-2 bg-white border border-slate-200 rounded-xl font-black text-xs">取消</button>
+                    <button onClick={() => {
+                      if (!editingRecipeCategory.id.trim() || !editingRecipeCategory.name.trim()) { showToast('請輸入 ID 和名稱', 'error'); return; }
+                      upsertRecipeCategory(editingRecipeCategory);
+                      setEditingRecipeCategory(null);
+                    }} className="px-5 py-2 bg-slate-900 text-white rounded-xl font-black text-xs">保存</button>
+                  </div>
+                </div>
+              )}
+            </div>
+            )}
+          </div>
+        );
       default: return null;
     }
   };
@@ -3370,21 +3815,359 @@ const App: React.FC = () => {
              {(pDesc(selectedProduct)) && (
                <p className="text-sm text-slate-600 font-medium leading-relaxed">{pDesc(selectedProduct)}</p>
              )}
-             {selectedProduct.recipes && selectedProduct.recipes.length > 0 && (
-               <div className="space-y-2">
-                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5"><BookOpen size={12} /> 推薦食譜</p>
-                 {selectedProduct.recipes.map((recipe, ri) => (
-                   <div key={ri} className="p-3 bg-blue-50/50 rounded-xl border border-blue-100/50">
-                     <p className="text-xs font-black text-slate-700">{recipe.title}</p>
-                     {recipe.ingredients.length > 0 && <p className="text-[10px] text-slate-400 font-bold mt-1">材料：{recipe.ingredients.join('、')}</p>}
-                   </div>
-                 ))}
-               </div>
-             )}
+             {/* Standalone recipes linked to this product (bidirectional) */}
+             {(() => {
+               const linkedRecipes = getRecipesForProduct(selectedProduct.id);
+               if (linkedRecipes.length === 0) return null;
+               return (
+                 <div className="space-y-2">
+                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5"><BookOpen size={12} /> {t.recipes.recommendedRecipes}</p>
+                   {linkedRecipes.map(r => (
+                     <button key={r.id} onClick={() => { setSelectedProduct(null); setSelectedRecipe(r); }} className="w-full p-3 bg-amber-50/50 rounded-xl border border-amber-100/50 text-left hover:bg-amber-50 transition-all">
+                       <div className="flex items-center gap-3">
+                         {r.mediaUrl && isMediaUrl(r.mediaUrl) ? (
+                           <img src={r.mediaUrl} alt={r.title} className="w-10 h-10 rounded-lg object-cover flex-shrink-0" />
+                         ) : (
+                           <div className="w-10 h-10 bg-amber-100 rounded-lg flex items-center justify-center flex-shrink-0"><BookOpen size={16} className="text-amber-600" /></div>
+                         )}
+                         <div className="min-w-0 flex-1">
+                           <p className="text-xs font-black text-slate-700 truncate">{r.title}</p>
+                           <div className="flex gap-1.5 mt-0.5">
+                             {r.cookingTime > 0 && <span className="text-[9px] text-amber-600 font-bold"><Clock size={8} className="inline mr-0.5" />{r.cookingTime}{t.recipes.minutes}</span>}
+                             {r.tags.slice(0, 2).map(tag => <span key={tag} className="text-[9px] text-blue-500 font-bold">{tag}</span>)}
+                           </div>
+                         </div>
+                         <ChevronRight size={14} className="text-slate-300 flex-shrink-0" />
+                       </div>
+                     </button>
+                   ))}
+                 </div>
+               );
+             })()}
              <div className="flex items-center justify-between p-6 bg-slate-900 text-white rounded-[2.5rem] shadow-xl">
                <div><p className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1">精選價</p><p className="text-3xl font-black">${getPrice(selectedProduct)}</p>{getPrice(selectedProduct) < selectedProduct.price && <p className="text-xs text-white/40 line-through">${selectedProduct.price}</p>}</div>
                <button onClick={() => { updateCart(selectedProduct, 1); setSelectedProduct(null); showToast('已加入購物車'); }} className={`${accentClass} text-white px-10 py-5 rounded-[1.5rem] font-black text-sm shadow-2xl active:scale-95 transition-all`}>立即選購</button>
              </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Recipe Editor Modal (Admin) ── */}
+      {editingRecipe && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[6000] flex items-center justify-center p-6 animate-fade-in">
+          <div className="bg-white w-full max-w-3xl rounded-[3rem] shadow-2xl overflow-hidden flex flex-col max-h-[95vh] animate-scale-up">
+            <div className="p-8 border-b border-slate-50 flex justify-between items-center bg-slate-900 text-white">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center"><BookOpen size={22}/></div>
+                <div>
+                  <h4 className="text-2xl font-black tracking-tight">{editingRecipe.title || t.recipes.editRecipe}</h4>
+                  <p className="text-[10px] font-bold text-white/40 uppercase tracking-[0.2em]">{editingRecipe.id.slice(0, 8)}</p>
+                </div>
+              </div>
+              <button onClick={() => setEditingRecipe(null)} className="p-3 bg-white/10 rounded-full hover:bg-white/20 transition-all text-white"><X size={20}/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-10 space-y-6 hide-scrollbar">
+              {/* Title + AI generate button */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{t.recipes.recipeTitle}</label>
+                <div className="flex gap-2">
+                  <input value={editingRecipe.title} onChange={e => setEditingRecipe({ ...editingRecipe, title: e.target.value })} className="flex-1 p-3 bg-slate-50 rounded-2xl font-bold" placeholder="例如：氣炸鍋牛扒" />
+                  <button type="button" disabled={aiRecipeLoading} onClick={() => generateAiRecipe(editingRecipe)} className="px-4 py-3 bg-purple-50 text-purple-600 rounded-2xl font-black text-xs hover:bg-purple-100 transition-all disabled:opacity-50 flex items-center gap-1.5 flex-shrink-0">
+                    {aiRecipeLoading ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                    AI 寫食譜
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{t.recipes.description}</label>
+                <textarea value={editingRecipe.description} onChange={e => setEditingRecipe({ ...editingRecipe, description: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold min-h-[60px]" placeholder="簡短介紹這道菜..." />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Media: upload + URL */}
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">封面圖片 / 影片</label>
+                  <div className="flex items-start gap-4">
+                    <label className={`relative flex-shrink-0 w-28 h-28 rounded-2xl border-2 border-dashed ${imageUploading === `recipe-${editingRecipe.id}` ? 'border-blue-400 bg-blue-50' : 'border-slate-200 bg-slate-50'} flex items-center justify-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-all overflow-hidden group`}>
+                      {imageUploading === `recipe-${editingRecipe.id}` ? (
+                        <RefreshCw size={22} className="text-blue-500 animate-spin" />
+                      ) : editingRecipe.mediaUrl && isMediaUrl(editingRecipe.mediaUrl) ? (
+                        <img src={editingRecipe.mediaUrl} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="text-center"><Upload size={20} className="mx-auto text-slate-300 mb-1" /><span className="text-[9px] text-slate-400 font-bold">上傳圖片</span></div>
+                      )}
+                      {editingRecipe.mediaUrl && isMediaUrl(editingRecipe.mediaUrl) && <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"><Upload size={18} className="text-white" /></div>}
+                      <input type="file" accept="image/*" className="hidden" onChange={e => handleImageUpload(e.target.files, `recipes/${editingRecipe.id}`, async ([url]) => { if (isMediaUrl(editingRecipe.mediaUrl)) await deleteImage(editingRecipe.mediaUrl); setEditingRecipe({ ...editingRecipe, mediaUrl: url, mediaType: 'image' }); }, { uploadKey: `recipe-${editingRecipe.id}` })} />
+                    </label>
+                    <div className="flex-1 space-y-2">
+                      <input value={editingRecipe.mediaUrl} onChange={e => setEditingRecipe({ ...editingRecipe, mediaUrl: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-xs" placeholder="或貼上圖片 / 影片 / YouTube URL" />
+                      <select value={editingRecipe.mediaType} onChange={e => setEditingRecipe({ ...editingRecipe, mediaType: e.target.value as 'image' | 'video' })} className="w-full p-2 bg-slate-50 rounded-xl font-bold text-xs">
+                        <option value="image">{t.recipes.image}</option>
+                        <option value="video">{t.recipes.video}</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{t.recipes.cookingTime} ({t.recipes.minutes})</label>
+                  <input type="number" min="0" value={editingRecipe.cookingTime || ''} onChange={e => setEditingRecipe({ ...editingRecipe, cookingTime: Number(e.target.value) || 0 })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" placeholder="15" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">份量</label>
+                  <select value={editingRecipe.servingSize} onChange={e => setEditingRecipe({ ...editingRecipe, servingSize: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold">
+                    {SERVING_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+
+                {/* Recipe categories */}
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">食譜分類</label>
+                  <div className="flex flex-wrap gap-2">
+                    {recipeCategories.map(cat => {
+                      const isSelected = editingRecipe.categoryIds.includes(cat.id);
+                      return (
+                        <button key={cat.id} type="button" onClick={() => {
+                          const next = isSelected ? editingRecipe.categoryIds.filter(c => c !== cat.id) : [...editingRecipe.categoryIds, cat.id];
+                          setEditingRecipe({ ...editingRecipe, categoryIds: next });
+                        }} className={`px-3 py-1.5 rounded-xl text-xs font-black border transition-all ${isSelected ? 'bg-amber-500 text-white border-amber-500 shadow-md' : 'bg-slate-50 text-slate-500 border-slate-200 hover:border-amber-300'}`}>
+                          {cat.icon} {cat.name}
+                        </button>
+                      );
+                    })}
+                    {recipeCategories.length === 0 && <p className="text-[9px] text-slate-400 font-bold">到「食譜分類」子頁籤新增分類</p>}
+                  </div>
+                </div>
+
+                {/* Tags (special notes) */}
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">標籤 / 備註</label>
+                  <input value={editingRecipe.tags.join(', ')} onChange={e => setEditingRecipe({ ...editingRecipe, tags: e.target.value.split(',').map(v => v.trim()).filter(Boolean) })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-xs" placeholder="特別備註，例如：無麩質、低卡、減肥餐" />
+                </div>
+              </div>
+
+              {/* ── 關聯產品選擇（with search） ── */}
+              <div className="space-y-3 p-5 bg-gradient-to-r from-blue-50/60 to-indigo-50/60 rounded-2xl border border-blue-100/60">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <ShoppingBag size={14} className="text-blue-600" />
+                    <label className="text-[10px] font-bold text-blue-700 uppercase tracking-widest">{t.recipes.selectProducts}</label>
+                  </div>
+                  <button type="button" disabled={aiRecipeLoading} onClick={() => generateAiRecipe(editingRecipe)} className="px-3 py-1.5 rounded-xl text-[9px] font-black bg-purple-50 text-purple-600 border border-purple-200 hover:bg-purple-100 transition-all disabled:opacity-50 flex items-center gap-1">
+                    {aiRecipeLoading ? <RefreshCw size={10} className="animate-spin" /> : <Sparkles size={10} />} AI 寫食譜
+                  </button>
+                </div>
+                <div className="relative">
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" />
+                  <input value={recipeProductSearch} onChange={e => setRecipeProductSearch(e.target.value)} className="w-full pl-9 pr-3 py-2 bg-white rounded-xl text-xs font-bold border border-slate-100" placeholder={t.recipes.searchProducts} />
+                </div>
+                <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto hide-scrollbar">
+                  {products.filter(p => !recipeProductSearch || p.name.toLowerCase().includes(recipeProductSearch.toLowerCase())).map(p => {
+                    const isLinked = editingRecipe.linkedProductIds.includes(p.id);
+                    return (
+                      <button key={p.id} type="button" onClick={() => {
+                        const ids = editingRecipe.linkedProductIds;
+                        const next = isLinked ? ids.filter(x => x !== p.id) : [...ids, p.id];
+                        setEditingRecipe({ ...editingRecipe, linkedProductIds: next });
+                      }} className={`px-3 py-1.5 rounded-xl text-xs font-black border transition-all ${isLinked ? 'bg-blue-600 text-white border-blue-600 shadow-md' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300'}`}>
+                        {isMediaUrl(p.image) ? <img src={p.image} alt="" className="w-4 h-4 rounded inline-block mr-1.5 object-cover" /> : <span className="mr-1">{p.image}</span>}
+                        {p.name}
+                      </button>
+                    );
+                  })}
+                </div>
+                {editingRecipe.linkedProductIds.length === 0 && <p className="text-[9px] text-blue-400 font-bold">{t.recipes.noProductsLinked}</p>}
+              </div>
+
+              {/* ── 食材清單 ── */}
+              <div className="space-y-3 p-5 bg-gradient-to-r from-amber-50/60 to-orange-50/60 rounded-2xl border border-amber-100/60">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <UtensilsCrossed size={14} className="text-amber-600" />
+                    <label className="text-[10px] font-bold text-amber-700 uppercase tracking-widest">{t.recipes.rawIngredients}</label>
+                  </div>
+                  <button type="button" onClick={() => setEditingRecipe({ ...editingRecipe, ingredientsRaw: [...editingRecipe.ingredientsRaw, { name: '', amount: '' }] })} className="px-3 py-1.5 rounded-xl text-[10px] font-black border border-amber-200 text-amber-600 hover:bg-amber-100 transition-all flex items-center gap-1">
+                    <Plus size={12} /> {t.recipes.addIngredient}
+                  </button>
+                </div>
+                {/* Quick-add common ingredients */}
+                <div className="flex flex-wrap gap-1.5">
+                  {COMMON_INGREDIENTS.map(name => {
+                    const exists = editingRecipe.ingredientsRaw.some(i => i.name === name);
+                    return (
+                      <button key={name} type="button" onClick={() => {
+                        if (exists) {
+                          setEditingRecipe({ ...editingRecipe, ingredientsRaw: editingRecipe.ingredientsRaw.filter(i => i.name !== name) });
+                        } else {
+                          setEditingRecipe({ ...editingRecipe, ingredientsRaw: [...editingRecipe.ingredientsRaw, { name, amount: '適量' }] });
+                        }
+                      }} className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition-all ${exists ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-slate-500 border-slate-200 hover:border-amber-300'}`}>
+                        {name}
+                      </button>
+                    );
+                  })}
+                </div>
+                {editingRecipe.ingredientsRaw.map((ing, idx) => (
+                  <div key={idx} className="flex gap-2 items-center">
+                    <input value={ing.name} onChange={e => {
+                      const next = [...editingRecipe.ingredientsRaw];
+                      next[idx] = { ...next[idx], name: e.target.value };
+                      setEditingRecipe({ ...editingRecipe, ingredientsRaw: next });
+                    }} className="flex-1 p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" placeholder={t.recipes.ingredientName} />
+                    <input value={ing.amount} onChange={e => {
+                      const next = [...editingRecipe.ingredientsRaw];
+                      next[idx] = { ...next[idx], amount: e.target.value };
+                      setEditingRecipe({ ...editingRecipe, ingredientsRaw: next });
+                    }} className="w-24 p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" placeholder={t.recipes.ingredientAmount} />
+                    <button type="button" onClick={() => {
+                      setEditingRecipe({ ...editingRecipe, ingredientsRaw: editingRecipe.ingredientsRaw.filter((_, i) => i !== idx) });
+                    }} className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={14} /></button>
+                  </div>
+                ))}
+              </div>
+
+              {/* ── 步驟 ── */}
+              <div className="space-y-3 p-5 bg-gradient-to-r from-emerald-50/60 to-teal-50/60 rounded-2xl border border-emerald-100/60">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <ClipboardList size={14} className="text-emerald-600" />
+                    <label className="text-[10px] font-bold text-emerald-700 uppercase tracking-widest">{t.recipes.steps}</label>
+                  </div>
+                  <button type="button" onClick={() => {
+                    const maxOrder = editingRecipe.steps.length > 0 ? Math.max(...editingRecipe.steps.map(s => s.order)) : 0;
+                    setEditingRecipe({ ...editingRecipe, steps: [...editingRecipe.steps, { order: maxOrder + 1, content: '' }] });
+                  }} className="px-3 py-1.5 rounded-xl text-[10px] font-black border border-emerald-200 text-emerald-600 hover:bg-emerald-100 transition-all flex items-center gap-1">
+                    <Plus size={12} /> {t.recipes.addStep}
+                  </button>
+                </div>
+                {editingRecipe.steps.sort((a, b) => a.order - b.order).map((step, idx) => (
+                  <div key={idx} className="flex gap-2 items-start">
+                    <div className="w-8 h-8 bg-emerald-100 rounded-full flex items-center justify-center text-emerald-700 font-black text-xs flex-shrink-0 mt-1">{step.order}</div>
+                    <textarea value={step.content} onChange={e => {
+                      const next = [...editingRecipe.steps];
+                      next[idx] = { ...next[idx], content: e.target.value };
+                      setEditingRecipe({ ...editingRecipe, steps: next });
+                    }} className="flex-1 p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100 min-h-[60px]" placeholder={`${t.recipes.step} ${step.order}`} />
+                    <button type="button" onClick={() => {
+                      const filtered = editingRecipe.steps.filter((_, i) => i !== idx);
+                      const reordered = filtered.map((s, i) => ({ ...s, order: i + 1 }));
+                      setEditingRecipe({ ...editingRecipe, steps: reordered });
+                    }} className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors mt-1"><Trash2 size={14} /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="p-8 bg-slate-50 border-t border-slate-100 flex justify-between items-center">
+              <button onClick={() => {
+                setConfirmation({
+                  title: t.recipes.deleteRecipe,
+                  message: t.recipes.confirmDelete,
+                  onConfirm: () => { deleteRecipe(editingRecipe.id); setEditingRecipe(null); }
+                });
+              }} className="px-5 py-3 bg-rose-50 text-rose-600 border border-rose-200 rounded-2xl font-black text-xs hover:bg-rose-100 transition-all">
+                <Trash2 size={14} className="inline mr-1" /> {t.recipes.deleteRecipe}
+              </button>
+              <div className="flex gap-3">
+                <button onClick={() => setEditingRecipe(null)} className="px-6 py-3 bg-white border border-slate-200 rounded-2xl font-black text-xs">{t.recipes.cancel}</button>
+                <button onClick={() => {
+                  if (!editingRecipe.title.trim()) { showToast('請輸入食譜名稱', 'error'); return; }
+                  upsertRecipe(editingRecipe);
+                  setEditingRecipe(null);
+                }} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs">{t.recipes.save}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Recipe Detail Modal (Storefront) ── */}
+      {selectedRecipe && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[5500] flex items-end justify-center animate-fade-in" onClick={() => setSelectedRecipe(null)}>
+          <div className="bg-white w-full max-w-md rounded-t-[3rem] shadow-2xl overflow-y-auto max-h-[92vh] hide-scrollbar animate-slide-up" onClick={e => e.stopPropagation()}>
+            {/* Media */}
+            {selectedRecipe.mediaUrl && isMediaUrl(selectedRecipe.mediaUrl) && (
+              <div className="relative aspect-video bg-slate-100">
+                {selectedRecipe.mediaType === 'video' ? (
+                  <video src={selectedRecipe.mediaUrl} controls className="w-full h-full object-cover" />
+                ) : (
+                  <img src={selectedRecipe.mediaUrl} alt={selectedRecipe.title} className="w-full h-full object-cover" />
+                )}
+                <button onClick={() => setSelectedRecipe(null)} className="absolute top-4 right-4 p-3 bg-white/90 backdrop-blur rounded-full text-slate-500 active:scale-90 transition-transform shadow-lg"><X size={20}/></button>
+              </div>
+            )}
+            {!(selectedRecipe.mediaUrl && isMediaUrl(selectedRecipe.mediaUrl)) && (
+              <div className="flex justify-end p-6 pb-0">
+                <button onClick={() => setSelectedRecipe(null)} className="p-3 bg-slate-100 rounded-full text-slate-400 active:scale-90 transition-transform"><X size={20}/></button>
+              </div>
+            )}
+            <div className="p-6 space-y-5">
+              {/* Title & tags */}
+              <div className="space-y-2">
+                <h3 className="text-2xl font-black text-slate-900 leading-tight">{selectedRecipe.title}</h3>
+                <div className="flex flex-wrap gap-2">
+                  {selectedRecipe.cookingTime > 0 && <span className="px-2.5 py-1 bg-amber-50 text-amber-600 rounded-lg text-[10px] font-black border border-amber-100 flex items-center gap-1"><Clock size={10} />{selectedRecipe.cookingTime} {t.recipes.minutes}</span>}
+                  {selectedRecipe.tags.map(tag => <span key={tag} className="px-2.5 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-black border border-blue-100">{tag}</span>)}
+                </div>
+                {selectedRecipe.description && <p className="text-sm text-slate-500 font-medium leading-relaxed">{selectedRecipe.description}</p>}
+              </div>
+
+              {/* Unified ingredient list: linked products first, then raw ingredients */}
+              {(selectedRecipe.linkedProductIds.length > 0 || selectedRecipe.ingredientsRaw.length > 0) && (
+                <div className="space-y-2.5">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5"><UtensilsCrossed size={12} /> {t.recipes.ingredients}</p>
+                  {selectedRecipe.servingSize && <p className="text-[10px] text-slate-400 font-bold">📍 {selectedRecipe.servingSize}</p>}
+                  <div className="bg-slate-50 rounded-xl p-3 space-y-2">
+                    {/* Linked products listed first */}
+                    {selectedRecipe.linkedProductIds.map(pid => {
+                      const p = products.find(x => x.id === pid);
+                      if (!p) return null;
+                      const itemInCart = cart.find(i => i.id === p.id);
+                      const qty = itemInCart?.qty || 0;
+                      return (
+                        <div key={p.id} className="flex items-center gap-2.5 py-1.5">
+                          <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center overflow-hidden border border-slate-100 flex-shrink-0">
+                            {isMediaUrl(p.image) ? <img src={p.image} alt={pName(p)} className="w-full h-full object-cover" /> : <span className="text-sm">{p.image}</span>}
+                          </div>
+                          <span className="flex-1 text-xs font-bold text-slate-800">{pName(p)}</span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-blue-600 font-bold">${getPrice(p)}</span>
+                            <div className="flex items-center rounded-full p-0.5 border border-slate-100 bg-white shadow-sm">
+                              {qty > 0 && (
+                                <><button onClick={(e) => updateCart(p, -1, e)} className="w-6 h-6 flex items-center justify-center text-slate-300 active:scale-75"><Minus size={12}/></button><span className="mx-1 text-[11px] font-black text-slate-900 w-3 text-center">{qty}</span></>
+                              )}
+                              <button onClick={(e) => updateCart(p, 1, e)} className={`w-6 h-6 rounded-full flex items-center justify-center ${accentClass} text-white active:scale-90`}><Plus size={12}/></button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {/* Divider if both exist */}
+                    {selectedRecipe.linkedProductIds.length > 0 && selectedRecipe.ingredientsRaw.length > 0 && <div className="border-t border-slate-200/60 my-1" />}
+                    {/* Raw ingredients */}
+                    {selectedRecipe.ingredientsRaw.map((ing, i) => (
+                      <div key={i} className="flex justify-between text-xs py-0.5">
+                        <span className="font-bold text-slate-700">{ing.name}</span>
+                        <span className="text-slate-400 font-medium">{ing.amount}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Steps */}
+              {selectedRecipe.steps.length > 0 && (
+                <div className="space-y-3">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5"><ClipboardList size={12} /> {t.recipes.steps}</p>
+                  {selectedRecipe.steps.sort((a, b) => a.order - b.order).map(step => (
+                    <div key={step.order} className="flex gap-3">
+                      <div className="w-7 h-7 bg-slate-900 rounded-full flex items-center justify-center text-white font-black text-[10px] flex-shrink-0 mt-0.5">{step.order}</div>
+                      <p className="text-sm text-slate-700 font-medium leading-relaxed flex-1">{step.content}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -4458,14 +5241,90 @@ const App: React.FC = () => {
       </div>
       <div className="flex-1 flex overflow-hidden">
         <aside className="bg-white border-r border-slate-100 overflow-y-auto hide-scrollbar flex flex-col items-center py-1 w-16">
+          {/* 食譜 tab - always first */}
+          <button onClick={() => setStoreMode(prev => prev === 'recipes' ? 'shop' : 'recipes')} className={`flex flex-col items-center gap-0.5 w-full py-4 transition-all relative ${storeMode === 'recipes' ? 'text-amber-600 bg-amber-50/50' : 'text-slate-400'}`}>
+            {storeMode === 'recipes' && <div className="absolute left-0 h-8 w-1 bg-amber-500 rounded-r-full" />}
+            <span className="text-xl">📖</span><span className="text-[9px] font-bold text-center leading-tight">{t.recipes.recipes}</span>
+          </button>
+          <div className="w-10 border-t border-slate-100 my-0.5" />
           {categories.map(cat => (
-            <button key={cat.id} onClick={() => scrollToCategory(cat.id)} className={`flex flex-col items-center gap-0.5 w-full py-4 transition-all relative ${activeCategory === cat.id ? `${textAccentClass} bg-blue-50/50` : 'text-slate-400'}`}>
-              {activeCategory === cat.id && <div className={`absolute left-0 h-8 w-1 ${accentClass} rounded-r-full`} />}
+            <button key={cat.id} onClick={() => { setStoreMode('shop'); scrollToCategory(cat.id); }} className={`flex flex-col items-center gap-0.5 w-full py-4 transition-all relative ${storeMode === 'shop' && activeCategory === cat.id ? `${textAccentClass} bg-blue-50/50` : 'text-slate-400'}`}>
+              {storeMode === 'shop' && activeCategory === cat.id && <div className={`absolute left-0 h-8 w-1 ${accentClass} rounded-r-full`} />}
               <span className="text-xl">{cat.icon}</span><span className="text-[9px] font-bold text-center leading-tight uppercase">{cat.name}</span>
             </button>
           ))}
         </aside>
         <main ref={listRef} className="flex-1 overflow-y-auto hide-scrollbar bg-white p-3 pb-48">
+          {storeMode === 'recipes' ? (
+          /* ── 食譜列表視圖 ── */
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 sticky top-0 bg-white py-2 z-10 border-b border-slate-50">
+              <BookOpen size={16} className="text-amber-600" />
+              <h3 className="font-bold text-slate-900 text-sm">{t.recipes.allRecipes}</h3>
+              <span className="text-[10px] text-slate-400 font-bold">({recipeCategoryFilter.length > 0 ? recipes.filter(r => recipeCategoryFilter.every(cid => r.categoryIds.includes(cid))).length : recipes.length})</span>
+            </div>
+            {/* Category filter chips */}
+            {recipeCategories.length > 0 && (
+              <div className="flex gap-1.5 overflow-x-auto hide-scrollbar pb-1">
+                {recipeCategories.map(cat => {
+                  const isActive = recipeCategoryFilter.includes(cat.id);
+                  return (
+                    <button key={cat.id} onClick={() => setRecipeCategoryFilter(prev => isActive ? prev.filter(c => c !== cat.id) : [...prev, cat.id])} className={`px-3 py-1.5 rounded-full text-[10px] font-black border whitespace-nowrap transition-all flex items-center gap-1 ${isActive ? 'bg-amber-500 text-white border-amber-500 shadow-md' : 'bg-white text-slate-500 border-slate-200'}`}>
+                      <span>{cat.icon}</span> {cat.name}
+                    </button>
+                  );
+                })}
+                {recipeCategoryFilter.length > 0 && (
+                  <button onClick={() => setRecipeCategoryFilter([])} className="px-3 py-1.5 rounded-full text-[10px] font-black border border-slate-200 text-slate-400 whitespace-nowrap hover:bg-slate-50 flex items-center gap-1">
+                    <X size={10} /> 清除
+                  </button>
+                )}
+              </div>
+            )}
+            {(() => {
+              const filtered = recipeCategoryFilter.length > 0
+                ? recipes.filter(r => recipeCategoryFilter.every(cid => r.categoryIds.includes(cid)))
+                : recipes;
+              if (filtered.length === 0) return (
+                <div className="bg-slate-50 border border-slate-100 rounded-3xl p-8 text-center text-slate-400 font-bold">{recipeCategoryFilter.length > 0 ? '此分類暫無食譜' : t.recipes.noRecipes}</div>
+              );
+              return (
+                <div className="space-y-3">
+                  {filtered.map(r => (
+                    <div key={r.id} onClick={() => setSelectedRecipe(r)} className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden hover:shadow-md transition-all cursor-pointer group">
+                      <div className="flex gap-3 p-3">
+                        <div className="w-24 h-24 bg-slate-50 rounded-xl overflow-hidden flex-shrink-0 border border-slate-100">
+                          {r.mediaUrl && isMediaUrl(r.mediaUrl) ? (
+                            r.mediaType === 'video' ? (
+                              <div className="w-full h-full flex items-center justify-center bg-slate-200"><Play size={24} className="text-slate-400" /></div>
+                            ) : (
+                              <img src={r.mediaUrl} alt={r.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                            )
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-4xl">📖</div>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0 flex flex-col justify-between py-0.5">
+                          <div>
+                            <h4 className="font-bold text-slate-900 text-sm leading-tight group-hover:text-amber-600 transition-colors">{r.title}</h4>
+                            {r.description && <p className="text-[11px] text-slate-400 font-medium line-clamp-2 mt-1">{r.description}</p>}
+                          </div>
+                          <div className="flex flex-wrap gap-1.5 mt-1.5">
+                            {r.cookingTime > 0 && <span className="px-2 py-0.5 bg-amber-50 text-amber-600 rounded text-[9px] font-bold border border-amber-100"><Clock size={8} className="inline mr-0.5" />{r.cookingTime}{t.recipes.minutes}</span>}
+                            {r.servingSize && <span className="px-2 py-0.5 bg-slate-50 text-slate-500 rounded text-[9px] font-bold border border-slate-100">{r.servingSize}</span>}
+                            {r.categoryIds.slice(0, 2).map(cid => { const c = recipeCategories.find(x => x.id === cid); return c ? <span key={cid} className="px-2 py-0.5 bg-amber-50 text-amber-700 rounded text-[9px] font-bold border border-amber-100">{c.icon}</span> : null; })}
+                            {r.linkedProductIds.length > 0 && <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded text-[9px] font-bold border border-emerald-100"><ShoppingBag size={8} className="inline mr-0.5" />{r.linkedProductIds.length}</span>}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+          ) : (
+          /* ── 原有商店視圖 ── */
           <div className="space-y-12">
             {/* Advertisement slideshow - above categories */}
             {slideshowItems.length > 0 && (
@@ -4514,38 +5373,71 @@ const App: React.FC = () => {
                     const itemInCart = cart.find(i => i.id === p.id);
                     const qty = itemInCart?.qty || 0;
                     const isOfferMet = p.bulkDiscount && qty >= p.bulkDiscount.threshold;
+                    const productRecipes = getRecipesForProduct(p.id);
+                    const hasRecipes = productRecipes.length > 0;
+                    const isExpanded = recipeProductExpanded === p.id;
                     return (
-                      <div key={p.id} onClick={() => setSelectedProduct(p)} className="flex gap-4 py-4 px-3 hover:bg-slate-50 transition-all cursor-pointer group">
-                        <div className="w-24 h-24 bg-slate-50 rounded-xl flex items-center justify-center text-5xl relative overflow-hidden flex-shrink-0 border border-slate-100 group-hover:shadow-inner transition-all">
-                           {isMediaUrl(p.image) ? <img src={p.image} loading="lazy" className="w-full h-full object-cover" alt={p.imageAlt || pName(p)} /> : <span className="text-5xl">{p.image}</span>}
-                           {p.recipes && p.recipes.length > 0 && <div className="absolute top-1 right-1 w-6 h-6 bg-white/90 backdrop-blur rounded-full flex items-center justify-center text-blue-600 shadow-sm"><BookOpen size={12}/></div>}
+                      <div key={p.id} className="relative">
+                        <div onClick={() => setSelectedProduct(p)} className="flex gap-4 py-4 px-3 hover:bg-slate-50 transition-all cursor-pointer group">
+                          <div className="w-24 h-24 bg-slate-50 rounded-xl flex items-center justify-center text-5xl relative overflow-hidden flex-shrink-0 border border-slate-100 group-hover:shadow-inner transition-all">
+                             {isMediaUrl(p.image) ? <img src={p.image} loading="lazy" className="w-full h-full object-cover" alt={p.imageAlt || pName(p)} /> : <span className="text-5xl">{p.image}</span>}
+                             {hasRecipes && (
+                               <button onClick={(e) => { e.stopPropagation(); setRecipeProductExpanded(prev => prev === p.id ? null : p.id); }} className="absolute bottom-1 right-1 w-7 h-7 bg-amber-500 rounded-full flex items-center justify-center text-white shadow-md active:scale-90 transition-transform z-10">
+                                 <BookOpen size={13}/>
+                               </button>
+                             )}
+                          </div>
+                          <div className="flex-1 flex flex-col justify-between py-0.5 min-w-0">
+                             <div className="flex justify-between items-start">
+                                <div className="flex-1 min-w-0"><h4 className="font-bold text-slate-900 text-[15px] leading-tight group-hover:text-blue-600 transition-colors flex items-center gap-2">{pName(p)}</h4>
+                                  {p.tags && p.tags.length > 0 && (<div className="flex flex-wrap gap-1 mt-1.5">{p.tags.map(tag => (<span key={tag} className="px-1.5 py-0.5 bg-blue-50 text-blue-600 border border-blue-100 rounded text-[9px] font-bold uppercase tracking-tight">{tag}</span>))}</div>)}
+                                  {p.bulkDiscount && (<p className="text-[10px] font-black text-rose-500 uppercase tracking-tight mt-1 animate-pulse">{p.bulkDiscount.threshold}件+ 即減 {p.bulkDiscount.value}{p.bulkDiscount.type === 'percent' ? '%' : '元'}</p>)}
+                                </div>
+                             </div>
+                             <div className="flex items-end justify-between mt-2">
+                                <div className="flex items-center gap-2">
+                                  {(() => {
+                                    const yourPrice = getPrice(p);
+                                    const showOriginal = yourPrice < p.price;
+                                    return (<>
+                                      <p className={`text-base font-bold ${showOriginal ? 'text-slate-300 text-xs line-through' : 'text-slate-900'}`}>${p.price}</p>
+                                      {showOriginal && <p className="text-base font-bold text-rose-500 animate-fade-in">${yourPrice}</p>}
+                                    </>);
+                                  })()}
+                                </div>
+                                <div className={`flex items-center rounded-full p-1 border transition-all ${isOfferMet ? 'bg-amber-400 border-amber-500 scale-105 shadow-md ring-2 ring-amber-200' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                  {qty > 0 && (
+                                    <><button onClick={(e) => updateCart(p, -1, e)} className={`w-8 h-8 flex items-center justify-center transition-colors active:scale-75 ${isOfferMet ? 'text-white' : 'text-slate-300'}`}><Minus size={16}/></button><span className={`mx-2 text-sm font-black w-4 text-center ${isOfferMet ? 'text-white' : 'text-slate-900'}`}>{qty}</span></>
+                                  )}
+                                  <button onClick={(e) => updateCart(p, 1, e)} className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${isOfferMet ? 'bg-white text-amber-500' : accentClass + ' text-white shadow-lg'} active:scale-90 animate-pop-pulse`}><Plus size={16}/></button>
+                                </div>
+                             </div>
+                          </div>
                         </div>
-                        <div className="flex-1 flex flex-col justify-between py-0.5 min-w-0">
-                           <div className="flex justify-between items-start">
-                              <div className="flex-1 min-w-0"><h4 className="font-bold text-slate-900 text-[15px] leading-tight group-hover:text-blue-600 transition-colors flex items-center gap-2">{pName(p)}</h4>
-                                {p.tags && p.tags.length > 0 && (<div className="flex flex-wrap gap-1 mt-1.5">{p.tags.map(tag => (<span key={tag} className="px-1.5 py-0.5 bg-blue-50 text-blue-600 border border-blue-100 rounded text-[9px] font-bold uppercase tracking-tight">{tag}</span>))}</div>)}
-                                {p.bulkDiscount && (<p className="text-[10px] font-black text-rose-500 uppercase tracking-tight mt-1 animate-pulse">{p.bulkDiscount.threshold}件+ 即減 {p.bulkDiscount.value}{p.bulkDiscount.type === 'percent' ? '%' : '元'}</p>)}
-                              </div>
-                           </div>
-                           <div className="flex items-end justify-between mt-2">
-                              <div className="flex items-center gap-2">
-                                {(() => {
-                                  const yourPrice = getPrice(p);
-                                  const showOriginal = yourPrice < p.price;
-                                  return (<>
-                                    <p className={`text-base font-bold ${showOriginal ? 'text-slate-300 text-xs line-through' : 'text-slate-900'}`}>${p.price}</p>
-                                    {showOriginal && <p className="text-base font-bold text-rose-500 animate-fade-in">${yourPrice}</p>}
-                                  </>);
-                                })()}
-                              </div>
-                              <div className={`flex items-center rounded-full p-1 border transition-all ${isOfferMet ? 'bg-amber-400 border-amber-500 scale-105 shadow-md ring-2 ring-amber-200' : 'bg-white border-slate-100 shadow-sm'}`}>
-                                {qty > 0 && (
-                                  <><button onClick={(e) => updateCart(p, -1, e)} className={`w-8 h-8 flex items-center justify-center transition-colors active:scale-75 ${isOfferMet ? 'text-white' : 'text-slate-300'}`}><Minus size={16}/></button><span className={`mx-2 text-sm font-black w-4 text-center ${isOfferMet ? 'text-white' : 'text-slate-900'}`}>{qty}</span></>
-                                )}
-                                <button onClick={(e) => updateCart(p, 1, e)} className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${isOfferMet ? 'bg-white text-amber-500' : accentClass + ' text-white shadow-lg'} active:scale-90 animate-pop-pulse`}><Plus size={16}/></button>
-                              </div>
-                           </div>
-                        </div>
+                        {/* Expandable recipe panel */}
+                        {hasRecipes && isExpanded && (
+                          <div className="px-3 pb-3 animate-fade-in">
+                            <div className="bg-amber-50/80 rounded-xl border border-amber-100/60 p-3 space-y-2">
+                              <p className="text-[9px] font-black text-amber-600 uppercase tracking-widest flex items-center gap-1"><BookOpen size={10} /> {t.recipes.recommendedRecipes}</p>
+                              {productRecipes.map(r => (
+                                <button key={r.id} onClick={() => setSelectedRecipe(r)} className="w-full flex items-center gap-2.5 p-2 bg-white rounded-lg border border-amber-100/50 hover:bg-amber-50 transition-all text-left">
+                                  {r.mediaUrl && isMediaUrl(r.mediaUrl) ? (
+                                    <img src={r.mediaUrl} alt={r.title} className="w-9 h-9 rounded-lg object-cover flex-shrink-0" />
+                                  ) : (
+                                    <div className="w-9 h-9 bg-amber-100 rounded-lg flex items-center justify-center flex-shrink-0"><BookOpen size={14} className="text-amber-500" /></div>
+                                  )}
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-xs font-bold text-slate-800 truncate">{r.title}</p>
+                                    <div className="flex gap-1 mt-0.5">
+                                      {r.cookingTime > 0 && <span className="text-[8px] text-amber-600 font-bold"><Clock size={7} className="inline" /> {r.cookingTime}{t.recipes.minutes}</span>}
+                                    </div>
+                                  </div>
+                                  <ChevronRight size={12} className="text-slate-300 flex-shrink-0" />
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -4553,6 +5445,7 @@ const App: React.FC = () => {
               </div>
             ))}
           </div>
+          )}
         </main>
       </div>
       {cart.length > 0 && (
@@ -4666,6 +5559,7 @@ const App: React.FC = () => {
                  { id: 'members', label: t.admin.members, icon: <Users size={20}/> },
                  { id: 'slideshow', label: t.admin.slideshow, icon: <ImageIcon size={20}/> },
                  { id: 'pricing', label: '價錢設定', icon: <DollarSign size={20}/> },
+                 { id: 'recipes', label: t.recipes.recipes, icon: <BookOpen size={20}/> },
                  { id: 'costs', label: '成本管理', icon: <Coins size={20}/> },
                  { id: 'language', label: '語言翻譯', icon: <Globe size={20}/> },
                  { id: 'settings', label: t.admin.settings, icon: <Settings size={20}/> }
@@ -4685,7 +5579,7 @@ const App: React.FC = () => {
             </button>
           </aside>
           <main className="flex-1 min-w-0 p-6 md:p-10 overflow-y-auto bg-[#f8fafc] hide-scrollbar">
-            <header className="flex justify-between items-center mb-10"><div><h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: t.admin.dashboard, inventory: t.admin.inventory, orders: t.admin.orders, members: t.admin.members, slideshow: t.admin.slideshow, pricing: '價錢設定', costs: '成本管理', language: '語言翻譯', settings: t.admin.settings } as Record<string, string>)[adminModule] || adminModule}</h1><p className="text-slate-400 font-bold text-sm">{t.admin.realtimeAdmin}</p></div><div className="flex items-center gap-4"><button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button><button onClick={() => showToast('帳戶功能開發中', 'error')} className="w-12 h-12 bg-slate-200 rounded-2xl border border-slate-100"></button></div></header>
+            <header className="flex justify-between items-center mb-10"><div><h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: t.admin.dashboard, inventory: t.admin.inventory, orders: t.admin.orders, members: t.admin.members, slideshow: t.admin.slideshow, pricing: '價錢設定', costs: '成本管理', language: '語言翻譯', recipes: t.recipes.recipes, settings: t.admin.settings } as Record<string, string>)[adminModule] || adminModule}</h1><p className="text-slate-400 font-bold text-sm">{t.admin.realtimeAdmin}</p></div><div className="flex items-center gap-4"><button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button><button onClick={() => showToast('帳戶功能開發中', 'error')} className="w-12 h-12 bg-slate-200 rounded-2xl border border-slate-100"></button></div></header>
             {renderAdminModuleContent()}
           </main>
         </>

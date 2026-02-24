@@ -19,6 +19,61 @@ export interface Recipe {
   ingredients: string[];
 }
 
+export interface RecipeIngredientRaw {
+  name: string;
+  amount: string;
+}
+
+export interface RecipeStep {
+  order: number;
+  content: string;
+}
+
+export interface RecipeCategory {
+  id: string;
+  name: string;
+  icon: string;
+  sortOrder: number;
+}
+
+export interface StandaloneRecipe {
+  id: string;
+  title: string;
+  description: string;
+  mediaUrl: string;
+  mediaType: 'image' | 'video';
+  cookingTime: number;
+  servingSize: string;
+  tags: string[];
+  categoryIds: string[];
+  ingredientsRaw: RecipeIngredientRaw[];
+  steps: RecipeStep[];
+  linkedProductIds: string[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SupabaseRecipeRow {
+  id: string;
+  title: string;
+  description: string;
+  media_url: string;
+  media_type: 'image' | 'video';
+  cooking_time: number;
+  serving_size: string;
+  tags: string[];
+  category_ids: string[];
+  ingredients_raw: RecipeIngredientRaw[];
+  steps: RecipeStep[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface SupabaseRecipeProductLinkRow {
+  recipe_id: string;
+  product_id: string;
+}
+
 export interface BulkDiscount {
   threshold: number;
   type: 'fixed' | 'percent'; // 'fixed' means new unit price, 'percent' means % off unit price

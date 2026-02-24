@@ -9,7 +9,10 @@ import {
   SupabaseMemberRow,
   SupabaseOrderRow,
   SlideshowItem,
-  SupabaseSlideshowRow
+  SupabaseSlideshowRow,
+  StandaloneRecipe,
+  SupabaseRecipeRow,
+  RecipeCategory
 } from './types';
 
 export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
@@ -137,4 +140,42 @@ export const mapSlideshowItemToRow = (item: SlideshowItem): SupabaseSlideshowRow
   url: item.url,
   title: item.title ?? null,
   sort_order: item.sortOrder
+});
+
+export const mapRecipeRowToRecipe = (row: SupabaseRecipeRow, linkedProductIds: string[] = []): StandaloneRecipe => ({
+  id: row.id,
+  title: row.title,
+  description: row.description ?? '',
+  mediaUrl: row.media_url ?? '',
+  mediaType: (row.media_type as 'image' | 'video') ?? 'image',
+  cookingTime: row.cooking_time ?? 0,
+  servingSize: row.serving_size ?? '1-2人份',
+  tags: row.tags ?? [],
+  categoryIds: row.category_ids ?? [],
+  ingredientsRaw: row.ingredients_raw ?? [],
+  steps: row.steps ?? [],
+  linkedProductIds,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+export const mapRecipeToRow = (recipe: StandaloneRecipe): Omit<SupabaseRecipeRow, 'created_at' | 'updated_at'> => ({
+  id: recipe.id,
+  title: recipe.title,
+  description: recipe.description,
+  media_url: recipe.mediaUrl,
+  media_type: recipe.mediaType,
+  cooking_time: recipe.cookingTime,
+  serving_size: recipe.servingSize,
+  tags: recipe.tags,
+  category_ids: recipe.categoryIds,
+  ingredients_raw: recipe.ingredientsRaw,
+  steps: recipe.steps,
+});
+
+export const mapRecipeCategoryRow = (row: { id: string; name: string; icon: string; sort_order: number }): RecipeCategory => ({
+  id: row.id,
+  name: row.name,
+  icon: row.icon ?? '📁',
+  sortOrder: row.sort_order ?? 0,
 });
