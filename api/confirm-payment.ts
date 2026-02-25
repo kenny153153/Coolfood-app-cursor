@@ -177,7 +177,36 @@ export default async function handler(
 
     console.log('[confirm-payment] Order', updateId, 'marked as PAID');
 
-    // ─── Step 3: WhatsApp (fire-and-forget, inlined) ─────────────────
+    // ─── Step 3: Auto SF order — get tracking number (fire-and-forget) ─
+    const protocol = (req.headers?.['x-forwarded-proto'] as string) || 'https';
+    const host = req.headers?.host as string;
+    const selfOrigin = host ? `${protocol}://${host}` : (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '');
+    if (selfOrigin) {
+      (async () => {
+        try {
+          console.log('[confirm-payment] Auto SF call for', orderId);
+          const sfRes = await fetchWithTimeout(`${selfOrigin}/api/sf-order`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ orderId }),
+          }, 12000);
+          const sfData: any = await sfRes.json().catch(() => ({}));
+          if (sfRes.ok && sfData.waybillNo) {
+            console.log('[confirm-payment] Auto SF success, waybill:', sfData.waybillNo);
+          } else {
+            console.warn('[confirm-payment] Auto SF no waybill:', sfData.error || sfRes.status);
+            // Write admin note so admin knows to retry
+            await supabaseAdmin.from('orders').update({
+              sf_responses: { autoCall: true, error: sfData.error || `HTTP ${sfRes.status}`, at: new Date().toISOString() },
+            }).eq('id', updateId);
+          }
+        } catch (sfErr) {
+          console.warn('[confirm-payment] Auto SF error (non-blocking):', sfErr instanceof Error ? sfErr.message : sfErr);
+        }
+      })();
+    }
+
+    // ─── Step 4: WhatsApp (fire-and-forget, inlined) ─────────────────
     (async () => {
       try {
         const { data: fullOrder } = await supabaseAdmin
@@ -228,7 +257,7 @@ export default async function handler(
       }
     })();
 
-    // ─── Step 4: Return success immediately ──────────────────────────
+    // ─── Step 5: Return success immediately ──────────────────────────
     return res.status(200).json({
       success: true,
       orderId,
