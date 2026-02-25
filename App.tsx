@@ -13,7 +13,6 @@ import {
   Layers, Percent, Globe, Crosshair, Scissors, Phone, Square, CheckSquare, Coins,
   UtensilsCrossed, Play, CookingPot
 } from 'lucide-react';
-import { GoogleGenAI } from "@google/genai";
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
 import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory } from './types';
@@ -1602,37 +1601,13 @@ const App: React.FC = () => {
     if (!title && linkedNames.length === 0) { showToast('請先輸入食譜名稱或選擇關聯產品', 'error'); return; }
     setAiRecipeLoading(true);
     try {
-      const context = title
-        ? `食譜名稱：${title}${linkedNames.length > 0 ? `\n主要食材：${linkedNames.join('、')}` : ''}`
-        : `主要食材：${linkedNames.join('、')}`;
-      const prompt = `你是一個專業廚師。根據以下資訊生成一個完整的中式家常菜食譜。回覆嚴格 JSON 格式（不要 markdown），欄位如下：
-{
-  "title": "食譜名稱",
-  "description": "一句話簡介",
-  "cooking_time": 數字(分鐘),
-  "serving_size": "1-2人份 或 3-4人份",
-  "ingredients": [{"name":"食材名","amount":"份量"}],
-  "steps": [{"order":1,"content":"步驟描述"}]
-}
-
-${context}
-
-要求：
-- 繁體中文
-- 食材份量要具體（例如「2片」「1湯匙」）
-- 步驟要詳細實用（4-6步）
-- 如已有食譜名稱就用該名稱，否則根據食材起一個吸引的名稱`;
-      const geminiKey = (import.meta.env.VITE_GEMINI_API_KEY as string) || process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
+      const res = await fetch('/api/generate-recipe', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.7 } }),
+        body: JSON.stringify({ action: 'single-recipe', payload: { title, linkedProductNames: linkedNames } }),
       });
-      if (!response.ok) throw new Error('API error');
-      const data = await response.json();
-      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('Invalid JSON');
-      const parsed = JSON.parse(jsonMatch[0]);
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || 'AI error');
+      const parsed = json.data;
       const updated: StandaloneRecipe = {
         ...recipe,
         title: parsed.title || recipe.title,
@@ -2396,141 +2371,58 @@ ${context}
     if (typeof window !== 'undefined' && intent_id) {
       try { window.sessionStorage.setItem('airwallex_payment_intent_id', intent_id); } catch { /* ignore */ }
     }
-    console.log('[Checkout] Order inserted, switching to payment step (intent=%s)', intent_id);
-    setPaymentModalData({ intent_id, client_secret, currency, country_code, orderIdDisplay });
-    setCheckoutStep('payment');
-    setIsRedirectingToPayment(false);
+
+    // Redirect to Airwallex Hosted Payment Page (HPP)
+    // HPP runs on Airwallex's own domain — avoids cross-origin iframe captcha/fingerprint issues
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const hppSuccessUrl = `${origin}/success?order=${encodeURIComponent(orderIdDisplay)}&payment_intent_id=${encodeURIComponent(intent_id)}`;
+    console.log('[Checkout] Order inserted. Redirecting to Airwallex HPP...');
+    console.log('[Checkout]   intent_id:', intent_id);
+    console.log('[Checkout]   successUrl:', hppSuccessUrl);
+    try {
+      const sdk = await import('@airwallex/components-sdk');
+      const airwallexEnv = (import.meta.env.VITE_AIRWALLEX_ENV as string) || 'demo';
+      if (!airwallexInitDone.current) {
+        const initResult = await sdk.init({ env: airwallexEnv as 'demo' | 'prod', enabledElements: ['payments'] });
+        (window as any).__awxPayments = initResult?.payments;
+        airwallexInitDone.current = true;
+        console.log('[Checkout] Airwallex SDK initialized (env=%s)', airwallexEnv);
+      }
+      const payments = (window as any).__awxPayments;
+      if (!payments?.redirectToCheckout) {
+        throw new Error('payments.redirectToCheckout not available after init');
+      }
+      payments.redirectToCheckout({
+        env: airwallexEnv as 'demo' | 'prod',
+        intent_id,
+        client_secret,
+        currency,
+        country_code: 'HK',
+        mode: 'payment',
+        successUrl: hppSuccessUrl,
+        methods: ['card'],
+      });
+    } catch (e: any) {
+      console.error('[Checkout] HPP redirect failed:', e);
+      setIsRedirectingToPayment(false);
+      showToast('Payment redirect failed: ' + (e?.message || 'unknown'), 'error');
+    }
   };
 
-  // Mount Airwallex Drop-in Element inline when payment step is active
-  useEffect(() => {
-    if (!paymentModalData || !airwallexDropinRef.current) return;
-    let destroyed = false;
-
-    const mountDropin = async () => {
-      try {
-        console.log('[Airwallex] Step 1: Importing SDK...');
-        const sdk = await import('@airwallex/components-sdk');
-        const airwallexEnv = (import.meta.env.VITE_AIRWALLEX_ENV as string) || 'demo';
-
-        let payments: any;
-        if (!airwallexInitDone.current) {
-          console.log('[Airwallex] Step 2: init(env=%s, enabledElements=[payments])...', airwallexEnv);
-          const initResult = await sdk.init({ env: airwallexEnv as 'demo' | 'prod', enabledElements: ['payments'] });
-          payments = initResult?.payments;
-          airwallexInitDone.current = true;
-          (window as any).__awxPayments = payments;
-          console.log('[Airwallex] init OK. payments object:', !!payments, '| payments.createElement:', typeof payments?.createElement);
-        } else {
-          console.log('[Airwallex] Step 2: Already initialized, reusing...');
-          payments = (window as any).__awxPayments;
-        }
-        if (destroyed) return;
-
-        const dropInOpts: Record<string, any> = {
-          intent_id: paymentModalData.intent_id,
-          client_secret: paymentModalData.client_secret,
-          currency: paymentModalData.currency,
-          methods: ['card'],
-        };
-
-        console.log('[Airwallex] Step 3: Creating dropIn element...');
-        console.log('[Airwallex]   intent_id:', paymentModalData.intent_id);
-        console.log('[Airwallex]   client_secret length:', paymentModalData.client_secret?.length);
-        console.log('[Airwallex]   currency:', paymentModalData.currency);
-
-        let element: any = null;
-        if (payments && typeof payments.createElement === 'function') {
-          console.log('[Airwallex] Using payments.createElement (preferred for payment elements)');
-          element = await payments.createElement('dropIn', dropInOpts);
-        } else {
-          console.log('[Airwallex] payments.createElement not available, using sdk.createElement');
-          element = await sdk.createElement('dropIn', dropInOpts as any);
-        }
-
-        if (!element) {
-          console.error('[Airwallex] createElement returned null/undefined');
-          showToast('Payment element could not be created.', 'error');
-          return;
-        }
-        if (destroyed) { element.destroy?.(); return; }
-        airwallexElementRef.current = element;
-        console.log('[Airwallex] Step 4: Element created OK, attaching listeners...');
-
-        const origin = typeof window !== 'undefined' ? window.location.origin : '';
-        const orderId = paymentModalData.orderIdDisplay;
-        const intentId = paymentModalData.intent_id;
-
-        element.on('ready', (e: any) => {
-          console.log('[Airwallex] EVENT ready:', JSON.stringify(e?.detail ?? 'ok'));
-        });
-
-        element.on('success', async (e: any) => {
-          console.log('[Airwallex] EVENT success:', JSON.stringify(e?.detail ?? 'no detail'));
-          setCart([]);
-          setCheckoutStep('details');
-          setShowCheckoutAddressForm(false);
-          setCheckoutAddressDraft(null);
-          setIsChangingAddress(false);
-          setPaymentModalData(null);
-          try { element.destroy(); } catch { /* ignore */ }
-          airwallexElementRef.current = null;
-          try {
-            await fetch(`${origin}/api/confirm-payment`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ orderId, payment_intent_id: intentId }),
-            });
-          } catch { /* non-blocking */ }
-          if (typeof window !== 'undefined') {
-            window.history.replaceState(null, '', `/success?order=${encodeURIComponent(orderId)}&payment_intent_id=${encodeURIComponent(intentId)}`);
-          }
-          setView('success');
-        });
-
-        element.on('error', (e: any) => {
-          const detail = e?.detail ?? e;
-          console.error('[Airwallex] EVENT error (full object):');
-          console.dir(detail);
-          console.error('[Airwallex] EVENT error (JSON):', JSON.stringify(detail, null, 2));
-          const msg = detail?.message || detail?.error?.message || 'Payment failed, please try again.';
-          showToast(msg, 'error');
-        });
-
-        element.on('cancel', () => {
-          console.log('[Airwallex] EVENT cancel');
-        });
-
-        if (airwallexDropinRef.current && !destroyed) {
-          console.log('[Airwallex] Step 5: Mounting to DOM...');
-          element.mount(airwallexDropinRef.current);
-          console.log('[Airwallex] mount() called, waiting for ready event...');
-        }
-      } catch (e: any) {
-        console.error('[Airwallex] Drop-in FAILED:');
-        console.dir(e);
-        showToast('Payment system error: ' + (e?.message || 'unknown'), 'error');
-        setPaymentModalData(null);
-        setCheckoutStep('details');
-      }
-    };
-    mountDropin();
-    return () => {
-      destroyed = true;
-      try { airwallexElementRef.current?.destroy?.(); } catch { /* ignore */ }
-      airwallexElementRef.current = null;
-    };
-  }, [paymentModalData]);
+  // (HPP mode: Drop-in element no longer used — payment happens on Airwallex's hosted page)
 
   // --- Admin Logic ---
 
   const handleGeminiAnalysis = async () => {
     setIsAnalyzing(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `分析並提供 3 個提高銷量的具體策略。請用繁體中文。`;
-      const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt });
-      setAiAnalysis(response.text || 'AI 無法生成建議。');
+      const res = await fetch('/api/generate-recipe', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'business-analysis', payload: {} }),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || 'AI error');
+      setAiAnalysis(json.data.text || 'AI 無法生成建議。');
     } catch (e) {
       setAiAnalysis('AI 離線中。');
     } finally {
@@ -2719,20 +2611,15 @@ ${context}
                 if (toGenerate.length === 0) { showToast('所有產品已有描述'); return; }
                 setAiDescLoading(true);
                 try {
-                  const names: Record<string, string> = {};
-                  for (const p of toGenerate.slice(0, 30)) names[p.id] = p.name;
-                  const prompt = `你是一個凍肉零售店的產品描述撰寫員。為以下凍肉產品各撰寫一段繁體中文描述（2-3句），強調品質和口感。回覆 JSON 格式 { "product_id": "描述" }。\n\n${JSON.stringify(names, null, 2)}`;
-                  const geminiKey = (import.meta.env.VITE_GEMINI_API_KEY as string) || process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-                  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
+                  const productNames: Record<string, string> = {};
+                  for (const p of toGenerate.slice(0, 30)) productNames[p.id] = p.name;
+                  const res = await fetch('/api/generate-recipe', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.7 } }),
+                    body: JSON.stringify({ action: 'batch-product-desc', payload: { productNames } }),
                   });
-                  if (!response.ok) throw new Error('API error');
-                  const data = await response.json();
-                  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                  const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-                  if (!jsonMatch) throw new Error('Invalid JSON');
-                  const descs = JSON.parse(jsonMatch[0]) as Record<string, string>;
+                  const json = await res.json();
+                  if (!json.ok) throw new Error(json.error || 'AI error');
+                  const descs = json.data as Record<string, string>;
                   let count = 0;
                   const updates: Product[] = [];
                   for (const [pid, desc] of Object.entries(descs)) {
@@ -2950,10 +2837,10 @@ ${context}
                 {isAnalyzing ? (
                   <div className="flex flex-col items-center gap-4">
                     <div className="flex gap-2"><div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div><div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div><div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce"></div></div>
-                    <p className="text-xs font-black text-blue-400 uppercase tracking-widest">Gemini 正在分析實時數據...</p>
+                    <p className="text-xs font-black text-blue-400 uppercase tracking-widest">AI 正在分析實時數據...</p>
                   </div>
                 ) : (
-                  <div className="text-slate-600 text-sm font-bold leading-relaxed whitespace-pre-wrap">{aiAnalysis || "點擊按鈕獲取由 Gemini 3 Pro 提供的專業經營策略。"}</div>
+                  <div className="text-slate-600 text-sm font-bold leading-relaxed whitespace-pre-wrap">{aiAnalysis || "點擊按鈕獲取由 AI 提供的專業經營策略。"}</div>
                 )}
               </div>
             </div>
@@ -3601,34 +3488,13 @@ ${context}
                   <button disabled={aiRecipeLoading} onClick={async () => {
                     setAiRecipeLoading(true);
                     try {
-                      const prompt = `你是一個專業中式家常菜廚師。請生成 6 個適合香港家庭的食譜（繁體中文）。
-回覆嚴格 JSON 陣列格式（不要 markdown wrapper），每個元素包含：
-{
-  "title": "食譜名稱",
-  "description": "一句話簡介",
-  "cooking_time": 數字(分鐘),
-  "serving_size": "1-2人份 或 3-4人份",
-  "category_ids": ["從以下選：${recipeCategories.map(c => c.id).join(', ')}"],
-  "ingredients": [{"name":"食材名","amount":"份量"}],
-  "steps": [{"order":1,"content":"步驟描述"}]
-}
-
-要求：
-- 多樣化：包含快炒、燉煮、意粉、氣炸鍋等不同類型
-- 每個食譜 4-6 個步驟
-- 食材份量要具體
-- 不要使用特殊/難買的食材`;
-                      const geminiKey = (import.meta.env.VITE_GEMINI_API_KEY as string) || process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-                      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
+                      const res = await fetch('/api/generate-recipe', {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.8 } }),
+                        body: JSON.stringify({ action: 'batch-recipes', payload: { categoryIds: recipeCategories.map(c => c.id) } }),
                       });
-                      if (!response.ok) throw new Error('API error');
-                      const data = await response.json();
-                      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                      const jsonMatch = rawText.match(/\[[\s\S]*\]/);
-                      if (!jsonMatch) throw new Error('Invalid JSON');
-                      const parsed = JSON.parse(jsonMatch[0]) as any[];
+                      const json = await res.json();
+                      if (!json.ok) throw new Error(json.error || 'AI error');
+                      const parsed = json.data as any[];
                       let count = 0;
                       for (const r of parsed) {
                         const recipe: StandaloneRecipe = {
@@ -4398,15 +4264,13 @@ ${context}
                       if (!editingProduct.name.trim()) { showToast('填寫產品名稱讓 AI 可以跟據名稱作出描述', 'error'); return; }
                       setAiDescLoading(true);
                       try {
-                        const prompt = `你是一個凍肉零售店的產品描述撰寫員。請為以下凍肉產品撰寫一段吸引人的繁體中文產品描述（2-3句），強調品質、新鮮度和口感。只回覆描述文字，不要加任何標點符號以外的格式。\n\n產品名稱：${editingProduct.name}`;
-                        const geminiKey = (import.meta.env.VITE_GEMINI_API_KEY as string) || process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-                        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
+                        const res = await fetch('/api/generate-recipe', {
                           method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.7 } }),
+                          body: JSON.stringify({ action: 'single-product-desc', payload: { productName: editingProduct.name } }),
                         });
-                        if (!response.ok) throw new Error('API error');
-                        const data = await response.json();
-                        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+                        const json = await res.json();
+                        if (!json.ok) throw new Error(json.error || 'AI error');
+                        const text = json.data.description || '';
                         if (text) { setEditingProduct({ ...editingProduct, description: text }); showToast('AI 已生成描述'); }
                         else showToast('AI 無法生成描述', 'error');
                       } catch { showToast('AI 生成失敗，請稍後重試', 'error'); }
@@ -4961,8 +4825,6 @@ ${context}
   };
 
   const handleCancelPayment = () => {
-    try { airwallexElementRef.current?.destroy?.(); } catch { /* ignore */ }
-    airwallexElementRef.current = null;
     setPaymentModalData(null);
     setCheckoutStep('details');
   };
@@ -4986,54 +4848,10 @@ ${context}
 
     if (isPaymentStep) {
       return (
-        <div className="flex-1 bg-slate-50 min-h-screen pb-48 overflow-y-auto animate-fade-in">
-          {isRedirectingToPayment && (
-            <div className="fixed inset-0 bg-white/90 backdrop-blur-sm z-[8000] flex flex-col items-center justify-center gap-4 animate-fade-in">
-              <RefreshCw size={32} className="animate-spin text-blue-600" />
-              <p className="text-sm font-black text-slate-700">{lang === 'en' ? 'Preparing payment...' : '正在準備支付...'}</p>
-            </div>
-          )}
-          <header className="bg-white sticky top-0 z-40 px-4 py-3.5 border-b border-slate-200/60 flex items-center justify-between">
-            <button onClick={handleCancelPayment} className="p-2 -ml-1 hover:bg-slate-50 rounded-full transition-colors"><ChevronLeft size={22} className="text-slate-700" /></button>
-            <h2 className="text-base font-black text-slate-900 tracking-tight">{lang === 'en' ? 'Payment' : '選擇付款方式'}</h2>
-            <div className="w-10" />
-          </header>
-
-          <div className="p-4 sm:p-6 space-y-3">
-            <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
-              <div className="px-5 py-4 flex items-center justify-between">
-                <div>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{paymentModalData.orderIdDisplay}</p>
-                  <p className="text-[11px] font-bold text-slate-500 mt-0.5">
-                    {cart.reduce((s, i) => s + i.qty, 0)} {lang === 'en' ? 'items' : '件商品'}
-                    {deliveryFee > 0 && <span className="text-slate-300 mx-1.5">·</span>}
-                    {deliveryFee > 0 && <span>{lang === 'en' ? 'Shipping' : '運費'} ${deliveryFee}</span>}
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{lang === 'en' ? 'Total' : '合計'}</p>
-                  <p className="text-xl font-black text-slate-900">${total}</p>
-                </div>
-              </div>
-            </section>
-
-            <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
-              <div className="px-5 pt-5 pb-3">
-                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">{lang === 'en' ? 'Payment Method' : '付款方式'}</p>
-              </div>
-              <div className="px-5 pb-6">
-                <div ref={airwallexDropinRef} id="airwallex-dropin" className="min-h-[200px]" />
-                <div id="airwallex-auth-form" />
-              </div>
-            </section>
-
-            <div className="pt-2">
-              <button onClick={handleCancelPayment} className="w-full py-3.5 bg-white text-slate-500 rounded-xl font-black text-xs border border-slate-200 flex items-center justify-center gap-1.5 hover:bg-slate-50 transition-colors active:scale-[0.98]">
-                <ChevronLeft size={14} />
-                {lang === 'en' ? 'Change order / Try another method' : '修改訂單 / 更換付款方式'}
-              </button>
-            </div>
-          </div>
+        <div className="flex-1 bg-slate-50 min-h-screen flex flex-col items-center justify-center gap-4 animate-fade-in">
+          <RefreshCw size={32} className="animate-spin text-blue-600" />
+          <p className="text-sm font-black text-slate-700">{lang === 'en' ? 'Redirecting to payment...' : '正在跳轉至支付頁面...'}</p>
+          <p className="text-xs text-slate-400">{lang === 'en' ? 'You will be redirected to Airwallex secure checkout' : '即將跳轉至 Airwallex 安全支付頁面'}</p>
         </div>
       );
     }
@@ -5784,6 +5602,19 @@ ${context}
             </nav>
           )}
         </>
+      )}
+      {(aiRecipeLoading || aiDescLoading || isAnalyzing) && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[9999] flex items-center justify-center" onClick={e => e.stopPropagation()}>
+          <div className="bg-white rounded-3xl p-8 shadow-2xl flex flex-col items-center gap-4 max-w-xs mx-auto">
+            <div className="flex gap-2">
+              <div className="w-3 h-3 bg-purple-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+              <div className="w-3 h-3 bg-purple-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+              <div className="w-3 h-3 bg-purple-400 rounded-full animate-bounce"></div>
+            </div>
+            <p className="text-sm font-black text-slate-700">AI 正在構思美味食譜...</p>
+            <p className="text-[10px] text-slate-400 font-bold text-center">請稍候，系統會自動重試以確保成功</p>
+          </div>
+        </div>
       )}
       {renderGlobalModals()}
     </div>
