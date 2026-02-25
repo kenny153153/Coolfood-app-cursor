@@ -1,26 +1,11 @@
 /**
  * 手機通知服務 (Phone Notification Service)
- * ====================================================
  * 統一的手機通知發送邏輯。使用 Ultramsg WhatsApp API。
  *
- * 行為：
- *   1. console.log — 永遠輸出（方便偵錯）
- *   2. Supabase notification_logs — 持久化寫入日誌
- *   3. Ultramsg WhatsApp — 真實發送（需設定 ULTRAMSG_INSTANCE_ID + ULTRAMSG_TOKEN）
- *
- * 使用方式：
- *   import { sendPhoneNotification } from '../services/notification';
- *   await sendPhoneNotification(supabaseAdmin, { orderId, newStatus, waybillNo });
- *
- * 安全性：所有通知操作均以 try/catch 包裹，失敗不會影響訂單流程。
+ * WhatsApp 邏輯直接內嵌，避免 Vercel serverless 跨檔案 import 錯誤。
  */
 
 import { SupabaseClient } from '@supabase/supabase-js';
-import { sendWhatsAppMessage } from '../send-whatsapp';
-
-// ────────────────────────────────────────────────────────────────────
-// 類型
-// ────────────────────────────────────────────────────────────────────
 
 export interface PhoneNotificationEvent {
   orderId: string;
@@ -33,9 +18,45 @@ export interface PhoneNotificationEvent {
 type Provider = 'ULTRAMSG' | 'MOCK';
 type DeliveryStatus = 'LOGGED' | 'SENT' | 'FAILED';
 
-// ────────────────────────────────────────────────────────────────────
-// 廣東話通知模板
-// ────────────────────────────────────────────────────────────────────
+// ─── Inline WhatsApp helper ──────────────────────────────────────────
+
+function formatHKPhone(phone: string): string {
+  const digits = phone.replace(/[^0-9]/g, '');
+  if (digits.length === 8) return `+852${digits}`;
+  if (digits.length === 11 && digits.startsWith('852')) return `+${digits}`;
+  if (digits.length === 12 && digits.startsWith('852')) return `+${digits.slice(0, 11)}`;
+  if (!phone.startsWith('+') && digits.length > 8) return `+${digits}`;
+  return phone.startsWith('+') ? phone : `+${digits}`;
+}
+
+async function sendWhatsAppMessage(to: string, body: string): Promise<{ success: boolean; error?: string }> {
+  const instanceId = (process.env.ULTRAMSG_INSTANCE_ID ?? '').trim();
+  const token = (process.env.ULTRAMSG_TOKEN ?? '').trim();
+  if (!instanceId || !token) return { success: false, error: 'Ultramsg not configured' };
+
+  const phone = formatHKPhone(to);
+  try {
+    const res = await fetch(`https://api.ultramsg.com/${instanceId}/messages/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, to: phone, body }),
+    });
+    const text = await res.text();
+    let data: any;
+    try { data = JSON.parse(text); } catch { data = {}; }
+    if (!res.ok || data.error) {
+      const errMsg = data.error || `HTTP ${res.status}: ${text.slice(0, 150)}`;
+      console.error(`[WhatsApp] Send failed to ${phone}:`, errMsg);
+      return { success: false, error: errMsg };
+    }
+    console.log(`[WhatsApp] Sent to ${phone}, id: ${data.id ?? 'unknown'}`);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ─── Message templates ───────────────────────────────────────────────
 
 function buildMessageContent(event: PhoneNotificationEvent): string | null {
   const { orderId, newStatus, waybillNo } = event;
@@ -56,28 +77,17 @@ function buildMessageContent(event: PhoneNotificationEvent): string | null {
   }
 }
 
-// ────────────────────────────────────────────────────────────────────
-// 從 orders 表查詢客戶電話
-// ────────────────────────────────────────────────────────────────────
-
 async function lookupCustomerPhone(supabase: SupabaseClient, orderId: string): Promise<string | null> {
   try {
     const dbId = orderId.replace(/^ORD-/, '');
     const { data, error } = await supabase
-      .from('orders')
-      .select('customer_phone')
-      .eq('id', dbId)
-      .maybeSingle();
+      .from('orders').select('customer_phone').eq('id', dbId).maybeSingle();
     if (error || !data) return null;
     return data.customer_phone?.trim() || null;
   } catch {
     return null;
   }
 }
-
-// ────────────────────────────────────────────────────────────────────
-// 寫入 notification_logs
-// ────────────────────────────────────────────────────────────────────
 
 async function writeNotificationLog(
   supabase: SupabaseClient,
@@ -103,9 +113,7 @@ async function writeNotificationLog(
   }
 }
 
-// ────────────────────────────────────────────────────────────────────
-// 主入口
-// ────────────────────────────────────────────────────────────────────
+// ─── Main entry ──────────────────────────────────────────────────────
 
 export async function sendPhoneNotification(
   supabase: SupabaseClient,
@@ -113,21 +121,15 @@ export async function sendPhoneNotification(
 ): Promise<void> {
   try {
     const message = buildMessageContent(event);
-    if (!message) {
-      console.log(`[Notification] No template for status "${event.newStatus}", skip`);
-      return;
-    }
+    if (!message) return;
 
     let phone = event.customerPhone?.trim() || null;
-    if (!phone) {
-      phone = await lookupCustomerPhone(supabase, event.orderId);
-    }
+    if (!phone) phone = await lookupCustomerPhone(supabase, event.orderId);
 
     console.log(
       `[Notification] ${event.newStatus.toUpperCase()} | ${event.orderId}` +
       (phone ? ` | ${phone}` : ' | (no phone)') +
-      (event.waybillNo ? ` | 運單 ${event.waybillNo}` : '') +
-      ` | ${message}`,
+      (event.waybillNo ? ` | 運單 ${event.waybillNo}` : ''),
     );
 
     let provider: Provider = 'MOCK';
@@ -135,18 +137,12 @@ export async function sendPhoneNotification(
 
     if (phone) {
       const result = await sendWhatsAppMessage(phone, message);
-      if (result.success) {
-        provider = 'ULTRAMSG';
-        deliveryStatus = 'SENT';
-      } else {
-        console.warn(`[Notification] WhatsApp failed: ${result.error}`);
-        provider = 'ULTRAMSG';
-        deliveryStatus = 'FAILED';
-      }
+      provider = 'ULTRAMSG';
+      deliveryStatus = result.success ? 'SENT' : 'FAILED';
+      if (!result.success) console.warn(`[Notification] WhatsApp failed: ${result.error}`);
     }
 
     await writeNotificationLog(supabase, event, phone, message, provider, deliveryStatus);
-    console.log(`[Notification] Done: ${event.orderId} → ${provider} (${deliveryStatus})`);
   } catch (err) {
     console.error('[Notification] Unexpected error (swallowed):', err instanceof Error ? err.message : err);
   }

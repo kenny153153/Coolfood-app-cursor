@@ -403,63 +403,72 @@ const SuccessView: React.FC<{
   return (
     <div className="flex-1 bg-slate-50 min-h-screen flex flex-col items-center justify-center p-6 pb-24 animate-fade-in">
       <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-lg p-10 max-w-md w-full text-center space-y-6">
-        <div className="w-20 h-20 mx-auto rounded-full bg-emerald-100 flex items-center justify-center"><CheckCircle className="w-12 h-12 text-emerald-600" /></div>
-        <h2 className="text-2xl font-black text-slate-900">{t.success.paymentConfirmed}</h2>
-        <p className="text-slate-600 font-bold text-sm">{t.success.waybillGenerating}</p>
-
-        {successWaybillLoading && (
-          <p className="text-slate-600 text-sm font-bold">{t.success.verifyingPayment}</p>
-        )}
-
-        {!successWaybillLoading && confirmSuccess && successWaybill && (
-          <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{t.success.sfWaybill}</p>
-            <p className="text-lg font-black text-slate-900 tracking-wide">{successWaybill}</p>
-          </div>
-        )}
-
-        {!successWaybillLoading && confirmSuccess && !successWaybill && (
-          <p className="text-slate-400 text-xs">{t.success.waybillLater}</p>
-        )}
-
-        {!successWaybillLoading && confirmError && (
-          <div className="space-y-3">
-            <p className="text-rose-600 text-sm font-bold">{confirmError}</p>
-            <button type="button" onClick={runConfirmPayment} className="w-full py-3 bg-rose-50 text-rose-700 rounded-2xl font-black text-sm border border-rose-200 hover:bg-rose-100">
+        {successWaybillLoading ? (
+          <>
+            <div className="w-20 h-20 mx-auto rounded-full bg-blue-50 flex items-center justify-center">
+              <RefreshCw className="w-10 h-10 text-blue-500 animate-spin" />
+            </div>
+            <h2 className="text-xl font-black text-slate-900">{t.success.verifyingPayment}</h2>
+            <p className="text-slate-400 text-sm font-bold">請稍候...</p>
+          </>
+        ) : confirmError && !confirmSuccess ? (
+          <>
+            <div className="w-20 h-20 mx-auto rounded-full bg-amber-50 flex items-center justify-center">
+              <AlertTriangle className="w-10 h-10 text-amber-500" />
+            </div>
+            <h2 className="text-xl font-black text-slate-900">支付確認中</h2>
+            <p className="text-slate-500 text-sm font-bold">支付已記錄，但確認過程稍有延遲。你的訂單不會受影響。</p>
+            <p className="text-rose-500 text-xs font-bold">{confirmError}</p>
+            <button type="button" onClick={runConfirmPayment} className="w-full py-3 bg-slate-100 text-slate-700 rounded-2xl font-black text-sm hover:bg-slate-200 transition-all">
               {t.success.retryManual}
             </button>
-          </div>
+            <button type="button" onClick={onViewOrders} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm">{t.success.viewOrders}</button>
+          </>
+        ) : (
+          <>
+            <div className="w-20 h-20 mx-auto rounded-full bg-emerald-100 flex items-center justify-center">
+              <CheckCircle className="w-12 h-12 text-emerald-600" />
+            </div>
+            <h2 className="text-2xl font-black text-slate-900">{t.success.paymentConfirmed}</h2>
+            <p className="text-slate-500 font-bold text-sm">{t.success.waybillGenerating}</p>
+
+            {successWaybill && (
+              <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{t.success.sfWaybill}</p>
+                <p className="text-lg font-black text-slate-900 tracking-wide">{successWaybill}</p>
+              </div>
+            )}
+
+            {(() => {
+              const params = new URLSearchParams(window.location.search);
+              const orderId = params.get('order') || '---';
+              const itemsList = cart.length > 0
+                ? cart.map(i => `${i.name} x${i.qty}`).join(', ')
+                : '(見訂單詳情)';
+              const delivery = deliveryMethod === 'sf_locker' ? '順豐凍櫃自取' : '順豐冷鏈上門';
+              const msg = encodeURIComponent(
+                `訂單確認\n` +
+                `Order: ${orderId}\n` +
+                `Items: ${itemsList}\n` +
+                `Total: $${total}\n` +
+                `Delivery: ${delivery}\n` +
+                `多謝惠顧！`
+              );
+              return (
+                <a
+                  href={`https://wa.me/${SHOP_WHATSAPP}?text=${msg}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-full py-4 bg-green-600 text-white rounded-2xl font-black text-sm flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all"
+                >
+                  <MessageCircle size={18} fill="currentColor" /> WhatsApp 確認訂單
+                </a>
+              );
+            })()}
+
+            <button type="button" onClick={onViewOrders} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm">{t.success.viewOrders}</button>
+          </>
         )}
-
-        {!successWaybillLoading && confirmSuccess && (() => {
-          const params = new URLSearchParams(window.location.search);
-          const orderId = params.get('order') || '---';
-          const itemsList = cart.length > 0
-            ? cart.map(i => `${i.name} x${i.qty}`).join(', ')
-            : '(見訂單詳情)';
-          const delivery = deliveryMethod === 'sf_locker' ? '順豐凍櫃自取' : '順豐冷鏈上門';
-          const msg = encodeURIComponent(
-            `訂單確認\n` +
-            `Order: ${orderId}\n` +
-            `Items: ${itemsList}\n` +
-            `Total: $${total}\n` +
-            `Delivery: ${delivery}\n` +
-            `${successWaybill ? `SF Waybill: ${successWaybill}\n` : ''}` +
-            `多謝惠顧！`
-          );
-          return (
-            <a
-              href={`https://wa.me/${SHOP_WHATSAPP}?text=${msg}`}
-              target="_blank"
-              rel="noreferrer"
-              className="w-full py-4 bg-green-600 text-white rounded-2xl font-black text-sm flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all"
-            >
-              <MessageCircle size={18} fill="currentColor" /> WhatsApp 確認訂單
-            </a>
-          );
-        })()}
-
-        <button type="button" onClick={onViewOrders} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm">{t.success.viewOrders}</button>
       </div>
     </div>
   );
@@ -555,6 +564,7 @@ const App: React.FC = () => {
   const [recipeAdminSubTab, setRecipeAdminSubTab] = useState<'recipes' | 'categories'>('recipes');
   const [recipeProductSearch, setRecipeProductSearch] = useState('');
   const [aiRecipeLoading, setAiRecipeLoading] = useState(false);
+  const [aiBatchProgress, setAiBatchProgress] = useState<{ current: number; total: number; label: string } | null>(null);
   const [selectedLockerDistrict, setSelectedLockerDistrict] = useState('');
   const [selectedLockerCode, setSelectedLockerCode] = useState('');
   const lockerPointsForDistrict = useMemo(() => getPointsByDistrict(selectedLockerDistrict), [selectedLockerDistrict]);
@@ -2609,30 +2619,33 @@ const App: React.FC = () => {
               <button disabled={aiDescLoading} onClick={async () => {
                 const toGenerate = products.filter(p => p.name.trim() && (!p.description || p.description.trim() === ''));
                 if (toGenerate.length === 0) { showToast('所有產品已有描述'); return; }
+                const batch = toGenerate.slice(0, 20);
+                const COOLDOWN_MS = 6000;
                 setAiDescLoading(true);
-                try {
-                  const productNames: Record<string, string> = {};
-                  for (const p of toGenerate.slice(0, 30)) productNames[p.id] = p.name;
-                  const res = await fetch('/api/generate-recipe', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'batch-product-desc', payload: { productNames } }),
-                  });
-                  const json = await res.json();
-                  if (!json.ok) throw new Error(json.error || 'AI error');
-                  const descs = json.data as Record<string, string>;
-                  let count = 0;
-                  const updates: Product[] = [];
-                  for (const [pid, desc] of Object.entries(descs)) {
-                    const p = products.find(x => x.id === pid);
-                    if (p && typeof desc === 'string' && desc.trim()) {
-                      updates.push({ ...p, description: desc.trim() });
-                      count++;
-                    }
-                  }
-                  for (const u of updates) upsertProduct(u);
-                  showToast(`AI 已為 ${count} 個產品生成描述`);
-                } catch { showToast('AI 批量生成失敗', 'error'); }
+                let successCount = 0;
+                let failCount = 0;
+                for (let i = 0; i < batch.length; i++) {
+                  const p = batch[i];
+                  setAiBatchProgress({ current: i + 1, total: batch.length, label: `正在為「${p.name}」生成描述 (${i + 1}/${batch.length})...` });
+                  try {
+                    const res = await fetch('/api/generate-recipe', {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ action: 'single-product-desc', payload: { productName: p.name } }),
+                    });
+                    const json = await res.json();
+                    if (json.ok && json.data?.description) {
+                      upsertProduct({ ...p, description: json.data.description });
+                      successCount++;
+                    } else { failCount++; }
+                  } catch { failCount++; }
+                  if (i < batch.length - 1) await new Promise(r => setTimeout(r, COOLDOWN_MS));
+                }
+                setAiBatchProgress(null);
                 setAiDescLoading(false);
+                const msg = failCount > 0
+                  ? `AI 完成：${successCount} 個成功，${failCount} 個失敗`
+                  : `AI 已為 ${successCount} 個產品生成描述`;
+                showToast(msg, failCount > 0 ? 'error' : 'success');
               }} className="px-6 py-3 bg-purple-600 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-sm hover:bg-purple-700 transition-all disabled:opacity-50">
                 {aiDescLoading ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />} AI 批量寫描述
               </button>
@@ -3486,17 +3499,22 @@ const App: React.FC = () => {
                 <p className="text-slate-400 font-bold text-sm">{recipes.length} 個食譜</p>
                 <div className="flex gap-2">
                   <button disabled={aiRecipeLoading} onClick={async () => {
+                    const BATCH_COUNT = 5;
+                    const COOLDOWN_MS = 6000;
                     setAiRecipeLoading(true);
-                    try {
-                      const res = await fetch('/api/generate-recipe', {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action: 'batch-recipes', payload: { categoryIds: recipeCategories.map(c => c.id) } }),
-                      });
-                      const json = await res.json();
-                      if (!json.ok) throw new Error(json.error || 'AI error');
-                      const parsed = json.data as any[];
-                      let count = 0;
-                      for (const r of parsed) {
+                    let successCount = 0;
+                    let failCount = 0;
+                    const catIds = recipeCategories.map(c => c.id);
+                    for (let i = 0; i < BATCH_COUNT; i++) {
+                      setAiBatchProgress({ current: i + 1, total: BATCH_COUNT, label: `正在生成第 ${i + 1}/${BATCH_COUNT} 個食譜...` });
+                      try {
+                        const res = await fetch('/api/generate-recipe', {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ action: 'single-recipe', payload: { title: '', linkedProductNames: [], categoryIds: catIds } }),
+                        });
+                        const json = await res.json();
+                        if (!json.ok) { failCount++; continue; }
+                        const r = json.data;
                         const recipe: StandaloneRecipe = {
                           id: crypto.randomUUID(),
                           title: r.title || '',
@@ -3511,16 +3529,16 @@ const App: React.FC = () => {
                           steps: Array.isArray(r.steps) ? r.steps : [],
                           linkedProductIds: [],
                         };
-                        if (recipe.title) {
-                          await upsertRecipe(recipe);
-                          count++;
-                        }
-                      }
-                      showToast(`AI 已生成 ${count} 個食譜`);
-                    } catch (err) {
-                      showToast('AI 生成失敗，請稍後重試', 'error');
+                        if (recipe.title) { await upsertRecipe(recipe); successCount++; }
+                      } catch { failCount++; }
+                      if (i < BATCH_COUNT - 1) await new Promise(r => setTimeout(r, COOLDOWN_MS));
                     }
+                    setAiBatchProgress(null);
                     setAiRecipeLoading(false);
+                    const msg = failCount > 0
+                      ? `AI 完成：${successCount} 個成功，${failCount} 個失敗`
+                      : `AI 已生成 ${successCount} 個食譜`;
+                    showToast(msg, failCount > 0 ? 'error' : 'success');
                   }} className="px-5 py-3 bg-purple-50 text-purple-600 border border-purple-200 rounded-2xl font-black text-xs flex items-center gap-2 hover:bg-purple-100 transition-all disabled:opacity-50">
                     {aiRecipeLoading ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />}
                     AI 批量生成食譜
@@ -5605,14 +5623,29 @@ const App: React.FC = () => {
       )}
       {(aiRecipeLoading || aiDescLoading || isAnalyzing) && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[9999] flex items-center justify-center" onClick={e => e.stopPropagation()}>
-          <div className="bg-white rounded-3xl p-8 shadow-2xl flex flex-col items-center gap-4 max-w-xs mx-auto">
+          <div className="bg-white rounded-3xl p-8 shadow-2xl flex flex-col items-center gap-4 max-w-sm mx-auto w-full">
             <div className="flex gap-2">
               <div className="w-3 h-3 bg-purple-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
               <div className="w-3 h-3 bg-purple-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
               <div className="w-3 h-3 bg-purple-400 rounded-full animate-bounce"></div>
             </div>
-            <p className="text-sm font-black text-slate-700">AI 正在構思美味食譜...</p>
-            <p className="text-[10px] text-slate-400 font-bold text-center">請稍候，系統會自動重試以確保成功</p>
+            {aiBatchProgress ? (
+              <>
+                <p className="text-sm font-black text-slate-700">{aiBatchProgress.label}</p>
+                <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
+                  <div
+                    className="bg-purple-500 h-full rounded-full transition-all duration-500"
+                    style={{ width: `${Math.round((aiBatchProgress.current / aiBatchProgress.total) * 100)}%` }}
+                  />
+                </div>
+                <p className="text-[10px] text-slate-400 font-bold text-center">每個請求間隔 6 秒以避免頻率限制</p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-black text-slate-700">AI 正在構思中...</p>
+                <p className="text-[10px] text-slate-400 font-bold text-center">請稍候</p>
+              </>
+            )}
           </div>
         </div>
       )}
