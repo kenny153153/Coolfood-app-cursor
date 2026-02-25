@@ -620,6 +620,7 @@ const App: React.FC = () => {
   } | null>(null);
   const airwallexDropinRef = useRef<HTMLDivElement>(null);
   const airwallexElementRef = useRef<any>(null);
+  const airwallexInitDone = useRef(false);
   const [checkoutStep, setCheckoutStep] = useState<'details' | 'payment'>('details');
 
   // Slideshow (store-front ad carousel)
@@ -2357,6 +2358,7 @@ ${context}
       return;
     }
     const { intent_id, client_secret, currency = 'HKD', country_code = 'HK' } = intentData;
+    console.log('[Checkout] Intent response:', { intent_id, hasSecret: !!client_secret, currency, country_code });
     if (!intent_id || !client_secret) {
       setIsRedirectingToPayment(false);
       showToast('Payment system is currently busy, please try again in a moment.', 'error');
@@ -2394,49 +2396,67 @@ ${context}
     if (typeof window !== 'undefined' && intent_id) {
       try { window.sessionStorage.setItem('airwallex_payment_intent_id', intent_id); } catch { /* ignore */ }
     }
+    console.log('[Checkout] Order inserted, switching to payment step (intent=%s)', intent_id);
     setPaymentModalData({ intent_id, client_secret, currency, country_code, orderIdDisplay });
     setCheckoutStep('payment');
     setIsRedirectingToPayment(false);
   };
 
   // Mount Airwallex Drop-in Element inline when payment step is active
+  // Pattern follows official demo: https://github.com/airwallex/airwallex-payment-demo
   useEffect(() => {
     if (!paymentModalData || !airwallexDropinRef.current) return;
     let destroyed = false;
-    const mobile = isMobileDevice();
+
     const mountDropin = async () => {
       try {
-        const sdk = await import('@airwallex/components-sdk');
+        console.log('[Airwallex] Step 1: Importing SDK...');
+        const { init: awxInit, createElement: awxCreate } = await import('@airwallex/components-sdk');
         const airwallexEnv = (import.meta.env.VITE_AIRWALLEX_ENV as string) || 'demo';
-        if (airwallexEnv === 'demo') console.log('Airwallex Sandbox Mode Active');
-        const { payments } = await sdk.init({ env: airwallexEnv as 'demo' | 'prod', enabledElements: ['payments'] });
+
+        if (!airwallexInitDone.current) {
+          console.log('[Airwallex] Step 2: Initializing SDK (env=%s) — first time only...', airwallexEnv);
+          await awxInit({ env: airwallexEnv as 'demo' | 'prod', enabledElements: ['payments'] });
+          airwallexInitDone.current = true;
+          console.log('[Airwallex] SDK initialized OK');
+        } else {
+          console.log('[Airwallex] Step 2: SDK already initialized, skipping init()');
+        }
         if (destroyed) return;
-        const successUrl = typeof window !== 'undefined'
-          ? `${window.location.origin}/success?order=${encodeURIComponent(paymentModalData.orderIdDisplay)}&payment_intent_id=${encodeURIComponent(paymentModalData.intent_id)}`
-          : 'https://coolfood-app-cursor.vercel.app/success';
-        const dropInOptions: Record<string, any> = {
+
+        console.log('[Airwallex] Step 3: Creating Drop-in element...');
+        console.log('[Airwallex]   intent_id:', paymentModalData.intent_id);
+        console.log('[Airwallex]   currency:', paymentModalData.currency);
+        console.log('[Airwallex]   country_code:', paymentModalData.country_code);
+
+        const element = await awxCreate('dropIn', {
           intent_id: paymentModalData.intent_id,
           client_secret: paymentModalData.client_secret,
           currency: paymentModalData.currency,
           country_code: paymentModalData.country_code,
-          methods: ['apple_pay', 'googlepay', 'alipayhk', 'payme', 'card', 'fps'],
-          appearance: { variables: { colorBackground: '#ffffff', colorText: '#1e293b', colorBrand: '#2563eb' } },
-          authFormContainer: 'airwallex-auth-form',
-        };
-        if (mobile) {
-          dropInOptions.autoRedirect = true;
-          dropInOptions.successUrl = successUrl;
-          dropInOptions.failUrl = typeof window !== 'undefined' ? window.location.href : undefined;
-          dropInOptions.cancelUrl = typeof window !== 'undefined' ? window.location.href : undefined;
-          dropInOptions.returnUrl = successUrl;
+          autoCapture: true,
+          methods: ['card'],
+        } as any);
+
+        if (!element) {
+          console.error('[Airwallex] createElement returned null');
+          showToast('Payment element could not be created.', 'error');
+          return;
         }
-        const element = await payments.createElement('dropIn', dropInOptions as any);
-        if (destroyed) { element?.destroy?.(); return; }
+        if (destroyed) { element.destroy?.(); return; }
         airwallexElementRef.current = element;
+        console.log('[Airwallex] Step 4: Element created, attaching listeners & mounting...');
+
+        const origin = typeof window !== 'undefined' ? window.location.origin : '';
+        const orderId = paymentModalData.orderIdDisplay;
+        const intentId = paymentModalData.intent_id;
+
+        element.on('ready', (e: any) => {
+          console.log('[Airwallex] EVENT ready:', JSON.stringify(e?.detail ?? 'no detail'));
+        });
 
         element.on('success', async (e: any) => {
-          const intentResult = e?.detail?.intent ?? e?.detail;
-          console.log('[Airwallex] Payment success', intentResult?.id);
+          console.log('[Airwallex] EVENT success:', JSON.stringify(e?.detail ?? 'no detail'));
           setCart([]);
           setCheckoutStep('details');
           setShowCheckoutAddressForm(false);
@@ -2445,43 +2465,39 @@ ${context}
           setPaymentModalData(null);
           try { element.destroy(); } catch { /* ignore */ }
           airwallexElementRef.current = null;
-          const confirmUrl = `${window.location.origin}/api/confirm-payment`;
           try {
-            await fetch(confirmUrl, {
+            await fetch(`${origin}/api/confirm-payment`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ orderId: paymentModalData.orderIdDisplay, payment_intent_id: paymentModalData.intent_id }),
+              body: JSON.stringify({ orderId, payment_intent_id: intentId }),
             });
           } catch { /* non-blocking */ }
           if (typeof window !== 'undefined') {
-            window.history.replaceState(null, '', `/success?order=${encodeURIComponent(paymentModalData.orderIdDisplay)}&payment_intent_id=${encodeURIComponent(paymentModalData.intent_id)}`);
+            window.history.replaceState(null, '', `/success?order=${encodeURIComponent(orderId)}&payment_intent_id=${encodeURIComponent(intentId)}`);
           }
           setView('success');
         });
 
         element.on('error', (e: any) => {
-          console.error('[Airwallex] Payment error', e?.detail);
-          showToast(e?.detail?.message || 'Payment failed, please try again.', 'error');
+          const detail = e?.detail ?? e;
+          console.error('[Airwallex] EVENT error:', JSON.stringify(detail, null, 2));
+          const msg = detail?.message || detail?.error?.message || 'Payment failed, please try again.';
+          showToast(msg, 'error');
         });
 
         element.on('cancel', () => {
-          console.log('[Airwallex] Payment cancelled by user');
-        });
-
-        // Handle redirect-based methods (AlipayHK, PayMe, FPS) on mobile
-        (element as any).on('redirect', (e: any) => {
-          const redirectUrl = e?.detail?.url || e?.detail?.next_action?.url;
-          if (redirectUrl && typeof window !== 'undefined') {
-            window.location.href = redirectUrl;
-          }
+          console.log('[Airwallex] EVENT cancel');
         });
 
         if (airwallexDropinRef.current && !destroyed) {
           element.mount(airwallexDropinRef.current);
+          console.log('[Airwallex] Step 5: mount() called on container, waiting for ready event...');
+        } else {
+          console.warn('[Airwallex] Container ref lost or destroyed before mount');
         }
-      } catch (e) {
-        console.error('[Airwallex] Drop-in mount failed', e);
-        showToast('Payment system error. Please try again.', 'error');
+      } catch (e: any) {
+        console.error('[Airwallex] Drop-in mount FAILED:', e?.message ?? e, e);
+        showToast('Payment system error: ' + (e?.message || 'unknown'), 'error');
         setPaymentModalData(null);
         setCheckoutStep('details');
       }
