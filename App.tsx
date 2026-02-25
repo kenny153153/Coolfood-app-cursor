@@ -254,7 +254,7 @@ const StatusBadge: React.FC<{ status: OrderStatus; t?: { orderStatus: Record<str
     [OrderStatus.READY_FOR_PICKUP]: { label: getOrderStatusLabel(OrderStatus.READY_FOR_PICKUP, t), color: 'bg-amber-50 text-amber-700 border-amber-100' },
     [OrderStatus.SHIPPING]: { label: getOrderStatusLabel(OrderStatus.SHIPPING, t), color: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
     [OrderStatus.COMPLETED]: { label: getOrderStatusLabel(OrderStatus.COMPLETED, t), color: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
-    [OrderStatus.ABNORMAL]: { label: getOrderStatusLabel(OrderStatus.ABNORMAL, t), color: 'bg-rose-50 text-rose-700 border-rose-100' },
+    [OrderStatus.ABNORMAL]: { label: getOrderStatusLabel(OrderStatus.ABNORMAL, t), color: t ? 'bg-blue-50 text-blue-700 border-blue-100' : 'bg-rose-50 text-rose-700 border-rose-100' },
     [OrderStatus.REFUND]: { label: getOrderStatusLabel(OrderStatus.REFUND, t), color: 'bg-orange-50 text-orange-700 border-orange-100' },
   };
   const config = configs[status] || { label: String(status), color: 'bg-slate-50 text-slate-600 border-slate-100' };
@@ -2004,6 +2004,13 @@ const App: React.FC = () => {
 
     for (const row of validOrders) {
       const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
+
+      // Always advance to ready_for_pickup first — SF logistics is a bonus, not a gate
+      await supabase
+        .from('orders')
+        .update({ status: 'ready_for_pickup' })
+        .eq('id', row.id);
+
       try {
         const sfRes = await fetch(`${window.location.origin}/api/sf-order`, {
           method: 'POST',
@@ -2011,28 +2018,26 @@ const App: React.FC = () => {
           body: JSON.stringify({ orderId }),
         });
         const sfText = await sfRes.text();
-        let sfJson: { waybillNo?: string; waybill_no?: string } | null = null;
+        let sfJson: { waybillNo?: string; waybill_no?: string; success?: boolean } | null = null;
         try { sfJson = sfText ? JSON.parse(sfText) : null; } catch { sfJson = null; }
 
-        if (sfRes.ok && sfJson) {
-          const waybill = sfJson.waybill_no ?? sfJson.waybillNo ?? null;
-          // Update order status to ready_for_pickup and store waybill
+        const waybill = sfJson?.waybill_no ?? sfJson?.waybillNo ?? null;
+
+        if (sfRes.ok && sfJson?.success && waybill) {
           await supabase
             .from('orders')
             .update({
-              status: 'ready_for_pickup',
-              ...(waybill ? { waybill_no: waybill } : {}),
+              waybill_no: waybill,
               sf_responses: { status: sfRes.status, body: sfJson, at: new Date().toISOString() },
             })
             .eq('id', row.id);
           successCount++;
         } else {
-          // Mark as abnormal on failure
+          // SF failed but order stays at ready_for_pickup — log the error for admin
           await supabase
             .from('orders')
             .update({
-              status: 'abnormal',
-              sf_responses: { status: sfRes.status, body: sfText, at: new Date().toISOString(), error: true },
+              sf_responses: { status: sfRes.status, body: sfJson ?? sfText, at: new Date().toISOString(), sfError: true },
             })
             .eq('id', row.id);
           failCount++;
@@ -2041,7 +2046,6 @@ const App: React.FC = () => {
         await supabase
           .from('orders')
           .update({
-            status: 'abnormal',
             sf_responses: { error: true, message: e instanceof Error ? e.message : String(e), at: new Date().toISOString() },
           })
           .eq('id', row.id);
@@ -2053,8 +2057,8 @@ const App: React.FC = () => {
     setSelectedOrderIds(new Set());
     setSfValidationModal(null);
     const msg = failCount > 0
-      ? `順豐下單完成：${successCount} 成功、${failCount} 失敗（已標記異常）`
-      : `順豐下單完成：${successCount} 筆訂單已更新為「等待收件」`;
+      ? `已更新 ${validOrders.length} 筆為「等待收件」。順豐下單：${successCount} 成功、${failCount} 失敗（管理員可手動補填單號）`
+      : `順豐下單完成：${successCount} 筆訂單已取得物流單號`;
     showToast(msg, failCount > 0 ? 'error' : 'success');
     setBatchProcessing(false);
   };
@@ -5483,8 +5487,8 @@ const App: React.FC = () => {
                         <span>#{o.id} • {o.date}</span>
                         <div className="flex items-center gap-2">
                           <StatusBadge status={o.status as OrderStatus} t={t} />
-                          {!o.trackingNumber && (
-                            <span className="text-rose-600 px-2 py-0.5 bg-rose-50 rounded-md">{t.orders.noTracking}</span>
+                          {!o.trackingNumber && ['shipping'].includes(o.status) && (
+                            <span className="text-amber-600 px-2 py-0.5 bg-amber-50 rounded-md">{t.orders.noTracking}</span>
                           )}
                         </div>
                       </div>
