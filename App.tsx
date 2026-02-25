@@ -2403,7 +2403,6 @@ ${context}
   };
 
   // Mount Airwallex Drop-in Element inline when payment step is active
-  // Pattern follows official demo: https://github.com/airwallex/airwallex-payment-demo
   useEffect(() => {
     if (!paymentModalData || !airwallexDropinRef.current) return;
     let destroyed = false;
@@ -2411,48 +2410,59 @@ ${context}
     const mountDropin = async () => {
       try {
         console.log('[Airwallex] Step 1: Importing SDK...');
-        const { init: awxInit, createElement: awxCreate } = await import('@airwallex/components-sdk');
+        const sdk = await import('@airwallex/components-sdk');
         const airwallexEnv = (import.meta.env.VITE_AIRWALLEX_ENV as string) || 'demo';
 
+        let payments: any;
         if (!airwallexInitDone.current) {
-          console.log('[Airwallex] Step 2: Initializing SDK (env=%s) — first time only...', airwallexEnv);
-          await awxInit({ env: airwallexEnv as 'demo' | 'prod', enabledElements: ['payments'] });
+          console.log('[Airwallex] Step 2: init(env=%s, enabledElements=[payments])...', airwallexEnv);
+          const initResult = await sdk.init({ env: airwallexEnv as 'demo' | 'prod', enabledElements: ['payments'] });
+          payments = initResult?.payments;
           airwallexInitDone.current = true;
-          console.log('[Airwallex] SDK initialized OK');
+          (window as any).__awxPayments = payments;
+          console.log('[Airwallex] init OK. payments object:', !!payments, '| payments.createElement:', typeof payments?.createElement);
         } else {
-          console.log('[Airwallex] Step 2: SDK already initialized, skipping init()');
+          console.log('[Airwallex] Step 2: Already initialized, reusing...');
+          payments = (window as any).__awxPayments;
         }
         if (destroyed) return;
 
-        console.log('[Airwallex] Step 3: Creating Drop-in element...');
-        console.log('[Airwallex]   intent_id:', paymentModalData.intent_id);
-        console.log('[Airwallex]   currency:', paymentModalData.currency);
-        console.log('[Airwallex]   country_code:', paymentModalData.country_code);
-
-        const element = await awxCreate('dropIn', {
+        const dropInOpts: Record<string, any> = {
           intent_id: paymentModalData.intent_id,
           client_secret: paymentModalData.client_secret,
           currency: paymentModalData.currency,
-          country_code: paymentModalData.country_code,
-          autoCapture: true,
           methods: ['card'],
-        } as any);
+        };
+
+        console.log('[Airwallex] Step 3: Creating dropIn element...');
+        console.log('[Airwallex]   intent_id:', paymentModalData.intent_id);
+        console.log('[Airwallex]   client_secret length:', paymentModalData.client_secret?.length);
+        console.log('[Airwallex]   currency:', paymentModalData.currency);
+
+        let element: any = null;
+        if (payments && typeof payments.createElement === 'function') {
+          console.log('[Airwallex] Using payments.createElement (preferred for payment elements)');
+          element = await payments.createElement('dropIn', dropInOpts);
+        } else {
+          console.log('[Airwallex] payments.createElement not available, using sdk.createElement');
+          element = await sdk.createElement('dropIn', dropInOpts as any);
+        }
 
         if (!element) {
-          console.error('[Airwallex] createElement returned null');
+          console.error('[Airwallex] createElement returned null/undefined');
           showToast('Payment element could not be created.', 'error');
           return;
         }
         if (destroyed) { element.destroy?.(); return; }
         airwallexElementRef.current = element;
-        console.log('[Airwallex] Step 4: Element created, attaching listeners & mounting...');
+        console.log('[Airwallex] Step 4: Element created OK, attaching listeners...');
 
         const origin = typeof window !== 'undefined' ? window.location.origin : '';
         const orderId = paymentModalData.orderIdDisplay;
         const intentId = paymentModalData.intent_id;
 
         element.on('ready', (e: any) => {
-          console.log('[Airwallex] EVENT ready:', JSON.stringify(e?.detail ?? 'no detail'));
+          console.log('[Airwallex] EVENT ready:', JSON.stringify(e?.detail ?? 'ok'));
         });
 
         element.on('success', async (e: any) => {
@@ -2480,7 +2490,9 @@ ${context}
 
         element.on('error', (e: any) => {
           const detail = e?.detail ?? e;
-          console.error('[Airwallex] EVENT error:', JSON.stringify(detail, null, 2));
+          console.error('[Airwallex] EVENT error (full object):');
+          console.dir(detail);
+          console.error('[Airwallex] EVENT error (JSON):', JSON.stringify(detail, null, 2));
           const msg = detail?.message || detail?.error?.message || 'Payment failed, please try again.';
           showToast(msg, 'error');
         });
@@ -2490,13 +2502,13 @@ ${context}
         });
 
         if (airwallexDropinRef.current && !destroyed) {
+          console.log('[Airwallex] Step 5: Mounting to DOM...');
           element.mount(airwallexDropinRef.current);
-          console.log('[Airwallex] Step 5: mount() called on container, waiting for ready event...');
-        } else {
-          console.warn('[Airwallex] Container ref lost or destroyed before mount');
+          console.log('[Airwallex] mount() called, waiting for ready event...');
         }
       } catch (e: any) {
-        console.error('[Airwallex] Drop-in mount FAILED:', e?.message ?? e, e);
+        console.error('[Airwallex] Drop-in FAILED:');
+        console.dir(e);
         showToast('Payment system error: ' + (e?.message || 'unknown'), 'error');
         setPaymentModalData(null);
         setCheckoutStep('details');

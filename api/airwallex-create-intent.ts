@@ -112,6 +112,7 @@ export default async function handler(req: { method?: string; body?: { amount?: 
         currency: 'HKD',
         merchant_order_id: merchantOrderId,
         return_url: successUrl,
+        payment_method_types: ['card'],
       }),
     });
 
@@ -125,19 +126,22 @@ export default async function handler(req: { method?: string; body?: { amount?: 
       });
     }
 
-    const intentData = (await createRes.json()) as { id?: string; client_secret?: string };
-    const intentId = intentData.id;
-    const clientSecret = intentData.client_secret;
+    const intentData = (await createRes.json()) as Record<string, unknown>;
+    const intentId = intentData.id as string | undefined;
+    const clientSecret = intentData.client_secret as string | undefined;
+
+    console.log('[Airwallex] Intent response keys:', Object.keys(intentData).join(', '));
+    console.log('[Airwallex] Intent status:', intentData.status, '| available_payment_method_types:', JSON.stringify(intentData.available_payment_method_types));
 
     if (!intentId || !clientSecret) {
-      console.error('Airwallex create intent: missing id or client_secret', intentData);
+      console.error('[Airwallex] create intent: missing id or client_secret', JSON.stringify(intentData).slice(0, 500));
       return res.status(502).json({
         error: 'Payment intent invalid (missing id or client_secret).',
         code: 'INTENT_INVALID',
       });
     }
 
-    console.log('[Airwallex] Payment Intent created:', intentId);
+    console.log('[Airwallex] Payment Intent created:', intentId, '| client_secret length:', clientSecret.length);
     return res.status(200).json({
       intent_id: intentId,
       client_secret: clientSecret,
