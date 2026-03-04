@@ -15,7 +15,7 @@ const VERTEX_MODEL = 'gemini-1.5-flash';
 const VERTEX_REGION = 'us-central1';
 const MAX_OUTPUT_TOKENS = 1024;
 
-function getVertexClient(): VertexAI {
+function getVertexClient(): { vertexAI: VertexAI; projectId: string } {
   const credsJson = process.env.GOOGLE_VERTEX_AI_CREDENTIALS;
   if (!credsJson) throw new Error('GOOGLE_VERTEX_AI_CREDENTIALS not configured');
 
@@ -26,15 +26,26 @@ function getVertexClient(): VertexAI {
   const projectId = parsed.project_id;
   if (!projectId) throw new Error('project_id missing in credentials');
 
-  return new VertexAI({
+  console.log('[Vertex Debug] Project ID used:', projectId);
+  console.log('[Vertex Debug] Client Email:', parsed.client_email);
+  console.log('[Vertex Debug] Private Key Start:', parsed.private_key?.substring(0, 30));
+  console.log('[Vertex Debug] Target Location:', VERTEX_REGION);
+  console.log('[Vertex Debug] Model:', VERTEX_MODEL);
+
+  const vertexAI = new VertexAI({
     project: projectId,
     location: VERTEX_REGION,
     googleAuthOptions: { credentials: parsed },
   });
+
+  return { vertexAI, projectId };
 }
 
 async function callVertex(prompt: string, temperature = 0.7): Promise<string> {
-  const vertexAI = getVertexClient();
+  const { vertexAI, projectId } = getVertexClient();
+
+  const fullModelPath = `projects/${projectId}/locations/${VERTEX_REGION}/publishers/google/models/${VERTEX_MODEL}`;
+  console.log('[Vertex Debug] Full model path:', fullModelPath);
 
   const model = vertexAI.getGenerativeModel({
     model: VERTEX_MODEL,
@@ -44,11 +55,16 @@ async function callVertex(prompt: string, temperature = 0.7): Promise<string> {
     },
   });
 
-  const result = await model.generateContent({
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-  });
-
-  return result.response?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  try {
+    const result = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    });
+    console.log('[Vertex Debug] Success! Response received.');
+    return result.response?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  } catch (err: any) {
+    console.error('[Vertex Debug] Full Error Object:', JSON.stringify(err, Object.getOwnPropertyNames(err), 2));
+    throw err;
+  }
 }
 
 const SYSTEM_PREFIX = '你是「CoolFood 凍肉專門店」的 AI 助手，專精冷凍肉類零售。回答時請用專業但親切的繁體中文。\n\n';
