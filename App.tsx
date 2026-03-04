@@ -3515,14 +3515,14 @@ const App: React.FC = () => {
                     setAiRecipeLoading(true);
                     let successCount = 0;
                     let failCount = 0;
-                    const catIds = recipeCategories.map(c => c.id);
+                    const catMap = recipeCategories.map(c => ({ id: c.id, name: c.name }));
                     const allTitles = recipes.map(r => r.title).filter(Boolean);
                     for (let i = 0; i < BATCH_COUNT; i++) {
                       setAiBatchProgress({ current: i + 1, total: BATCH_COUNT, label: `正在生成第 ${i + 1}/${BATCH_COUNT} 個食譜...` });
                       try {
                         const res = await fetch('/api/generate-recipe', {
                           method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ action: 'single-recipe', payload: { title: '', linkedProductNames: [], categoryIds: catIds, existingTitles: allTitles } }),
+                          body: JSON.stringify({ action: 'single-recipe', payload: { title: '', linkedProductNames: [], categoryIds: catMap.map(c => c.id), categoryMap: catMap, existingTitles: allTitles } }),
                         });
                         const json = await res.json();
                         if (!json.ok) { failCount++; continue; }
