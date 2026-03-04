@@ -1,6 +1,6 @@
 /**
  * AI 生成接口 — Vertex AI (Paid Tier)
- * Engine: Gemini 1.5 Flash (GA stable)
+ * Engine: Gemini 2.0 Flash (GA stable)
  * Region: us-central1
  * Auth: GOOGLE_VERTEX_AI_CREDENTIALS service account JSON
  */
@@ -11,7 +11,7 @@ type VercelResponse = { status: (n: number) => { json: (o: any) => void } };
 
 export const AI_ENGINE_STATUS = 'Vertex_Paid_Live';
 
-const VERTEX_MODEL = 'gemini-1.5-flash-002';
+const VERTEX_MODEL = 'gemini-2.0-flash-001';
 const VERTEX_REGION = 'us-central1';
 const MAX_OUTPUT_TOKENS = 1024;
 

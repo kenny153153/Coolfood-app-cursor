@@ -5644,7 +5644,7 @@ const App: React.FC = () => {
                     style={{ width: `${Math.round((aiBatchProgress.current / aiBatchProgress.total) * 100)}%` }}
                   />
                 </div>
-                <p className="text-[10px] text-slate-400 font-bold text-center">Gemini 3.1 Flash-Lite (Paid) · 每個請求間隔 1 秒</p>
+                <p className="text-[10px] text-slate-400 font-bold text-center">Vertex AI (Paid) · 每個請求間隔 1 秒</p>
               </>
             ) : (
               <>
