@@ -10,7 +10,7 @@ type VercelResponse = { status: (n: number) => { json: (o: any) => void } };
 
 export const AI_ENGINE_STATUS = 'Vertex_Paid_Live';
 
-const VERTEX_MODEL = 'gemini-1.5-flash';
+const VERTEX_MODEL = 'gemini-2.0-flash-001';
 const VERTEX_REGION = 'asia-east1';
 const MAX_OUTPUT_TOKENS = 1000;
 
