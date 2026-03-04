@@ -1,18 +1,20 @@
 /**
  * AI 生成接口 — Vertex AI (Paid Tier)
- * 使用 @google-cloud/vertexai，透過 GOOGLE_VERTEX_AI_CREDENTIALS 環境變數認證。
- * 無重試邏輯；付費版配額充足，不再需要後端重試。
+ * Engine: Gemini 3.1 Flash-Lite (2026) with fallback to Gemini 3 Flash
+ * Region: us-central1 (most stable for 3.x models)
+ * Auth: GOOGLE_VERTEX_AI_CREDENTIALS service account JSON
  */
-import { VertexAI } from '@google-cloud/vertexai';
+import { VertexAI, GenerativeModel } from '@google-cloud/vertexai';
 
 type VercelRequest = { method?: string; body?: any };
 type VercelResponse = { status: (n: number) => { json: (o: any) => void } };
 
 export const AI_ENGINE_STATUS = 'Vertex_Paid_Live';
 
-const VERTEX_MODEL = 'gemini-2.0-flash-001';
-const VERTEX_REGION = 'asia-east1';
-const MAX_OUTPUT_TOKENS = 1000;
+const PRIMARY_MODEL = 'gemini-3.1-flash-lite-preview';
+const FALLBACK_MODEL = 'gemini-3-flash-preview';
+const VERTEX_REGION = 'us-central1';
+const MAX_OUTPUT_TOKENS = 1024;
 
 function getVertexClient(): VertexAI {
   const credsJson = process.env.GOOGLE_VERTEX_AI_CREDENTIALS;
@@ -22,35 +24,42 @@ function getVertexClient(): VertexAI {
   const projectId = creds.project_id;
   if (!projectId) throw new Error('project_id missing in credentials');
 
-  process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = credsJson;
-
   return new VertexAI({
     project: projectId,
     location: VERTEX_REGION,
-    googleAuthOptions: {
-      credentials: creds,
+    googleAuthOptions: { credentials: creds },
+  });
+}
+
+function getModel(vertexAI: VertexAI, modelId: string, temperature: number): GenerativeModel {
+  return vertexAI.getGenerativeModel({
+    model: modelId,
+    generationConfig: {
+      temperature,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
     },
   });
 }
 
 async function callVertex(prompt: string, temperature = 0.7): Promise<string> {
   const vertexAI = getVertexClient();
+  const contents = [{ role: 'user' as const, parts: [{ text: prompt }] }];
 
-  const model = vertexAI.getGenerativeModel({
-    model: VERTEX_MODEL,
-    generationConfig: {
-      temperature,
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
-    },
-  });
+  try {
+    const model = getModel(vertexAI, PRIMARY_MODEL, temperature);
+    const result = await model.generateContent({ contents });
+    const text = result.response?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (text) return text;
+    throw new Error('Empty response from primary model');
+  } catch (primaryErr: any) {
+    const is404 = primaryErr?.message?.includes('404') || primaryErr?.message?.includes('NOT_FOUND');
+    if (!is404) throw primaryErr;
 
-  const result = await model.generateContent({
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-  });
-
-  const response = result.response;
-  const text = response?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  return text;
+    console.warn(`[generate-recipe] ${PRIMARY_MODEL} unavailable (404), falling back to ${FALLBACK_MODEL}`);
+    const fallback = getModel(vertexAI, FALLBACK_MODEL, temperature);
+    const result = await fallback.generateContent({ contents });
+    return result.response?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  }
 }
 
 const SYSTEM_PREFIX = '你是「CoolFood 凍肉專門店」的 AI 助手，專精冷凍肉類零售。回答時請用專業但親切的繁體中文。\n\n';
@@ -136,7 +145,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const result = await ACTIONS[action](payload || {});
-    return res.status(200).json({ ok: true, data: result, engine: AI_ENGINE_STATUS });
+    return res.status(200).json({
+      ok: true,
+      data: result,
+      engine: AI_ENGINE_STATUS,
+      model: PRIMARY_MODEL,
+    });
   } catch (e: any) {
     const msg = e?.message || 'AI generation failed';
     console.error(`[generate-recipe][${AI_ENGINE_STATUS}] action=${action} error:`, msg);
