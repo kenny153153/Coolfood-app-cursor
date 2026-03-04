@@ -1615,11 +1615,16 @@ const App: React.FC = () => {
     try {
       const res = await fetch('/api/generate-recipe', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'single-recipe', payload: { title, linkedProductNames: linkedNames } }),
+        body: JSON.stringify({ action: 'single-recipe', payload: { title, linkedProductNames: linkedNames, existingTitles: recipes.map(r => r.title).filter(Boolean) } }),
       });
       const json = await res.json();
       if (!json.ok) throw new Error(json.error || 'AI error');
       const parsed = json.data;
+      const chefTip = typeof parsed.chef_tip === 'string' ? parsed.chef_tip : '';
+      const stepsWithTip = Array.isArray(parsed.steps) ? parsed.steps : recipe.steps;
+      if (chefTip && stepsWithTip.length > 0) {
+        stepsWithTip.push({ order: stepsWithTip.length + 1, content: `💡 大廚小貼士：${chefTip}` });
+      }
       const updated: StandaloneRecipe = {
         ...recipe,
         title: parsed.title || recipe.title,
@@ -1627,7 +1632,7 @@ const App: React.FC = () => {
         cookingTime: parsed.cooking_time || recipe.cookingTime,
         servingSize: parsed.serving_size || recipe.servingSize,
         ingredientsRaw: Array.isArray(parsed.ingredients) ? parsed.ingredients : recipe.ingredientsRaw,
-        steps: Array.isArray(parsed.steps) ? parsed.steps : recipe.steps,
+        steps: stepsWithTip,
       };
       setEditingRecipe(updated);
       showToast('AI 已生成食譜內容');
@@ -3511,16 +3516,22 @@ const App: React.FC = () => {
                     let successCount = 0;
                     let failCount = 0;
                     const catIds = recipeCategories.map(c => c.id);
+                    const allTitles = recipes.map(r => r.title).filter(Boolean);
                     for (let i = 0; i < BATCH_COUNT; i++) {
                       setAiBatchProgress({ current: i + 1, total: BATCH_COUNT, label: `正在生成第 ${i + 1}/${BATCH_COUNT} 個食譜...` });
                       try {
                         const res = await fetch('/api/generate-recipe', {
                           method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ action: 'single-recipe', payload: { title: '', linkedProductNames: [], categoryIds: catIds } }),
+                          body: JSON.stringify({ action: 'single-recipe', payload: { title: '', linkedProductNames: [], categoryIds: catIds, existingTitles: allTitles } }),
                         });
                         const json = await res.json();
                         if (!json.ok) { failCount++; continue; }
                         const r = json.data;
+                        const chefTip = typeof r.chef_tip === 'string' ? r.chef_tip : '';
+                        const steps = Array.isArray(r.steps) ? r.steps : [];
+                        if (chefTip && steps.length > 0) {
+                          steps.push({ order: steps.length + 1, content: `💡 大廚小貼士：${chefTip}` });
+                        }
                         const recipe: StandaloneRecipe = {
                           id: crypto.randomUUID(),
                           title: r.title || '',
@@ -3532,10 +3543,10 @@ const App: React.FC = () => {
                           tags: [],
                           categoryIds: Array.isArray(r.category_ids) ? r.category_ids.filter((c: string) => recipeCategories.some(rc => rc.id === c)) : [],
                           ingredientsRaw: Array.isArray(r.ingredients) ? r.ingredients : [],
-                          steps: Array.isArray(r.steps) ? r.steps : [],
+                          steps,
                           linkedProductIds: [],
                         };
-                        if (recipe.title) { await upsertRecipe(recipe); successCount++; }
+                        if (recipe.title) { allTitles.push(recipe.title); await upsertRecipe(recipe); successCount++; }
                       } catch { failCount++; }
                       if (i < BATCH_COUNT - 1) await new Promise(r => setTimeout(r, COOLDOWN_MS));
                     }
