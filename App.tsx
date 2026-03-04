@@ -2626,7 +2626,7 @@ const App: React.FC = () => {
                 const toGenerate = products.filter(p => p.name.trim() && (!p.description || p.description.trim() === ''));
                 if (toGenerate.length === 0) { showToast('所有產品已有描述'); return; }
                 const batch = toGenerate.slice(0, 20);
-                const COOLDOWN_MS = 2000;
+                const COOLDOWN_MS = 1000;
                 setAiDescLoading(true);
                 let successCount = 0;
                 let failCount = 0;
@@ -3506,7 +3506,7 @@ const App: React.FC = () => {
                 <div className="flex gap-2">
                   <button disabled={aiRecipeLoading} onClick={async () => {
                     const BATCH_COUNT = 5;
-                    const COOLDOWN_MS = 2000;
+                    const COOLDOWN_MS = 1000;
                     setAiRecipeLoading(true);
                     let successCount = 0;
                     let failCount = 0;
@@ -5644,7 +5644,7 @@ const App: React.FC = () => {
                     style={{ width: `${Math.round((aiBatchProgress.current / aiBatchProgress.total) * 100)}%` }}
                   />
                 </div>
-                <p className="text-[10px] text-slate-400 font-bold text-center">Vertex AI (Paid) · 每個請求間隔 2 秒</p>
+                <p className="text-[10px] text-slate-400 font-bold text-center">Gemini 3.1 Flash-Lite (Paid) · 每個請求間隔 1 秒</p>
               </>
             ) : (
               <>
