@@ -609,6 +609,9 @@ const App: React.FC = () => {
   const [authForm, setAuthForm] = useState({ email: '', password: '', name: '', phone: '' });
   const [editingMemberPassword, setEditingMemberPassword] = useState('');
   const [aiDescLoading, setAiDescLoading] = useState(false);
+  const [aiFieldLoading, setAiFieldLoading] = useState<string | null>(null);
+  const [aiPromptModal, setAiPromptModal] = useState<{ title: string; placeholder: string; onConfirm: (instruction: string) => void } | null>(null);
+  const [aiPromptText, setAiPromptText] = useState('');
 
   // Address UI States
   const [showAddressDropdown, setShowAddressDropdown] = useState(false);
@@ -1607,15 +1610,16 @@ const App: React.FC = () => {
     showToast('食譜分類已刪除');
   };
 
-  const generateAiRecipe = async (recipe: StandaloneRecipe) => {
+  const generateAiRecipe = async (recipe: StandaloneRecipe, userInstruction?: string) => {
     const title = recipe.title.trim();
     const linkedNames = recipe.linkedProductIds.map(pid => products.find(x => x.id === pid)?.name).filter(Boolean);
     if (!title && linkedNames.length === 0) { showToast('請先輸入食譜名稱或選擇關聯產品', 'error'); return; }
     setAiRecipeLoading(true);
     try {
+      const catMap = recipeCategories.map(c => ({ id: c.id, name: c.name }));
       const res = await fetch('/api/generate-recipe', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'single-recipe', payload: { title, linkedProductNames: linkedNames, existingTitles: recipes.map(r => r.title).filter(Boolean) } }),
+        body: JSON.stringify({ action: 'single-recipe', payload: { title, linkedProductNames: linkedNames, existingTitles: recipes.map(r => r.title).filter(Boolean), categoryIds: catMap.map(c => c.id), categoryMap: catMap, userInstruction: userInstruction || undefined } }),
       });
       const json = await res.json();
       if (!json.ok) throw new Error(json.error || 'AI error');
@@ -1633,6 +1637,7 @@ const App: React.FC = () => {
         servingSize: parsed.serving_size || recipe.servingSize,
         ingredientsRaw: Array.isArray(parsed.ingredients) ? parsed.ingredients : recipe.ingredientsRaw,
         steps: stepsWithTip,
+        categoryIds: Array.isArray(parsed.category_ids) ? parsed.category_ids.filter((c: string) => recipeCategories.some(rc => rc.id === c)) : recipe.categoryIds,
       };
       setEditingRecipe(updated);
       showToast('AI 已生成食譜內容');
@@ -1640,6 +1645,31 @@ const App: React.FC = () => {
       showToast('AI 生成失敗，請稍後重試', 'error');
     }
     setAiRecipeLoading(false);
+  };
+
+  const openAiRecipePrompt = (recipe: StandaloneRecipe) => {
+    setAiPromptModal({
+      title: 'AI 寫食譜',
+      placeholder: '例如：請幫我寫一份氣炸鍋食譜、用雞翼做一道簡單小菜...',
+      onConfirm: (instruction) => generateAiRecipe(recipe, instruction),
+    });
+  };
+
+  const generateProductField = async (fieldType: string, applyFn: (text: string) => void) => {
+    if (!editingProduct?.name.trim()) { showToast('請先填寫產品名稱', 'error'); return; }
+    setAiFieldLoading(fieldType);
+    try {
+      const res = await fetch('/api/generate-recipe', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'generate-field', payload: { fieldType, productName: editingProduct.name, productDescription: editingProduct.description || '' } }),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || 'AI error');
+      const text = json.data?.text || '';
+      if (text) { applyFn(text); showToast('AI 已生成'); }
+      else showToast('AI 無法生成', 'error');
+    } catch { showToast('AI 生成失敗', 'error'); }
+    setAiFieldLoading(null);
   };
 
   const upsertSlideshowItem = async (item: SlideshowItem) => {
@@ -3801,7 +3831,7 @@ const App: React.FC = () => {
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{t.recipes.recipeTitle}</label>
                 <div className="flex gap-2">
                   <input value={editingRecipe.title} onChange={e => setEditingRecipe({ ...editingRecipe, title: e.target.value })} className="flex-1 p-3 bg-slate-50 rounded-2xl font-bold" placeholder="例如：氣炸鍋牛扒" />
-                  <button type="button" disabled={aiRecipeLoading} onClick={() => generateAiRecipe(editingRecipe)} className="px-4 py-3 bg-purple-50 text-purple-600 rounded-2xl font-black text-xs hover:bg-purple-100 transition-all disabled:opacity-50 flex items-center gap-1.5 flex-shrink-0">
+                  <button type="button" disabled={aiRecipeLoading} onClick={() => openAiRecipePrompt(editingRecipe)} className="px-4 py-3 bg-purple-50 text-purple-600 rounded-2xl font-black text-xs hover:bg-purple-100 transition-all disabled:opacity-50 flex items-center gap-1.5 flex-shrink-0">
                     {aiRecipeLoading ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
                     AI 寫食譜
                   </button>
@@ -3883,7 +3913,7 @@ const App: React.FC = () => {
                     <ShoppingBag size={14} className="text-blue-600" />
                     <label className="text-[10px] font-bold text-blue-700 uppercase tracking-widest">{t.recipes.selectProducts}</label>
                   </div>
-                  <button type="button" disabled={aiRecipeLoading} onClick={() => generateAiRecipe(editingRecipe)} className="px-3 py-1.5 rounded-xl text-[9px] font-black bg-purple-50 text-purple-600 border border-purple-200 hover:bg-purple-100 transition-all disabled:opacity-50 flex items-center gap-1">
+                  <button type="button" disabled={aiRecipeLoading} onClick={() => openAiRecipePrompt(editingRecipe)} className="px-3 py-1.5 rounded-xl text-[9px] font-black bg-purple-50 text-purple-600 border border-purple-200 hover:bg-purple-100 transition-all disabled:opacity-50 flex items-center gap-1">
                     {aiRecipeLoading ? <RefreshCw size={10} className="animate-spin" /> : <Sparkles size={10} />} AI 寫食譜
                   </button>
                 </div>
@@ -4251,16 +4281,31 @@ const App: React.FC = () => {
                     <label className="text-[10px] font-bold text-emerald-700 uppercase tracking-widest">Google SEO 優化</label>
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-slate-500 ml-1">圖片 Alt 文字 <span className="text-slate-300">（Google 圖片搜尋用，描述圖片內容）</span></label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">圖片 Alt 文字 <span className="text-slate-300">（Google 圖片搜尋用）</span></label>
+                      <button type="button" disabled={aiFieldLoading === 'image-alt'} onClick={() => generateProductField('image-alt', (text) => setEditingProduct(prev => prev ? { ...prev, imageAlt: text } : prev))} className="flex items-center gap-1 px-2 py-0.5 bg-purple-50 text-purple-600 rounded-lg text-[8px] font-black hover:bg-purple-100 transition-all disabled:opacity-50">
+                        {aiFieldLoading === 'image-alt' ? <RefreshCw size={8} className="animate-spin" /> : <Sparkles size={8} />} AI
+                      </button>
+                    </div>
                     <input value={editingProduct.imageAlt || ''} onChange={e => setEditingProduct({ ...editingProduct, imageAlt: e.target.value })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" placeholder={`例：${editingProduct.name || '澳洲M5和牛肉眼'} - 急凍真空包裝`} />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-slate-500 ml-1">SEO 標題 <span className="text-slate-300">（Google 搜尋結果的標題，留空則用產品名稱）</span></label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">SEO 標題 <span className="text-slate-300">（留空則用產品名稱）</span></label>
+                      <button type="button" disabled={aiFieldLoading === 'seo-title'} onClick={() => generateProductField('seo-title', (text) => setEditingProduct(prev => prev ? { ...prev, seoTitle: text } : prev))} className="flex items-center gap-1 px-2 py-0.5 bg-purple-50 text-purple-600 rounded-lg text-[8px] font-black hover:bg-purple-100 transition-all disabled:opacity-50">
+                        {aiFieldLoading === 'seo-title' ? <RefreshCw size={8} className="animate-spin" /> : <Sparkles size={8} />} AI
+                      </button>
+                    </div>
                     <input value={editingProduct.seoTitle || ''} onChange={e => setEditingProduct({ ...editingProduct, seoTitle: e.target.value })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" placeholder={`例：${editingProduct.name || '澳洲M5和牛肉眼'} | 香港急凍肉網購`} />
                     {(editingProduct.seoTitle || '').length > 0 && <p className={`text-[8px] font-bold ml-1 ${(editingProduct.seoTitle || '').length > 60 ? 'text-red-500' : 'text-slate-300'}`}>{(editingProduct.seoTitle || '').length}/60 字元{(editingProduct.seoTitle || '').length > 60 ? ' ⚠️ 太長，Google 會截斷' : ''}</p>}
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-slate-500 ml-1">SEO 描述 <span className="text-slate-300">（Google 搜尋結果的描述文字，建議 50-160 字元）</span></label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">SEO 描述 <span className="text-slate-300">（建議 50-160 字元）</span></label>
+                      <button type="button" disabled={aiFieldLoading === 'seo-description'} onClick={() => generateProductField('seo-description', (text) => setEditingProduct(prev => prev ? { ...prev, seoDescription: text } : prev))} className="flex items-center gap-1 px-2 py-0.5 bg-purple-50 text-purple-600 rounded-lg text-[8px] font-black hover:bg-purple-100 transition-all disabled:opacity-50">
+                        {aiFieldLoading === 'seo-description' ? <RefreshCw size={8} className="animate-spin" /> : <Sparkles size={8} />} AI
+                      </button>
+                    </div>
                     <textarea value={editingProduct.seoDescription || ''} onChange={e => setEditingProduct({ ...editingProduct, seoDescription: e.target.value })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100 min-h-[60px]" placeholder={`例：新鮮急凍${editingProduct.name || '澳洲M5和牛肉眼'}，順豐冷鏈配送，真空包裝保持鮮度。`} />
                     {(editingProduct.seoDescription || '').length > 0 && <p className={`text-[8px] font-bold ml-1 ${(editingProduct.seoDescription || '').length > 160 ? 'text-red-500' : (editingProduct.seoDescription || '').length < 50 ? 'text-amber-500' : 'text-emerald-500'}`}>{(editingProduct.seoDescription || '').length}/160 字元{(editingProduct.seoDescription || '').length > 160 ? ' ⚠️ 太長' : (editingProduct.seoDescription || '').length < 50 ? ' ⚠️ 太短，建議 50+ 字元' : ' ✓ 長度適中'}</p>}
                   </div>
@@ -4295,21 +4340,27 @@ const App: React.FC = () => {
                 <div className="space-y-2 md:col-span-2">
                   <div className="flex items-center justify-between">
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">商品描述</label>
-                    <button type="button" disabled={aiDescLoading} onClick={async () => {
+                    <button type="button" disabled={aiDescLoading} onClick={() => {
                       if (!editingProduct.name.trim()) { showToast('填寫產品名稱讓 AI 可以跟據名稱作出描述', 'error'); return; }
-                      setAiDescLoading(true);
-                      try {
-                        const res = await fetch('/api/generate-recipe', {
-                          method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ action: 'single-product-desc', payload: { productName: editingProduct.name } }),
-                        });
-                        const json = await res.json();
-                        if (!json.ok) throw new Error(json.error || 'AI error');
-                        const text = json.data.description || '';
-                        if (text) { setEditingProduct({ ...editingProduct, description: text }); showToast('AI 已生成描述'); }
-                        else showToast('AI 無法生成描述', 'error');
-                      } catch { showToast('AI 生成失敗，請稍後重試', 'error'); }
-                      setAiDescLoading(false);
+                      setAiPromptModal({
+                        title: 'AI 寫描述',
+                        placeholder: '例如：語氣輕鬆一點、強調適合氣炸鍋...',
+                        onConfirm: async (instruction) => {
+                          setAiDescLoading(true);
+                          try {
+                            const res = await fetch('/api/generate-recipe', {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ action: 'single-product-desc', payload: { productName: editingProduct.name, userInstruction: instruction || undefined } }),
+                            });
+                            const json = await res.json();
+                            if (!json.ok) throw new Error(json.error || 'AI error');
+                            const text = json.data.description || '';
+                            if (text) { setEditingProduct(prev => prev ? { ...prev, description: text } : prev); showToast('AI 已生成描述'); }
+                            else showToast('AI 無法生成描述', 'error');
+                          } catch { showToast('AI 生成失敗，請稍後重試', 'error'); }
+                          setAiDescLoading(false);
+                        },
+                      });
                     }} className="flex items-center gap-1 px-2.5 py-1 bg-purple-50 text-purple-600 rounded-lg text-[9px] font-black hover:bg-purple-100 transition-all disabled:opacity-50">
                       {aiDescLoading ? <RefreshCw size={10} className="animate-spin" /> : <Sparkles size={10} />}
                       AI 寫描述
@@ -4324,11 +4375,21 @@ const App: React.FC = () => {
                     <label className="text-[10px] font-bold text-blue-700 uppercase tracking-widest">English Translation</label>
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-slate-500 ml-1">Product Name (EN)</label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">Product Name (EN)</label>
+                      <button type="button" disabled={aiFieldLoading === 'name-en'} onClick={() => generateProductField('name-en', (text) => setEditingProduct(prev => prev ? { ...prev, nameEn: text } : prev))} className="flex items-center gap-1 px-2 py-0.5 bg-purple-50 text-purple-600 rounded-lg text-[8px] font-black hover:bg-purple-100 transition-all disabled:opacity-50">
+                        {aiFieldLoading === 'name-en' ? <RefreshCw size={8} className="animate-spin" /> : <Sparkles size={8} />} AI
+                      </button>
+                    </div>
                     <input value={editingProduct.nameEn || ''} onChange={e => setEditingProduct({ ...editingProduct, nameEn: e.target.value })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" placeholder={`e.g. Australian M5 Wagyu Ribeye`} />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-slate-500 ml-1">Description (EN)</label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">Description (EN)</label>
+                      <button type="button" disabled={aiFieldLoading === 'desc-en'} onClick={() => generateProductField('desc-en', (text) => setEditingProduct(prev => prev ? { ...prev, descriptionEn: text } : prev))} className="flex items-center gap-1 px-2 py-0.5 bg-purple-50 text-purple-600 rounded-lg text-[8px] font-black hover:bg-purple-100 transition-all disabled:opacity-50">
+                        {aiFieldLoading === 'desc-en' ? <RefreshCw size={8} className="animate-spin" /> : <Sparkles size={8} />} AI
+                      </button>
+                    </div>
                     <textarea value={editingProduct.descriptionEn || ''} onChange={e => setEditingProduct({ ...editingProduct, descriptionEn: e.target.value })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100 min-h-[60px]" placeholder="English product description" />
                   </div>
                   <p className="text-[8px] text-slate-400 font-bold leading-relaxed">When the customer switches language to English, these will be displayed instead of the Chinese name/description.</p>
@@ -4721,6 +4782,30 @@ const App: React.FC = () => {
                   {batchProcessing ? '處理中...' : `繼續處理 ${sfValidationModal.valid.length} 筆`}
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {aiPromptModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[6500] flex items-center justify-center p-6 animate-fade-in">
+          <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl p-8 space-y-5">
+            <div className="flex items-center gap-3">
+              <Sparkles className="text-purple-500" size={20} />
+              <h4 className="text-lg font-black text-slate-900">{aiPromptModal.title}</h4>
+            </div>
+            <p className="text-xs text-slate-500 font-bold">可以留空直接生成，或輸入指令讓 AI 按你要求生成。</p>
+            <textarea
+              value={aiPromptText}
+              onChange={e => setAiPromptText(e.target.value)}
+              placeholder={aiPromptModal.placeholder}
+              className="w-full p-4 bg-slate-50 rounded-2xl font-bold text-sm min-h-[100px] border border-slate-200 focus:border-purple-300 focus:ring-1 focus:ring-purple-200 outline-none transition-all"
+            />
+            <div className="flex justify-end gap-3">
+              <button onClick={() => { setAiPromptModal(null); setAiPromptText(''); }} className="px-6 py-3 bg-white border border-slate-200 rounded-2xl font-black text-xs">取消</button>
+              <button onClick={() => { const text = aiPromptText; setAiPromptModal(null); setAiPromptText(''); aiPromptModal.onConfirm(text); }} className="px-6 py-3 bg-purple-600 text-white rounded-2xl font-black text-xs flex items-center gap-1.5">
+                <Sparkles size={12} /> 開始生成
+              </button>
             </div>
           </div>
         </div>

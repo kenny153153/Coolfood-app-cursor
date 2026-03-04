@@ -89,9 +89,14 @@ const RECIPE_SYSTEM = `你是一個幫香港家庭寫食譜的助手。你的用
 - 語氣平實、親切，像朋友分享食譜一樣。
 - chef_tip 寫一條實用小貼士就好（如保存方法、替代食材）。`;
 
+function withUserInstruction(base: string, userInstruction?: string): string {
+  if (!userInstruction?.trim()) return base;
+  return `【用戶額外指令 — 最高優先】\n${userInstruction.trim()}\n\n---\n\n${base}`;
+}
+
 const ACTIONS: Record<string, (payload: any) => Promise<any>> = {
   async 'single-recipe'(payload) {
-    const { title, linkedProductNames, categoryIds, categoryMap, existingTitles } = payload;
+    const { title, linkedProductNames, categoryIds, categoryMap, existingTitles, userInstruction } = payload;
     const context = title
       ? `食譜名稱：${title}${linkedProductNames?.length ? `\n主要食材：${linkedProductNames.join('、')}` : ''}`
       : `主要食材：${linkedProductNames?.join('、') || ''}`;
@@ -106,7 +111,7 @@ const ACTIONS: Record<string, (payload: any) => Promise<any>> = {
       ? `\n\n已有食譜（不要重複）：${existingTitles.join('、')}`
       : '';
 
-    const prompt = `生成一個簡單家常食譜。回覆嚴格 JSON（不要 markdown）：
+    const basePrompt = `生成一個簡單家常食譜。回覆嚴格 JSON（不要 markdown）：
 {
   "title": "菜名（簡短直接，如：蒸水蛋、蒜蓉蝦）",
   "description": "一句話介紹這道菜",
@@ -128,16 +133,34 @@ ${context}
 - 如有食譜名稱就用，否則起一個簡短的菜名
 - 以香港家常小菜為主${categoryHint}${exclusionHint}`;
 
-    const raw = await callVertex(prompt, 0.7, { topP: 0.9, systemInstruction: RECIPE_SYSTEM });
+    const raw = await callVertex(withUserInstruction(basePrompt, userInstruction), 0.7, { topP: 0.9, systemInstruction: RECIPE_SYSTEM });
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) throw new Error('Invalid JSON from AI');
     return JSON.parse(match[0]);
   },
 
   async 'single-product-desc'(payload) {
-    const { productName } = payload;
-    const prompt = `為以下凍肉產品寫 2-3 句簡短描述。提及產品特色和建議煮法。只回覆文字，不要任何格式。\n\n產品名稱：${productName}`;
-    return { description: (await callVertex(prompt, 0.7, { systemInstruction: PRODUCT_DESC_SYSTEM })).trim() };
+    const { productName, userInstruction } = payload;
+    const basePrompt = `為以下凍肉產品寫 2-3 句簡短描述。提及產品特色和建議煮法。只回覆文字，不要任何格式。\n\n產品名稱：${productName}`;
+    return { description: (await callVertex(withUserInstruction(basePrompt, userInstruction), 0.7, { systemInstruction: PRODUCT_DESC_SYSTEM })).trim() };
+  },
+
+  async 'generate-field'(payload) {
+    const { fieldType, productName, productDescription, currentValue } = payload;
+    const ctx = `產品名稱：${productName || ''}${productDescription ? `\n產品描述：${productDescription}` : ''}${currentValue ? `\n目前內容：${currentValue}` : ''}`;
+
+    const prompts: Record<string, string> = {
+      'seo-title': `為以下凍肉產品寫一個 SEO 標題（不超過 60 字元）。格式：「產品名 | 關鍵詞 | CoolFood」。只回覆標題文字。\n\n${ctx}`,
+      'seo-description': `為以下凍肉產品寫一段 SEO 描述（50-150 字元），用於 Google 搜尋結果。包含產品特色和關鍵詞。只回覆描述文字。\n\n${ctx}`,
+      'image-alt': `為以下凍肉產品的圖片寫一段簡短 alt 文字（不超過 30 字元），描述產品外觀。只回覆 alt 文字。\n\n${ctx}`,
+      'name-en': `將以下凍肉產品名稱翻譯成英文。簡潔專業。只回覆英文名稱。\n\n${ctx}`,
+      'desc-en': `將以下凍肉產品描述翻譯成英文。保持簡潔。只回覆英文描述。\n\n${ctx}`,
+    };
+
+    const prompt = prompts[fieldType];
+    if (!prompt) throw new Error(`Unknown fieldType: ${fieldType}`);
+    const text = (await callVertex(prompt, 0.3, { systemInstruction: SYSTEM_PREFIX })).trim();
+    return { text };
   },
 
   async 'business-analysis'(_payload) {
