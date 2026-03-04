@@ -210,27 +210,18 @@ const AdminLanguagePanel: React.FC<Props> = ({ products, setProducts, showToast 
     }
 
     try {
-      const prompt = `Translate the following Chinese UI text keys to English for a frozen meat online retail shop. Return ONLY a JSON object with the same keys. Keep translations concise and professional.\n\n${JSON.stringify(missing, null, 2)}`;
-      const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent', {
+      const response = await fetch('/api/generate-recipe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.3 },
+          action: 'translate-ui',
+          payload: { texts: missing },
         }),
       });
+      const json = await response.json();
+      if (!json.ok) throw new Error(json.error || 'AI translation failed');
 
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`API error: ${text.slice(0, 200)}`);
-      }
-
-      const data = await response.json();
-      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('AI did not return valid JSON');
-
-      const translated = JSON.parse(jsonMatch[0]);
+      const translated = json.data;
       setOverrides(prev => ({
         ...prev,
         [section]: { ...(prev[section] || {}), ...translated },
@@ -255,24 +246,18 @@ const AdminLanguagePanel: React.FC<Props> = ({ products, setProducts, showToast 
       const names: Record<string, string> = {};
       for (const p of toTranslate.slice(0, 50)) names[p.id] = p.name;
 
-      const prompt = `Translate these Chinese frozen meat product names to English. Return ONLY a JSON object with the same keys (product IDs) and English name values. Be concise and professional.\n\n${JSON.stringify(names, null, 2)}`;
-      const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent', {
+      const response = await fetch('/api/generate-recipe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.3 },
+          action: 'translate-products',
+          payload: { names },
         }),
       });
+      const json = await response.json();
+      if (!json.ok) throw new Error(json.error || 'AI translation failed');
 
-      if (!response.ok) throw new Error('API error');
-
-      const data = await response.json();
-      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('AI did not return valid JSON');
-
-      const translated: Record<string, string> = JSON.parse(jsonMatch[0]);
+      const translated: Record<string, string> = json.data;
       let count = 0;
 
       for (const [pid, enName] of Object.entries(translated)) {

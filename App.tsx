@@ -39,6 +39,8 @@ import { uploadImage, uploadImages, deleteImage, isMediaUrl } from './imageUploa
 const LazySetupPage = lazy(() => import('./SetupPage'));
 import AdminLanguagePanel from './AdminLanguagePanel';
 
+const AI_ENGINE_STATUS = 'Vertex_Paid_Live';
+
 /** Format address for display using new required fields. */
 const formatAddressLine = (addr: UserAddress): string => {
   const parts = [
@@ -2427,7 +2429,7 @@ const App: React.FC = () => {
 
   // --- Admin Logic ---
 
-  const handleGeminiAnalysis = async () => {
+  const handleAiAnalysis = async () => {
     setIsAnalyzing(true);
     try {
       const res = await fetch('/api/generate-recipe', {
@@ -2624,7 +2626,7 @@ const App: React.FC = () => {
                 const toGenerate = products.filter(p => p.name.trim() && (!p.description || p.description.trim() === ''));
                 if (toGenerate.length === 0) { showToast('所有產品已有描述'); return; }
                 const batch = toGenerate.slice(0, 20);
-                const COOLDOWN_MS = 6000;
+                const COOLDOWN_MS = 2000;
                 setAiDescLoading(true);
                 let successCount = 0;
                 let failCount = 0;
@@ -2845,7 +2847,7 @@ const App: React.FC = () => {
             <div className="col-span-1 md:col-span-2 lg:col-span-4 bg-white p-10 rounded-[3.5rem] border border-slate-100 shadow-sm space-y-6">
               <div className="flex justify-between items-center">
                 <h3 className="text-xl font-black flex items-center gap-2"><Sparkles className="text-blue-500"/> AI 經營建議</h3>
-                <button onClick={handleGeminiAnalysis} disabled={isAnalyzing} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 disabled:opacity-50">
+                <button onClick={handleAiAnalysis} disabled={isAnalyzing} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 disabled:opacity-50">
                   {isAnalyzing ? <RefreshCw size={16} className="animate-spin"/> : <Zap size={16}/>}
                   生成分析報告
                 </button>
@@ -3504,7 +3506,7 @@ const App: React.FC = () => {
                 <div className="flex gap-2">
                   <button disabled={aiRecipeLoading} onClick={async () => {
                     const BATCH_COUNT = 5;
-                    const COOLDOWN_MS = 6000;
+                    const COOLDOWN_MS = 2000;
                     setAiRecipeLoading(true);
                     let successCount = 0;
                     let failCount = 0;
@@ -5642,7 +5644,7 @@ const App: React.FC = () => {
                     style={{ width: `${Math.round((aiBatchProgress.current / aiBatchProgress.total) * 100)}%` }}
                   />
                 </div>
-                <p className="text-[10px] text-slate-400 font-bold text-center">每個請求間隔 6 秒以避免頻率限制</p>
+                <p className="text-[10px] text-slate-400 font-bold text-center">Vertex AI (Paid) · 每個請求間隔 2 秒</p>
               </>
             ) : (
               <>

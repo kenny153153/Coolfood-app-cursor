@@ -1,50 +1,56 @@
 /**
- * AI 生成接口 — 每次只處理一個請求，保證在 Vercel 10s 限制內完成。
- * 批量邏輯由前端循環調用（帶 6 秒間隔）處理。
+ * AI 生成接口 — Vertex AI (Paid Tier)
+ * 使用 @google-cloud/vertexai，透過 GOOGLE_VERTEX_AI_CREDENTIALS 環境變數認證。
+ * 無重試邏輯；付費版配額充足，不再需要後端重試。
  */
+import { VertexAI } from '@google-cloud/vertexai';
+
 type VercelRequest = { method?: string; body?: any };
 type VercelResponse = { status: (n: number) => { json: (o: any) => void } };
 
-const GEMINI_MODEL = 'gemini-2.0-flash';
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
-const GEMINI_TIMEOUT_MS = 8000;
+export const AI_ENGINE_STATUS = 'Vertex_Paid_Live';
 
-function fetchWithTimeout(url: string, opts: RequestInit, ms = GEMINI_TIMEOUT_MS): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
-  return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
+const VERTEX_MODEL = 'gemini-1.5-flash';
+const VERTEX_REGION = 'asia-east1';
+const MAX_OUTPUT_TOKENS = 1000;
+
+function getVertexClient(): VertexAI {
+  const credsJson = process.env.GOOGLE_VERTEX_AI_CREDENTIALS;
+  if (!credsJson) throw new Error('GOOGLE_VERTEX_AI_CREDENTIALS not configured');
+
+  const creds = JSON.parse(credsJson);
+  const projectId = creds.project_id;
+  if (!projectId) throw new Error('project_id missing in credentials');
+
+  process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = credsJson;
+
+  return new VertexAI({
+    project: projectId,
+    location: VERTEX_REGION,
+    googleAuthOptions: {
+      credentials: creds,
+    },
+  });
 }
 
-async function callGemini(prompt: string, temperature = 0.7): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY || '';
-  if (!apiKey) throw new Error('GEMINI_API_KEY not configured');
+async function callVertex(prompt: string, temperature = 0.7): Promise<string> {
+  const vertexAI = getVertexClient();
 
-  let res: Response;
-  try {
-    res = await fetchWithTimeout(`${GEMINI_URL}?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature },
-      }),
-    });
-  } catch (e) {
-    const isTimeout = e instanceof Error && e.name === 'AbortError';
-    throw new Error(isTimeout ? 'TIMEOUT' : `Gemini fetch failed: ${e instanceof Error ? e.message : e}`);
-  }
+  const model = vertexAI.getGenerativeModel({
+    model: VERTEX_MODEL,
+    generationConfig: {
+      temperature,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
+    },
+  });
 
-  if (res.status === 429) {
-    throw new Error('RATE_LIMITED');
-  }
+  const result = await model.generateContent({
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+  });
 
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => '');
-    throw new Error(`Gemini API ${res.status}: ${errBody.slice(0, 200)}`);
-  }
-
-  const data = await res.json();
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const response = result.response;
+  const text = response?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  return text;
 }
 
 const SYSTEM_PREFIX = '你是「CoolFood 凍肉專門店」的 AI 助手，專精冷凍肉類零售。回答時請用專業但親切的繁體中文。\n\n';
@@ -79,7 +85,7 @@ ${context}
 - 步驟要詳細實用（4-6步）
 - 如已有食譜名稱就用該名稱，否則根據食材起一個吸引的名稱${categoryHint}`;
 
-    const raw = await callGemini(prompt, 0.8);
+    const raw = await callVertex(prompt, 0.8);
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) throw new Error('Invalid JSON from AI');
     return JSON.parse(match[0]);
@@ -88,12 +94,30 @@ ${context}
   async 'single-product-desc'(payload) {
     const { productName } = payload;
     const prompt = `${SYSTEM_PREFIX}你是一個凍肉零售店的產品描述撰寫員。請為以下凍肉產品撰寫一段吸引人的繁體中文產品描述（2-3句），強調品質、新鮮度和口感。只回覆描述文字，不要加任何標點符號以外的格式。\n\n產品名稱：${productName}`;
-    return { description: (await callGemini(prompt, 0.7)).trim() };
+    return { description: (await callVertex(prompt, 0.7)).trim() };
   },
 
   async 'business-analysis'(_payload) {
     const prompt = `${SYSTEM_PREFIX}你是一個零售業經營顧問。分析並提供 3 個提高凍肉零售店銷量的具體策略。每個策略請包含：標題、具體做法、預期效果。請用繁體中文，格式清晰易讀。`;
-    return { text: await callGemini(prompt, 0.7) };
+    return { text: await callVertex(prompt, 0.7) };
+  },
+
+  async 'translate-ui'(payload) {
+    const { texts } = payload;
+    const prompt = `Translate the following Chinese UI text keys to English for a frozen meat online retail shop. Return ONLY a valid JSON object with the same keys. Keep translations concise and professional.\n\n${JSON.stringify(texts, null, 2)}`;
+    const raw = await callVertex(prompt, 0.3);
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('AI did not return valid JSON');
+    return JSON.parse(match[0]);
+  },
+
+  async 'translate-products'(payload) {
+    const { names } = payload;
+    const prompt = `Translate these Chinese frozen meat product names to English. Return ONLY a valid JSON object with the same keys (product IDs) and English name values. Be concise and professional.\n\n${JSON.stringify(names, null, 2)}`;
+    const raw = await callVertex(prompt, 0.3);
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('AI did not return valid JSON');
+    return JSON.parse(match[0]);
   },
 };
 
@@ -112,18 +136,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const result = await ACTIONS[action](payload || {});
-    return res.status(200).json({ ok: true, data: result });
+    return res.status(200).json({ ok: true, data: result, engine: AI_ENGINE_STATUS });
   } catch (e: any) {
     const msg = e?.message || 'AI generation failed';
-    console.error(`[generate-recipe] action=${action} error:`, msg);
+    console.error(`[generate-recipe][${AI_ENGINE_STATUS}] action=${action} error:`, msg);
 
-    if (msg === 'TIMEOUT') {
-      return res.status(504).json({ ok: false, error: 'TIMEOUT', message: 'AI 回應超時，請重試' });
-    }
-    if (msg === 'RATE_LIMITED') {
-      return res.status(429).json({ ok: false, error: 'RATE_LIMITED', message: '請求太頻繁，請稍後重試' });
+    if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429')) {
+      return res.status(429).json({ ok: false, error: 'RATE_LIMITED', message: '請求太頻繁，請稍後重試', engine: AI_ENGINE_STATUS });
     }
 
-    return res.status(502).json({ ok: false, error: msg });
+    return res.status(502).json({ ok: false, error: msg, engine: AI_ENGINE_STATUS });
   }
 }
