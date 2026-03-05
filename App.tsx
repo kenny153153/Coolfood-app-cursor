@@ -1903,6 +1903,7 @@ const App: React.FC = () => {
 
       const printWindow = window.open('', '_blank');
       if (!printWindow) { showToast('無法開啟列印視窗，請允許彈出視窗', 'error'); setBatchProcessing(false); return; }
+      const orderIdList = (data as SupabaseOrderRow[]).map(r => typeof r.id === 'number' ? `ORD-${r.id}` : r.id);
       printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>總執貨單</title>
         <style>
           @page { size: A4; margin: 15mm; }
@@ -1915,6 +1916,9 @@ const App: React.FC = () => {
           tr:nth-child(even) { background: #f8fafc; }
           .name-cell { font-size: 20px; font-weight: 900; }
           .qty-cell { font-size: 24px; font-weight: 900; color: #0f172a; text-align: center; }
+          .order-ids { margin-top: 32px; padding-top: 16px; border-top: 2px solid #e2e8f0; }
+          .order-ids h3 { font-size: 13px; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+          .order-ids p { font-size: 13px; font-weight: 700; color: #334155; line-height: 1.8; word-break: break-all; }
           @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
         </style>
       </head><body>
@@ -1924,6 +1928,10 @@ const App: React.FC = () => {
           <thead><tr><th>#</th><th>商品名稱</th><th style="text-align:center">總數量</th></tr></thead>
           <tbody>${sorted.map((item, i) => `<tr><td>${i + 1}</td><td class="name-cell">${item.name}</td><td class="qty-cell">${item.qty}</td></tr>`).join('')}</tbody>
         </table>
+        <div class="order-ids">
+          <h3>包含訂單（共 ${orderIdList.length} 筆）</h3>
+          <p>${orderIdList.map(id => '#' + id).join('、')}</p>
+        </div>
       </body></html>`);
       printWindow.document.close();
       printWindow.focus();
@@ -1934,7 +1942,7 @@ const App: React.FC = () => {
     setBatchProcessing(false);
   };
 
-  /** PREPARING tab → 打印順豐單 (SF Express shipping label 100mm×150mm landscape) */
+  /** PREPARING tab → 打印順豐單 (calls SF API with isGenEletricPic=1 to get real label) */
   const handlePrintSfLabels = async () => {
     if (selectedOrderIds.size === 0) return;
     setBatchProcessing(true);
@@ -1944,66 +1952,85 @@ const App: React.FC = () => {
       if (error || !data) { showToast('載入訂單資料失敗', 'error'); setBatchProcessing(false); return; }
 
       const orderRows = data as SupabaseOrderRow[];
+      const labelResults: { orderId: string; labelImage: string | null; waybillNo: string | null; error?: string }[] = [];
 
-      const needsSfOrder = orderRows.filter(r => !r.waybill_no);
-      for (const row of needsSfOrder) {
+      for (const row of orderRows) {
         const oid = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
         try {
-          const sfRes = await fetch(`${window.location.origin}/api/sf-order`, {
+          const sfRes = await fetch(`${window.location.origin}/api/sf-label`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ orderId: oid }),
           });
           const sfJson = await sfRes.json().catch(() => ({}));
-          if (sfJson.waybillNo || sfJson.waybill_no) {
-            row.waybill_no = sfJson.waybillNo ?? sfJson.waybill_no;
-          }
-        } catch { /* proceed without waybill */ }
+          labelResults.push({
+            orderId: oid,
+            labelImage: sfJson.labelImage ?? null,
+            waybillNo: sfJson.waybillNo ?? row.waybill_no ?? null,
+            error: sfRes.ok ? undefined : (sfJson.error ?? '取得面單失敗'),
+          });
+        } catch (e) {
+          labelResults.push({ orderId: oid, labelImage: null, waybillNo: row.waybill_no ?? null, error: '網路錯誤' });
+        }
+      }
+
+      const hasImages = labelResults.some(r => r.labelImage);
+      const failedCount = labelResults.filter(r => !r.labelImage).length;
+      if (failedCount > 0 && !hasImages) {
+        showToast(`順豐未回傳面單圖片（${failedCount} 筆），可能需要到順豐商戶平台打印`, 'error');
+      } else if (failedCount > 0) {
+        showToast(`${labelResults.length - failedCount} 張面單已取得，${failedCount} 張未能取得`, 'error');
       }
 
       const printWindow = window.open('', '_blank');
       if (!printWindow) { showToast('無法開啟列印視窗，請允許彈出視窗', 'error'); setBatchProcessing(false); return; }
 
-      const labelsHtml = orderRows.map((row, idx) => {
-        const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : row.id;
-        const addr = [row.delivery_district, row.delivery_address, row.delivery_street, row.delivery_building].filter(Boolean).join(' ');
-        const floorFlat = [row.delivery_floor ? row.delivery_floor + '樓' : '', row.delivery_flat ? row.delivery_flat + '室' : ''].filter(Boolean).join(' ');
+      const labelsHtml = labelResults.map((r, idx) => {
+        const pageBreak = idx < labelResults.length - 1 ? 'style="page-break-after:always"' : '';
+        if (r.labelImage) {
+          return `<div class="label-page" ${pageBreak}>
+            <img src="data:image/png;base64,${r.labelImage}" class="label-img" />
+          </div>`;
+        }
+        const row = orderRows.find(o => {
+          const id = typeof o.id === 'number' ? `ORD-${o.id}` : String(o.id);
+          return id === r.orderId;
+        });
+        const addr = row ? [row.delivery_district, row.delivery_address, row.delivery_street, row.delivery_building].filter(Boolean).join(' ') : '';
+        const floorFlat = row ? [row.delivery_floor ? row.delivery_floor + '樓' : '', row.delivery_flat ? row.delivery_flat + '室' : ''].filter(Boolean).join(' ') : '';
         const fullAddr = [addr, floorFlat].filter(Boolean).join(' ') || '未提供地址';
-        return `<div class="label" ${idx < orderRows.length - 1 ? 'style="page-break-after:always"' : ''}>
-          <div class="waybill">${row.waybill_no || '待取得單號'}</div>
-          <div class="section">
-            <div class="section-title">寄件人</div>
-            <div class="info">Coolfood</div>
-          </div>
+        return `<div class="label-fallback" ${pageBreak}>
+          <div class="waybill">${r.waybillNo || '待取得單號'}</div>
+          <div class="note">⚠ 未能從順豐取得電子面單，請到順豐商戶平台打印</div>
+          <div class="section"><div class="section-title">寄件人</div><div class="info">Coolfood</div></div>
           <div class="divider"></div>
           <div class="section">
             <div class="section-title">收件人</div>
-            <div class="info name">${row.contact_name || row.customer_name}</div>
-            <div class="info">${row.customer_phone || ''}</div>
+            <div class="info name">${row?.contact_name || row?.customer_name || ''}</div>
+            <div class="info">${row?.customer_phone || ''}</div>
             <div class="info addr">${fullAddr}</div>
           </div>
-          <div class="divider"></div>
-          <div class="bottom">
-            <span>訂單 ${orderId}</span>
-            <span>順豐冷鏈</span>
-          </div>
+          <div class="bottom"><span>訂單 ${r.orderId}</span><span>順豐冷鏈</span></div>
         </div>`;
       }).join('');
 
       printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>順豐面單</title>
         <style>
-          @page { size: 150mm 100mm landscape; margin: 3mm; }
+          @page { size: 150mm 100mm landscape; margin: 0; }
           * { box-sizing: border-box; margin: 0; padding: 0; }
           body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft JhengHei', sans-serif; }
-          .label { width: 144mm; height: 94mm; padding: 6mm; overflow: hidden; }
-          .waybill { font-size: 22px; font-weight: 900; text-align: center; padding: 4mm 0; border: 2px solid #000; margin-bottom: 4mm; letter-spacing: 2px; }
-          .section { margin-bottom: 3mm; }
+          .label-page { width: 150mm; height: 100mm; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+          .label-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+          .label-fallback { width: 144mm; height: 94mm; padding: 6mm; overflow: hidden; }
+          .waybill { font-size: 22px; font-weight: 900; text-align: center; padding: 4mm 0; border: 2px solid #000; margin-bottom: 3mm; letter-spacing: 2px; }
+          .note { font-size: 10px; color: #c00; font-weight: 700; text-align: center; margin-bottom: 3mm; padding: 2mm; background: #fff3f3; border-radius: 4px; }
+          .section { margin-bottom: 2mm; }
           .section-title { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #666; margin-bottom: 1mm; }
           .info { font-size: 14px; font-weight: 700; line-height: 1.4; }
           .info.name { font-size: 18px; font-weight: 900; }
           .info.addr { font-size: 13px; }
-          .divider { border-top: 1px dashed #999; margin: 3mm 0; }
-          .bottom { display: flex; justify-content: space-between; font-size: 10px; font-weight: 700; color: #666; }
-          @media print { body { -webkit-print-color-adjust: exact; } }
+          .divider { border-top: 1px dashed #999; margin: 2mm 0; }
+          .bottom { display: flex; justify-content: space-between; font-size: 10px; font-weight: 700; color: #666; margin-top: auto; padding-top: 2mm; border-top: 1px dashed #999; }
+          @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
         </style>
       </head><body>${labelsHtml}</body></html>`);
       printWindow.document.close();
