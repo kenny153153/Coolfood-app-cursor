@@ -36,6 +36,7 @@ export interface RecipeCategory {
   name: string;
   icon: string;
   sortOrder: number;
+  categoryType: 'method' | 'meat';
 }
 
 export interface StandaloneRecipe {

@@ -569,6 +569,9 @@ const App: React.FC = () => {
   const [recipeCategoryFilter, setRecipeCategoryFilter] = useState<string[]>([]);
   const [recipeAdminSubTab, setRecipeAdminSubTab] = useState<'recipes' | 'categories'>('recipes');
   const [recipeProductSearch, setRecipeProductSearch] = useState('');
+  const [adminRecipeSearch, setAdminRecipeSearch] = useState('');
+  const [adminRecipeCategoryFilter, setAdminRecipeCategoryFilter] = useState<string[]>([]);
+  const [adminRecipeProductFilter, setAdminRecipeProductFilter] = useState<'all' | 'linked' | 'unlinked'>('all');
   const [aiRecipeLoading, setAiRecipeLoading] = useState(false);
   const [aiBatchProgress, setAiBatchProgress] = useState<{ current: number; total: number; label: string } | null>(null);
   const [selectedLockerDistrict, setSelectedLockerDistrict] = useState('');
@@ -1598,7 +1601,7 @@ const App: React.FC = () => {
   const upsertRecipeCategory = async (cat: RecipeCategory) => {
     const { data, error } = await supabase
       .from('recipe_categories')
-      .upsert({ id: cat.id, name: cat.name, icon: cat.icon, sort_order: cat.sortOrder })
+      .upsert({ id: cat.id, name: cat.name, icon: cat.icon, sort_order: cat.sortOrder, category_type: cat.categoryType ?? 'method' })
       .select()
       .single();
     if (error || !data) { showToast(error?.message || '分類保存失敗', 'error'); return; }
@@ -3667,76 +3670,183 @@ const App: React.FC = () => {
                   </button>
                 </div>
               </div>
-              {recipes.length === 0 && (
-                <div className="bg-white p-12 rounded-[3rem] border border-slate-100 shadow-sm text-center text-slate-400 font-bold">{t.recipes.noRecipes}</div>
-              )}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {recipes.map(r => (
-                  <div key={r.id} className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden hover:shadow-md transition-all group cursor-pointer" onClick={() => setEditingRecipe(r)}>
-                    {r.mediaUrl && isMediaUrl(r.mediaUrl) && (
-                      <div className="aspect-video bg-slate-100 overflow-hidden">
-                        {r.mediaType === 'video' ? (
-                          <video src={r.mediaUrl} className="w-full h-full object-cover" muted />
-                        ) : (
-                          <img src={r.mediaUrl} alt={r.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
-                        )}
-                      </div>
-                    )}
-                    <div className="p-5 space-y-2">
-                      <h4 className="font-black text-slate-900 text-base">{r.title || '（未命名）'}</h4>
-                      {r.description && <p className="text-xs text-slate-400 font-medium line-clamp-2">{r.description}</p>}
-                      <div className="flex flex-wrap gap-1.5">
-                        {r.cookingTime > 0 && <span className="px-2 py-0.5 bg-amber-50 text-amber-600 rounded-lg text-[9px] font-black border border-amber-100"><Clock size={9} className="inline mr-0.5" />{r.cookingTime}{t.recipes.minutes}</span>}
-                        {r.categoryIds.map(cid => { const c = recipeCategories.find(x => x.id === cid); return c ? <span key={cid} className="px-2 py-0.5 bg-amber-50 text-amber-700 rounded-lg text-[9px] font-black border border-amber-100">{c.icon} {c.name}</span> : null; })}
-                        {r.tags.map(tag => <span key={tag} className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-lg text-[9px] font-black border border-blue-100">{tag}</span>)}
-                      </div>
-                      <div className="flex items-center gap-2 text-[10px] text-slate-400 font-bold pt-1">
-                        <span>{r.linkedProductIds.length} 關聯產品</span>
-                        <span>·</span>
-                        <span>{r.steps.length} 步驟</span>
-                        <span>·</span>
-                        <span>{r.servingSize}</span>
-                      </div>
-                    </div>
+              {/* Search + filter bar */}
+              <div className="space-y-3">
+                <div className="flex gap-2 flex-wrap items-center">
+                  <div className="relative flex-1 min-w-[180px]">
+                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input value={adminRecipeSearch} onChange={e => setAdminRecipeSearch(e.target.value)} placeholder="搜尋食譜名稱..." className="w-full pl-8 pr-3 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold placeholder:text-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-900/10" />
                   </div>
-                ))}
+                  <div className="flex gap-1.5">
+                    {(['all', 'linked', 'unlinked'] as const).map(v => (
+                      <button key={v} onClick={() => setAdminRecipeProductFilter(v)} className={`px-3 py-2 rounded-xl text-[10px] font-black border transition-all ${adminRecipeProductFilter === v ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-400 border-slate-200 hover:border-slate-300'}`}>
+                        {v === 'all' ? '全部' : v === 'linked' ? '有關聯產品' : '無關聯產品'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* Category filter chips – method row */}
+                {recipeCategories.some(c => c.categoryType === 'method') && (
+                  <div className="flex gap-1.5 overflow-x-auto hide-scrollbar">
+                    {recipeCategories.filter(c => c.categoryType === 'method').map(cat => {
+                      const isActive = adminRecipeCategoryFilter.includes(cat.id);
+                      return (
+                        <button key={cat.id} onClick={() => setAdminRecipeCategoryFilter(prev => isActive ? prev.filter(c => c !== cat.id) : [...prev, cat.id])} className={`px-2.5 py-1 rounded-full text-[10px] font-black border whitespace-nowrap transition-all flex items-center gap-1 ${isActive ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-slate-400 border-slate-200'}`}>
+                          {cat.icon} {cat.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {/* Meat type filter chips */}
+                {recipeCategories.some(c => c.categoryType === 'meat') && (
+                  <div className="flex gap-1.5 overflow-x-auto hide-scrollbar">
+                    {recipeCategories.filter(c => c.categoryType === 'meat').map(cat => {
+                      const isActive = adminRecipeCategoryFilter.includes(cat.id);
+                      return (
+                        <button key={cat.id} onClick={() => setAdminRecipeCategoryFilter(prev => isActive ? prev.filter(c => c !== cat.id) : [...prev, cat.id])} className={`px-2.5 py-1 rounded-full text-[10px] font-black border whitespace-nowrap transition-all flex items-center gap-1 ${isActive ? 'bg-rose-500 text-white border-rose-500' : 'bg-white text-slate-400 border-slate-200'}`}>
+                          {cat.icon} {cat.name}
+                        </button>
+                      );
+                    })}
+                    {(adminRecipeCategoryFilter.length > 0 || adminRecipeSearch || adminRecipeProductFilter !== 'all') && (
+                      <button onClick={() => { setAdminRecipeCategoryFilter([]); setAdminRecipeSearch(''); setAdminRecipeProductFilter('all'); }} className="flex items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-slate-600 transition-colors px-2">
+                        <X size={10} /> 清除
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
+
+              {(() => {
+                const filtered = recipes.filter(r => {
+                  if (adminRecipeSearch && !r.title.toLowerCase().includes(adminRecipeSearch.toLowerCase())) return false;
+                  if (adminRecipeProductFilter === 'linked' && r.linkedProductIds.length === 0) return false;
+                  if (adminRecipeProductFilter === 'unlinked' && r.linkedProductIds.length > 0) return false;
+                  if (adminRecipeCategoryFilter.length > 0 && !adminRecipeCategoryFilter.every(cid => r.categoryIds.includes(cid))) return false;
+                  return true;
+                });
+                return (
+                  <>
+                    <p className="text-[10px] text-slate-400 font-bold -mt-1">顯示 {filtered.length} / {recipes.length} 個食譜</p>
+                    {filtered.length === 0 && (
+                      <div className="bg-white p-12 rounded-[3rem] border border-slate-100 shadow-sm text-center text-slate-400 font-bold">{t.recipes.noRecipes}</div>
+                    )}
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      {filtered.map(r => (
+                        <div key={r.id} className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden hover:shadow-md transition-all group relative">
+                          {/* Delete button */}
+                          <button onClick={(e) => { e.stopPropagation(); setConfirmation({ title: '刪除食譜', message: `確定刪除「${r.title || '（未命名）'}」？此操作無法還原。`, onConfirm: () => deleteRecipe(r.id) }); }} className="absolute top-3 right-3 z-10 p-1.5 bg-white/90 hover:bg-rose-50 rounded-lg text-slate-300 hover:text-rose-500 transition-all opacity-0 group-hover:opacity-100 shadow-sm">
+                            <Trash2 size={14} />
+                          </button>
+                          <div className="cursor-pointer" onClick={() => setEditingRecipe(r)}>
+                            {r.mediaUrl && isMediaUrl(r.mediaUrl) && (
+                              <div className="aspect-video bg-slate-100 overflow-hidden">
+                                {r.mediaType === 'video' ? (
+                                  <video src={r.mediaUrl} className="w-full h-full object-cover" muted />
+                                ) : (
+                                  <img src={r.mediaUrl} alt={r.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                                )}
+                              </div>
+                            )}
+                            <div className="p-5 space-y-2">
+                              <h4 className="font-black text-slate-900 text-base pr-6">{r.title || '（未命名）'}</h4>
+                              {r.description && <p className="text-xs text-slate-400 font-medium line-clamp-2">{r.description}</p>}
+                              <div className="flex flex-wrap gap-1.5">
+                                {r.cookingTime > 0 && <span className="px-2 py-0.5 bg-amber-50 text-amber-600 rounded-lg text-[9px] font-black border border-amber-100"><Clock size={9} className="inline mr-0.5" />{r.cookingTime}{t.recipes.minutes}</span>}
+                                {r.categoryIds.map(cid => { const c = recipeCategories.find(x => x.id === cid); return c ? <span key={cid} className={`px-2 py-0.5 rounded-lg text-[9px] font-black border ${c.categoryType === 'meat' ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-amber-50 text-amber-700 border-amber-100'}`}>{c.icon} {c.name}</span> : null; })}
+                                {r.tags.map(tag => <span key={tag} className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-lg text-[9px] font-black border border-blue-100">{tag}</span>)}
+                              </div>
+                              <div className="flex items-center gap-2 text-[10px] text-slate-400 font-bold pt-1">
+                                <span>{r.linkedProductIds.length} 關聯產品</span>
+                                <span>·</span>
+                                <span>{r.steps.length} 步驟</span>
+                                <span>·</span>
+                                <span>{r.servingSize}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()}
             </>
             ) : (
             /* ── Recipe Categories sub-tab ── */
-            <div className="space-y-6">
+            <div className="space-y-8">
               <div className="flex justify-between items-center">
                 <p className="text-slate-400 font-bold text-sm">{recipeCategories.length} 個食譜分類</p>
-                <button onClick={() => setEditingRecipeCategory({ id: '', name: '', icon: '📁', sortOrder: recipeCategories.length })} className="px-5 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl active:scale-95 transition-all">
+                <button onClick={() => setEditingRecipeCategory({ id: '', name: '', icon: '📁', sortOrder: recipeCategories.length, categoryType: 'method' })} className="px-5 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl active:scale-95 transition-all">
                   <Plus size={16}/> 新增分類
                 </button>
               </div>
               {recipeCategories.length === 0 && (
                 <div className="bg-white p-12 rounded-[3rem] border border-slate-100 shadow-sm text-center text-slate-400 font-bold">尚未有食譜分類</div>
               )}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {recipeCategories.map(cat => (
-                  <div key={cat.id} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between hover:shadow-md transition-all">
-                    <div className="flex items-center gap-3">
-                      <span className="text-2xl">{cat.icon}</span>
-                      <div>
-                        <p className="font-black text-slate-900">{cat.name}</p>
-                        <p className="text-[10px] text-slate-400 font-bold">ID: {cat.id} · 排序: {cat.sortOrder}</p>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <button onClick={() => setEditingRecipeCategory(cat)} className="p-2 bg-slate-50 rounded-xl text-slate-400 hover:text-blue-600"><Edit size={16} /></button>
-                      <button onClick={() => setConfirmation({ title: '刪除分類', message: `確定刪除「${cat.name}」？`, onConfirm: () => deleteRecipeCategory(cat.id) })} className="p-2 bg-slate-50 rounded-xl text-slate-400 hover:text-rose-600"><Trash2 size={16} /></button>
-                    </div>
+
+              {/* Section 1: Cooking methods */}
+              {recipeCategories.some(c => c.categoryType === 'method') && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">🍳</span>
+                    <h5 className="font-black text-slate-900 text-sm">料理方式</h5>
+                    <span className="text-[10px] text-slate-400 font-bold">({recipeCategories.filter(c => c.categoryType === 'method').length})</span>
                   </div>
-                ))}
-              </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {recipeCategories.filter(c => c.categoryType === 'method').map(cat => (
+                      <div key={cat.id} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between hover:shadow-md transition-all">
+                        <div className="flex items-center gap-3">
+                          <span className="text-2xl">{cat.icon}</span>
+                          <div>
+                            <p className="font-black text-slate-900">{cat.name}</p>
+                            <p className="text-[10px] text-slate-400 font-bold">ID: {cat.id} · 排序: {cat.sortOrder}</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button onClick={() => setEditingRecipeCategory(cat)} className="p-2 bg-slate-50 rounded-xl text-slate-400 hover:text-blue-600"><Edit size={16} /></button>
+                          <button onClick={() => setConfirmation({ title: '刪除分類', message: `確定刪除「${cat.name}」？`, onConfirm: () => deleteRecipeCategory(cat.id) })} className="p-2 bg-slate-50 rounded-xl text-slate-400 hover:text-rose-600"><Trash2 size={16} /></button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Section 2: Meat types */}
+              {recipeCategories.some(c => c.categoryType === 'meat') && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">🥩</span>
+                    <h5 className="font-black text-slate-900 text-sm">肉類種類</h5>
+                    <span className="text-[10px] text-slate-400 font-bold">({recipeCategories.filter(c => c.categoryType === 'meat').length})</span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {recipeCategories.filter(c => c.categoryType === 'meat').map(cat => (
+                      <div key={cat.id} className="bg-white p-5 rounded-2xl border border-rose-50 shadow-sm flex items-center justify-between hover:shadow-md transition-all">
+                        <div className="flex items-center gap-3">
+                          <span className="text-2xl">{cat.icon}</span>
+                          <div>
+                            <p className="font-black text-slate-900">{cat.name}</p>
+                            <p className="text-[10px] text-slate-400 font-bold">ID: {cat.id} · 排序: {cat.sortOrder}</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button onClick={() => setEditingRecipeCategory(cat)} className="p-2 bg-rose-50 rounded-xl text-slate-400 hover:text-blue-600"><Edit size={16} /></button>
+                          <button onClick={() => setConfirmation({ title: '刪除分類', message: `確定刪除「${cat.name}」？`, onConfirm: () => deleteRecipeCategory(cat.id) })} className="p-2 bg-rose-50 rounded-xl text-slate-400 hover:text-rose-600"><Trash2 size={16} /></button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Recipe Category Editor inline */}
               {editingRecipeCategory && (
                 <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm space-y-4">
                   <h4 className="font-black text-slate-900">{editingRecipeCategory.id ? '編輯分類' : '新增分類'}</h4>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                     <div className="space-y-1">
                       <label className="text-[9px] font-bold text-slate-400 uppercase">分類 ID</label>
                       <input value={editingRecipeCategory.id} onChange={e => setEditingRecipeCategory({ ...editingRecipeCategory, id: e.target.value.toLowerCase().replace(/\s+/g, '-') })} className="w-full p-2.5 bg-slate-50 rounded-xl font-bold text-xs" placeholder="例如：airfryer" />
@@ -3752,6 +3862,16 @@ const App: React.FC = () => {
                     <div className="space-y-1">
                       <label className="text-[9px] font-bold text-slate-400 uppercase">排序</label>
                       <input type="number" value={editingRecipeCategory.sortOrder} onChange={e => setEditingRecipeCategory({ ...editingRecipeCategory, sortOrder: Number(e.target.value) || 0 })} className="w-full p-2.5 bg-slate-50 rounded-xl font-bold text-xs" />
+                    </div>
+                    <div className="space-y-1 col-span-2">
+                      <label className="text-[9px] font-bold text-slate-400 uppercase">分類類型</label>
+                      <div className="flex gap-2">
+                        {(['method', 'meat'] as const).map(type => (
+                          <button key={type} onClick={() => setEditingRecipeCategory({ ...editingRecipeCategory, categoryType: type })} className={`flex-1 py-2 rounded-xl text-xs font-black border transition-all ${editingRecipeCategory.categoryType === type ? (type === 'meat' ? 'bg-rose-500 text-white border-rose-500' : 'bg-amber-500 text-white border-amber-500') : 'bg-slate-50 text-slate-400 border-slate-200 hover:border-slate-300'}`}>
+                            {type === 'method' ? '🍳 料理方式' : '🥩 肉類種類'}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
                   <div className="flex gap-3 justify-end">
@@ -5358,20 +5478,39 @@ const App: React.FC = () => {
               <h3 className="font-bold text-slate-900 text-sm">{t.recipes.allRecipes}</h3>
               <span className="text-[10px] text-slate-400 font-bold">({recipeCategoryFilter.length > 0 ? recipes.filter(r => recipeCategoryFilter.every(cid => r.categoryIds.includes(cid))).length : recipes.length})</span>
             </div>
-            {/* Category filter chips */}
+            {/* Filter bars – row 1: cooking methods, row 2: meat types */}
             {recipeCategories.length > 0 && (
-              <div className="flex gap-1.5 overflow-x-auto hide-scrollbar pb-1">
-                {recipeCategories.map(cat => {
-                  const isActive = recipeCategoryFilter.includes(cat.id);
-                  return (
-                    <button key={cat.id} onClick={() => setRecipeCategoryFilter(prev => isActive ? prev.filter(c => c !== cat.id) : [...prev, cat.id])} className={`px-3 py-1.5 rounded-full text-[10px] font-black border whitespace-nowrap transition-all flex items-center gap-1 ${isActive ? 'bg-amber-500 text-white border-amber-500 shadow-md' : 'bg-white text-slate-500 border-slate-200'}`}>
-                      <span>{cat.icon}</span> {cat.name}
-                    </button>
-                  );
-                })}
+              <div className="space-y-1.5">
+                {/* Row 1: Cooking methods */}
+                {recipeCategories.some(c => c.categoryType === 'method') && (
+                  <div className="flex gap-1.5 overflow-x-auto hide-scrollbar pb-0.5">
+                    {recipeCategories.filter(c => c.categoryType === 'method').map(cat => {
+                      const isActive = recipeCategoryFilter.includes(cat.id);
+                      return (
+                        <button key={cat.id} onClick={() => setRecipeCategoryFilter(prev => isActive ? prev.filter(c => c !== cat.id) : [...prev, cat.id])} className={`px-3 py-1.5 rounded-full text-[10px] font-black border whitespace-nowrap transition-all flex items-center gap-1 ${isActive ? 'bg-amber-500 text-white border-amber-500 shadow-md' : 'bg-white text-slate-500 border-slate-200'}`}>
+                          <span>{cat.icon}</span> {cat.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {/* Row 2: Meat types */}
+                {recipeCategories.some(c => c.categoryType === 'meat') && (
+                  <div className="flex gap-1.5 overflow-x-auto hide-scrollbar pb-1">
+                    {recipeCategories.filter(c => c.categoryType === 'meat').map(cat => {
+                      const isActive = recipeCategoryFilter.includes(cat.id);
+                      return (
+                        <button key={cat.id} onClick={() => setRecipeCategoryFilter(prev => isActive ? prev.filter(c => c !== cat.id) : [...prev, cat.id])} className={`px-3 py-1.5 rounded-full text-[10px] font-black border whitespace-nowrap transition-all flex items-center gap-1 ${isActive ? 'bg-rose-500 text-white border-rose-500 shadow-md' : 'bg-white text-slate-500 border-slate-200'}`}>
+                          <span>{cat.icon}</span> {cat.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {/* Clear all filters button */}
                 {recipeCategoryFilter.length > 0 && (
-                  <button onClick={() => setRecipeCategoryFilter([])} className="px-3 py-1.5 rounded-full text-[10px] font-black border border-slate-200 text-slate-400 whitespace-nowrap hover:bg-slate-50 flex items-center gap-1">
-                    <X size={10} /> 清除
+                  <button onClick={() => setRecipeCategoryFilter([])} className="flex items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-slate-600 transition-colors py-0.5">
+                    <X size={10} /> 清除篩選
                   </button>
                 )}
               </div>

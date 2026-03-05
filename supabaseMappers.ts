@@ -176,9 +176,10 @@ export const mapRecipeToRow = (recipe: StandaloneRecipe): Omit<SupabaseRecipeRow
   steps: recipe.steps,
 });
 
-export const mapRecipeCategoryRow = (row: { id: string; name: string; icon: string; sort_order: number }): RecipeCategory => ({
+export const mapRecipeCategoryRow = (row: { id: string; name: string; icon: string; sort_order: number; category_type?: string }): RecipeCategory => ({
   id: row.id,
   name: row.name,
   icon: row.icon ?? '📁',
   sortOrder: row.sort_order ?? 0,
+  categoryType: (row.category_type === 'meat' ? 'meat' : 'method'),
 });
