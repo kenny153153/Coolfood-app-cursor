@@ -6,13 +6,15 @@ const translations = {
   'zh-HK': {
     orderStatus: {
       pending_payment: '待付款',
+      payment_failed: '付款失敗',
+      cancelled: '已取消',
       paid: '已付款',
-      processing: '處理中',
-      ready_for_pickup: '備貨中',
-      shipping: '運輸中',
-      completed: '已完成',
-      abnormal: '處理中',
-      refund: '已退款',
+      preparing: '備貨中',
+      shipping: '發貨中',
+      shipped: '已發貨',
+      delivered: '已到達',
+      refunded: '退款',
+      partially_refunded: '部份退款',
     },
     nav: {
       store: '商店',
@@ -398,13 +400,15 @@ const translations = {
   en: {
     orderStatus: {
       pending_payment: 'Pending Payment',
+      payment_failed: 'Payment Failed',
+      cancelled: 'Cancelled',
       paid: 'Paid',
-      processing: 'Processing',
-      ready_for_pickup: 'Preparing',
-      shipping: 'Shipping',
-      completed: 'Completed',
-      abnormal: 'Processing',
-      refund: 'Refunded',
+      preparing: 'Preparing',
+      shipping: 'Delivering',
+      shipped: 'Shipped',
+      delivered: 'Delivered',
+      refunded: 'Refunded',
+      partially_refunded: 'Partially Refunded',
     },
     nav: {
       store: 'Store',

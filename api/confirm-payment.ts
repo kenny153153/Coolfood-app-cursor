@@ -167,8 +167,10 @@ export default async function handler(
     }
 
     const updateId = orderRow.id ?? dbIdValue;
+    const updatePayload: Record<string, unknown> = { status: 'paid' };
+    if (paymentIntentId) updatePayload.payment_intent_id = paymentIntentId;
     const { error: updateError } = await supabaseAdmin
-      .from('orders').update({ status: 'paid' }).eq('id', updateId);
+      .from('orders').update(updatePayload).eq('id', updateId);
 
     if (updateError) {
       console.error('[confirm-payment] CRITICAL update failed:', updateError.message);
@@ -273,7 +275,9 @@ export default async function handler(
     try {
       const dbId = getOrderDbId(orderId);
       const numId = /^\d+$/.test(String(dbId)) ? Number(dbId) : dbId;
-      await supabaseAdmin.from('orders').update({ status: 'paid' }).eq('id', numId);
+      const fallbackPayload: Record<string, unknown> = { status: 'paid' };
+      if (paymentIntentId) fallbackPayload.payment_intent_id = paymentIntentId;
+      await supabaseAdmin.from('orders').update(fallbackPayload).eq('id', numId);
       return res.status(200).json({
         success: true, orderId, confirmed: true,
         warning: '支付已確認（部分流程有延遲，不影響訂單）',

@@ -237,13 +237,15 @@ const getOrderStatusLabel = (status: OrderStatus | string, t?: { orderStatus: Re
   }
   const labels: Record<string, string> = {
     [OrderStatus.PENDING_PAYMENT]: '待付款',
+    [OrderStatus.PAYMENT_FAILED]: '付款失敗',
+    [OrderStatus.CANCELLED]: '已取消',
     [OrderStatus.PAID]: '已付款',
-    [OrderStatus.PROCESSING]: '處理中',
-    [OrderStatus.READY_FOR_PICKUP]: '等待收件',
-    [OrderStatus.SHIPPING]: '運輸中',
-    [OrderStatus.COMPLETED]: '已完成',
-    [OrderStatus.ABNORMAL]: '異常',
-    [OrderStatus.REFUND]: '已退款',
+    [OrderStatus.PREPARING]: '備貨中',
+    [OrderStatus.SHIPPING]: '發貨中',
+    [OrderStatus.SHIPPED]: '已發貨',
+    [OrderStatus.DELIVERED]: '已到達',
+    [OrderStatus.REFUNDED]: '退款',
+    [OrderStatus.PARTIALLY_REFUNDED]: '部份退款',
   };
   return labels[status] ?? String(status);
 };
@@ -251,13 +253,15 @@ const getOrderStatusLabel = (status: OrderStatus | string, t?: { orderStatus: Re
 const StatusBadge: React.FC<{ status: OrderStatus; t?: { orderStatus: Record<string, string> } }> = ({ status, t }) => {
   const configs: Record<string, { label: string; color: string }> = {
     [OrderStatus.PENDING_PAYMENT]: { label: getOrderStatusLabel(OrderStatus.PENDING_PAYMENT, t), color: 'bg-slate-50 text-slate-600 border-slate-100' },
+    [OrderStatus.PAYMENT_FAILED]: { label: getOrderStatusLabel(OrderStatus.PAYMENT_FAILED, t), color: 'bg-rose-50 text-rose-700 border-rose-100' },
+    [OrderStatus.CANCELLED]: { label: getOrderStatusLabel(OrderStatus.CANCELLED, t), color: 'bg-slate-100 text-slate-500 border-slate-200' },
     [OrderStatus.PAID]: { label: getOrderStatusLabel(OrderStatus.PAID, t), color: 'bg-green-50 text-green-700 border-green-100' },
-    [OrderStatus.PROCESSING]: { label: getOrderStatusLabel(OrderStatus.PROCESSING, t), color: 'bg-blue-50 text-blue-700 border-blue-100' },
-    [OrderStatus.READY_FOR_PICKUP]: { label: getOrderStatusLabel(OrderStatus.READY_FOR_PICKUP, t), color: 'bg-amber-50 text-amber-700 border-amber-100' },
-    [OrderStatus.SHIPPING]: { label: getOrderStatusLabel(OrderStatus.SHIPPING, t), color: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
-    [OrderStatus.COMPLETED]: { label: getOrderStatusLabel(OrderStatus.COMPLETED, t), color: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
-    [OrderStatus.ABNORMAL]: { label: getOrderStatusLabel(OrderStatus.ABNORMAL, t), color: t ? 'bg-blue-50 text-blue-700 border-blue-100' : 'bg-rose-50 text-rose-700 border-rose-100' },
-    [OrderStatus.REFUND]: { label: getOrderStatusLabel(OrderStatus.REFUND, t), color: 'bg-orange-50 text-orange-700 border-orange-100' },
+    [OrderStatus.PREPARING]: { label: getOrderStatusLabel(OrderStatus.PREPARING, t), color: 'bg-blue-50 text-blue-700 border-blue-100' },
+    [OrderStatus.SHIPPING]: { label: getOrderStatusLabel(OrderStatus.SHIPPING, t), color: 'bg-amber-50 text-amber-700 border-amber-100' },
+    [OrderStatus.SHIPPED]: { label: getOrderStatusLabel(OrderStatus.SHIPPED, t), color: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
+    [OrderStatus.DELIVERED]: { label: getOrderStatusLabel(OrderStatus.DELIVERED, t), color: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
+    [OrderStatus.REFUNDED]: { label: getOrderStatusLabel(OrderStatus.REFUNDED, t), color: 'bg-orange-50 text-orange-700 border-orange-100' },
+    [OrderStatus.PARTIALLY_REFUNDED]: { label: getOrderStatusLabel(OrderStatus.PARTIALLY_REFUNDED, t), color: 'bg-yellow-50 text-yellow-700 border-yellow-100' },
   };
   const config = configs[status] || { label: String(status), color: 'bg-slate-50 text-slate-600 border-slate-100' };
   return (
@@ -269,10 +273,10 @@ const StatusBadge: React.FC<{ status: OrderStatus; t?: { orderStatus: Record<str
 
 const ORDER_TIMELINE = [
   OrderStatus.PAID,
-  OrderStatus.PROCESSING,
-  OrderStatus.READY_FOR_PICKUP,
+  OrderStatus.PREPARING,
   OrderStatus.SHIPPING,
-  OrderStatus.COMPLETED,
+  OrderStatus.SHIPPED,
+  OrderStatus.DELIVERED,
 ];
 
 const getTimelineIndex = (status: OrderStatus | string) => {
@@ -581,6 +585,10 @@ const App: React.FC = () => {
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
   const [batchProcessing, setBatchProcessing] = useState(false);
   const [sfValidationModal, setSfValidationModal] = useState<{ problematic: { id: string; reason: string }[]; valid: SupabaseOrderRow[] } | null>(null);
+  const [refundModal, setRefundModal] = useState<{ orderId: string; total: number } | null>(null);
+  const [refundType, setRefundType] = useState<'full' | 'partial'>('full');
+  const [refundAmount, setRefundAmount] = useState('');
+  const [refundProcessing, setRefundProcessing] = useState(false);
   
   // ── 一鍵回購 ──
   const [reorderModalOpen, setReorderModalOpen] = useState(false);
@@ -1087,7 +1095,7 @@ const App: React.FC = () => {
           .from('orders')
           .select('line_items')
           .eq('customer_phone', variant)
-          .in('status', ['paid', 'processing', 'ready_for_pickup', 'completed'])
+          .in('status', ['paid', 'preparing', 'shipping', 'shipped', 'delivered'])
           .order('order_date', { ascending: false })
           .limit(1);
         queryError = error;
@@ -1769,114 +1777,152 @@ const App: React.FC = () => {
 
   // ========== Batch Order Operations ==========
 
-  /** Action A: 截單 — batch update paid orders to processing */
-  const handleBatchCutoff = async () => {
+  /** PAID tab → 打印執貨單 (large-font picking list) + auto transition to PREPARING */
+  const handlePrintPickingList = async () => {
     if (selectedOrderIds.size === 0) return;
     setBatchProcessing(true);
     try {
-      // Filter selected orders: only those with status paid (已付款)
       const eligibleOrders = orders.filter(o => selectedOrderIds.has(o.id) && o.status === OrderStatus.PAID);
       if (eligibleOrders.length === 0) {
         showToast('沒有符合條件的訂單（僅限「已付款」狀態）', 'error');
         setBatchProcessing(false);
         return;
       }
-      const dbIds = eligibleOrders.map(o => {
-        const dbId = getOrderDbId(o.id);
-        return dbId;
-      }).filter((id): id is number => id !== null);
+      const dbIds = eligibleOrders.map(o => getOrderDbId(o.id)).filter((id): id is number => id !== null);
+      const { data, error } = await supabase.from('orders').select('*').in('id', dbIds);
+      if (error || !data) { showToast('載入訂單資料失敗', 'error'); setBatchProcessing(false); return; }
 
-      const { error } = await supabase
-        .from('orders')
-        .update({ status: 'processing' })
-        .in('id', dbIds);
-      if (error) {
-        showToast(`截單失敗：${error.message}`, 'error');
+      const orderRows = data as SupabaseOrderRow[];
+      const today = new Date().toLocaleDateString('zh-HK');
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) { showToast('無法開啟列印視窗，請允許彈出視窗', 'error'); setBatchProcessing(false); return; }
+
+      const pagesHtml = orderRows.map((row, idx) => {
+        const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : row.id;
+        const address = [row.delivery_district, row.delivery_address, row.delivery_street, row.delivery_building].filter(Boolean).join(' ');
+        const floorFlat = [row.delivery_floor ? row.delivery_floor + '樓' : '', row.delivery_flat ? row.delivery_flat + '室' : ''].filter(Boolean).join(' ');
+        const fullAddress = [address, floorFlat].filter(Boolean).join(' ') || '未提供地址';
+        const items = row.line_items || [];
+        const itemCount = items.length;
+        const baseFontPx = itemCount > 12 ? 16 : itemCount > 8 ? 18 : 20;
+        const nameFontPx = itemCount > 12 ? 18 : itemCount > 8 ? 20 : 24;
+        const qtyFontPx = itemCount > 12 ? 20 : itemCount > 8 ? 22 : 26;
+
+        const lineItemsHtml = items.map((item, i) =>
+          `<tr>
+            <td style="font-size:${baseFontPx}px">${i + 1}</td>
+            <td style="font-size:${baseFontPx}px">${item.product_id || '-'}</td>
+            <td class="product-name" style="font-size:${nameFontPx}px;font-weight:900">${item.name}</td>
+            <td class="qty-cell" style="font-size:${qtyFontPx}px;font-weight:900;text-align:center">${item.qty}</td>
+            <td style="font-size:${baseFontPx}px;text-align:right">$${item.unit_price}</td>
+            <td style="font-size:${baseFontPx}px;text-align:right">$${item.line_total}</td>
+          </tr>`
+        ).join('');
+
+        return `<div class="page" ${idx < orderRows.length - 1 ? 'style="page-break-after:always"' : ''}>
+          <div class="header">
+            <div class="header-row"><span class="header-label">訂單編號</span><span class="header-value">#${orderId}</span></div>
+            <div class="header-row"><span class="header-label">日期</span><span class="header-value">${today}</span></div>
+            <div class="header-row"><span class="header-label">客戶</span><span class="header-value">${row.customer_name}</span></div>
+            <div class="header-row"><span class="header-label">電話</span><span class="header-value">${row.customer_phone || '未提供'}</span></div>
+            <div class="header-row full"><span class="header-label">地址</span><span class="header-value">${fullAddress}</span></div>
+            ${(row as any).delivery_date ? `<div class="header-row"><span class="header-label">指定到貨</span><span class="header-value">${(row as any).delivery_date}</span></div>` : ''}
+          </div>
+          <table>
+            <thead><tr><th>#</th><th>編號</th><th>商品名稱</th><th style="text-align:center">數量</th><th style="text-align:right">單價</th><th style="text-align:right">小計</th></tr></thead>
+            <tbody>${lineItemsHtml}</tbody>
+          </table>
+          <div class="footer-totals">
+            <span>小計 $${row.subtotal ?? row.total}</span>
+            <span>運費 $${row.delivery_fee ?? 0}</span>
+            <span class="grand">總計 $${row.total}</span>
+          </div>
+        </div>`;
+      }).join('');
+
+      printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>執貨單</title>
+        <style>
+          @page { size: A4; margin: 12mm; }
+          * { box-sizing: border-box; margin: 0; padding: 0; }
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft JhengHei', sans-serif; color: #1e293b; }
+          .page { width: 100%; max-height: 100vh; overflow: hidden; padding: 8px 0; }
+          .header { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 3px solid #1e293b; }
+          .header-row { display: flex; gap: 8px; align-items: baseline; }
+          .header-row.full { grid-column: 1 / -1; }
+          .header-label { font-size: 11px; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 1px; min-width: 60px; }
+          .header-value { font-size: 16px; font-weight: 900; color: #0f172a; }
+          table { width: 100%; border-collapse: collapse; line-height: 1.8; }
+          th { background: #f1f5f9; padding: 6px 8px; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #64748b; border-bottom: 2px solid #cbd5e1; text-align: left; }
+          td { padding: 5px 8px; border-bottom: 1px solid #e2e8f0; font-weight: 600; line-height: 1.8; vertical-align: middle; }
+          tr:nth-child(even) { background: #f8fafc; }
+          .product-name { font-weight: 900 !important; }
+          .qty-cell { font-weight: 900 !important; }
+          .footer-totals { display: flex; justify-content: flex-end; gap: 20px; padding-top: 8px; border-top: 2px solid #1e293b; margin-top: 8px; font-size: 14px; font-weight: 700; }
+          .footer-totals .grand { font-weight: 900; font-size: 18px; }
+          @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+        </style>
+      </head><body>${pagesHtml}</body></html>`);
+      printWindow.document.close();
+      printWindow.focus();
+      setTimeout(() => printWindow.print(), 300);
+
+      const { error: updateErr } = await supabase.from('orders').update({ status: 'preparing' }).in('id', dbIds);
+      if (updateErr) {
+        showToast(`執貨單已生成，但狀態更新失敗：${updateErr.message}`, 'error');
       } else {
-        showToast(`已截單 ${eligibleOrders.length} 筆訂單`);
-        // 觸發通知（非阻塞，失敗不影響截單結果）
-        // customerPhone 由 notification service 自動從 DB 查詢
-        fetch(`${window.location.origin}/api/send-notification`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            orders: eligibleOrders.map(o => ({
-              orderId: o.id,
-              newStatus: 'processing',
-            })),
-          }),
-        }).catch(() => {/* 通知失敗不影響 UI */});
-        await fetchOrders();
-        setSelectedOrderIds(new Set());
+        showToast(`已生成 ${orderRows.length} 張執貨單，訂單已轉為「備貨中」`);
       }
+      await fetchOrders();
+      setSelectedOrderIds(new Set());
     } catch (e) {
-      showToast(`截單錯誤：${e instanceof Error ? e.message : String(e)}`, 'error');
+      showToast(`列印失敗：${e instanceof Error ? e.message : String(e)}`, 'error');
     }
     setBatchProcessing(false);
   };
 
-  /** Action B: 列印總揀貨單 — aggregate packing list */
+  /** PREPARING tab → 打印總執貨單 (aggregate picking list for cold storage) */
   const handlePrintAggregateList = async () => {
     if (selectedOrderIds.size === 0) return;
     setBatchProcessing(true);
     try {
-      const dbIds = Array.from(selectedOrderIds).map(id => {
-        const dbId = getOrderDbId(id);
-        return dbId;
-      }).filter((id): id is number => id !== null);
+      const dbIds = Array.from(selectedOrderIds).map(id => getOrderDbId(id)).filter((id): id is number => id !== null);
+      const { data, error } = await supabase.from('orders').select('*').in('id', dbIds);
+      if (error || !data) { showToast('載入訂單資料失敗', 'error'); setBatchProcessing(false); return; }
 
-      const { data, error } = await supabase
-        .from('orders')
-        .select('*')
-        .in('id', dbIds);
-      if (error || !data) {
-        showToast('載入訂單資料失敗', 'error');
-        setBatchProcessing(false);
-        return;
-      }
-
-      // Aggregate line_items by product
       const aggregated: Record<string, { name: string; qty: number; image?: string | null }> = {};
       for (const row of data as SupabaseOrderRow[]) {
         for (const item of row.line_items || []) {
           const key = `${item.product_id}_${item.name}`;
-          if (aggregated[key]) {
-            aggregated[key].qty += item.qty;
-          } else {
-            aggregated[key] = { name: item.name, qty: item.qty, image: item.image };
-          }
+          if (aggregated[key]) { aggregated[key].qty += item.qty; }
+          else { aggregated[key] = { name: item.name, qty: item.qty, image: item.image }; }
         }
       }
 
-      // Sort by qty descending
       const sorted = Object.values(aggregated).sort((a, b) => b.qty - a.qty);
       const today = new Date().toLocaleDateString('zh-HK');
 
-      // Open print window
       const printWindow = window.open('', '_blank');
-      if (!printWindow) {
-        showToast('無法開啟列印視窗，請允許彈出視窗', 'error');
-        setBatchProcessing(false);
-        return;
-      }
-      printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>總揀貨單</title>
+      if (!printWindow) { showToast('無法開啟列印視窗，請允許彈出視窗', 'error'); setBatchProcessing(false); return; }
+      printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>總執貨單</title>
         <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 40px; color: #1e293b; }
-          h1 { font-size: 24px; font-weight: 900; margin-bottom: 8px; }
+          @page { size: A4; margin: 15mm; }
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft JhengHei', sans-serif; color: #1e293b; }
+          h1 { font-size: 28px; font-weight: 900; margin-bottom: 8px; }
           .meta { color: #64748b; font-size: 13px; margin-bottom: 24px; }
-          table { width: 100%; border-collapse: collapse; }
-          th { background: #f1f5f9; padding: 12px 16px; text-align: left; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #64748b; border-bottom: 2px solid #e2e8f0; }
-          td { padding: 12px 16px; border-bottom: 1px solid #f1f5f9; font-size: 14px; font-weight: 600; }
+          table { width: 100%; border-collapse: collapse; line-height: 1.8; }
+          th { background: #f1f5f9; padding: 10px 14px; text-align: left; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #64748b; border-bottom: 2px solid #e2e8f0; }
+          td { padding: 10px 14px; border-bottom: 1px solid #f1f5f9; font-size: 18px; font-weight: 700; line-height: 1.8; }
           tr:nth-child(even) { background: #f8fafc; }
-          .qty { font-weight: 900; font-size: 16px; color: #0f172a; }
-          @media print { body { padding: 20px; } }
+          .name-cell { font-size: 20px; font-weight: 900; }
+          .qty-cell { font-size: 24px; font-weight: 900; color: #0f172a; text-align: center; }
+          @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
         </style>
       </head><body>
-        <h1>總揀貨單</h1>
+        <h1>總執貨單</h1>
         <p class="meta">日期：${today} ｜ 共 ${selectedOrderIds.size} 筆訂單 ｜ ${sorted.length} 種商品</p>
         <table>
-          <thead><tr><th>#</th><th>商品名稱</th><th>總數量</th></tr></thead>
-          <tbody>${sorted.map((item, i) => `<tr><td>${i + 1}</td><td>${item.name}</td><td class="qty">${item.qty}</td></tr>`).join('')}</tbody>
+          <thead><tr><th>#</th><th>商品名稱</th><th style="text-align:center">總數量</th></tr></thead>
+          <tbody>${sorted.map((item, i) => `<tr><td>${i + 1}</td><td class="name-cell">${item.name}</td><td class="qty-cell">${item.qty}</td></tr>`).join('')}</tbody>
         </table>
       </body></html>`);
       printWindow.document.close();
@@ -1888,88 +1934,78 @@ const App: React.FC = () => {
     setBatchProcessing(false);
   };
 
-  /** Action C: 列印個人清單 — individual invoices */
-  const handlePrintIndividualInvoices = async () => {
+  /** PREPARING tab → 打印順豐單 (SF Express shipping label 100mm×150mm landscape) */
+  const handlePrintSfLabels = async () => {
     if (selectedOrderIds.size === 0) return;
     setBatchProcessing(true);
     try {
-      const dbIds = Array.from(selectedOrderIds).map(id => {
-        const dbId = getOrderDbId(id);
-        return dbId;
-      }).filter((id): id is number => id !== null);
-
-      const { data, error } = await supabase
-        .from('orders')
-        .select('*')
-        .in('id', dbIds);
-      if (error || !data) {
-        showToast('載入訂單資料失敗', 'error');
-        setBatchProcessing(false);
-        return;
-      }
+      const dbIds = Array.from(selectedOrderIds).map(id => getOrderDbId(id)).filter((id): id is number => id !== null);
+      const { data, error } = await supabase.from('orders').select('*').in('id', dbIds);
+      if (error || !data) { showToast('載入訂單資料失敗', 'error'); setBatchProcessing(false); return; }
 
       const orderRows = data as SupabaseOrderRow[];
-      const today = new Date().toLocaleDateString('zh-HK');
 
-      const printWindow = window.open('', '_blank');
-      if (!printWindow) {
-        showToast('無法開啟列印視窗，請允許彈出視窗', 'error');
-        setBatchProcessing(false);
-        return;
+      const needsSfOrder = orderRows.filter(r => !r.waybill_no);
+      for (const row of needsSfOrder) {
+        const oid = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
+        try {
+          const sfRes = await fetch(`${window.location.origin}/api/sf-order`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ orderId: oid }),
+          });
+          const sfJson = await sfRes.json().catch(() => ({}));
+          if (sfJson.waybillNo || sfJson.waybill_no) {
+            row.waybill_no = sfJson.waybillNo ?? sfJson.waybill_no;
+          }
+        } catch { /* proceed without waybill */ }
       }
 
-      const invoicesHtml = orderRows.map((row, idx) => {
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) { showToast('無法開啟列印視窗，請允許彈出視窗', 'error'); setBatchProcessing(false); return; }
+
+      const labelsHtml = orderRows.map((row, idx) => {
         const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : row.id;
-        const address = [row.delivery_district, row.delivery_address, row.delivery_street, row.delivery_building].filter(Boolean).join(' ');
+        const addr = [row.delivery_district, row.delivery_address, row.delivery_street, row.delivery_building].filter(Boolean).join(' ');
         const floorFlat = [row.delivery_floor ? row.delivery_floor + '樓' : '', row.delivery_flat ? row.delivery_flat + '室' : ''].filter(Boolean).join(' ');
-        const fullAddress = [address, floorFlat].filter(Boolean).join(' ') || '未提供地址';
-
-        const lineItemsHtml = (row.line_items || []).map(item =>
-          `<tr><td>${item.name}</td><td style="text-align:center">${item.qty}</td><td style="text-align:right">$${item.unit_price}</td><td style="text-align:right">$${item.line_total}</td></tr>`
-        ).join('');
-
-        return `<div class="invoice" ${idx < orderRows.length - 1 ? 'style="page-break-after:always"' : ''}>
-          <h2>訂單 #${orderId}</h2>
-          <div class="info-grid">
-            <div><span class="label">客戶</span><span>${row.customer_name}</span></div>
-            <div><span class="label">電話</span><span>${row.customer_phone || '未提供'}</span></div>
-            <div><span class="label">聯絡人</span><span>${row.contact_name || '未提供'}</span></div>
-            <div><span class="label">配送方式</span><span>${row.delivery_method || '未設定'}</span></div>
-            <div class="full-width"><span class="label">地址</span><span>${fullAddress}</span></div>
+        const fullAddr = [addr, floorFlat].filter(Boolean).join(' ') || '未提供地址';
+        return `<div class="label" ${idx < orderRows.length - 1 ? 'style="page-break-after:always"' : ''}>
+          <div class="waybill">${row.waybill_no || '待取得單號'}</div>
+          <div class="section">
+            <div class="section-title">寄件人</div>
+            <div class="info">Coolfood</div>
           </div>
-          <table>
-            <thead><tr><th>商品</th><th style="text-align:center">數量</th><th style="text-align:right">單價</th><th style="text-align:right">小計</th></tr></thead>
-            <tbody>${lineItemsHtml}</tbody>
-          </table>
-          <div class="totals">
-            <div><span>商品小計</span><span>$${row.subtotal ?? row.total}</span></div>
-            <div><span>運費</span><span>$${row.delivery_fee ?? 0}</span></div>
-            <div class="grand-total"><span>總計</span><span>$${row.total}</span></div>
+          <div class="divider"></div>
+          <div class="section">
+            <div class="section-title">收件人</div>
+            <div class="info name">${row.contact_name || row.customer_name}</div>
+            <div class="info">${row.customer_phone || ''}</div>
+            <div class="info addr">${fullAddr}</div>
+          </div>
+          <div class="divider"></div>
+          <div class="bottom">
+            <span>訂單 ${orderId}</span>
+            <span>順豐冷鏈</span>
           </div>
         </div>`;
       }).join('');
 
-      printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>個人清單</title>
+      printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>順豐面單</title>
         <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 40px; color: #1e293b; }
-          .invoice { margin-bottom: 40px; }
-          h2 { font-size: 20px; font-weight: 900; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 2px solid #1e293b; }
-          .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; margin-bottom: 20px; }
-          .info-grid .full-width { grid-column: 1 / -1; }
-          .info-grid .label { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #64748b; display: block; }
-          .info-grid span:not(.label) { font-size: 14px; font-weight: 600; }
-          table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
-          th { background: #f1f5f9; padding: 10px 12px; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #64748b; border-bottom: 2px solid #e2e8f0; text-align: left; }
-          td { padding: 10px 12px; border-bottom: 1px solid #f1f5f9; font-size: 13px; font-weight: 600; }
-          .totals { text-align: right; font-size: 14px; }
-          .totals > div { display: flex; justify-content: flex-end; gap: 24px; padding: 4px 0; }
-          .totals .grand-total { font-weight: 900; font-size: 16px; border-top: 2px solid #1e293b; padding-top: 8px; margin-top: 4px; }
-          @media print { body { padding: 20px; } }
+          @page { size: 150mm 100mm landscape; margin: 3mm; }
+          * { box-sizing: border-box; margin: 0; padding: 0; }
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft JhengHei', sans-serif; }
+          .label { width: 144mm; height: 94mm; padding: 6mm; overflow: hidden; }
+          .waybill { font-size: 22px; font-weight: 900; text-align: center; padding: 4mm 0; border: 2px solid #000; margin-bottom: 4mm; letter-spacing: 2px; }
+          .section { margin-bottom: 3mm; }
+          .section-title { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #666; margin-bottom: 1mm; }
+          .info { font-size: 14px; font-weight: 700; line-height: 1.4; }
+          .info.name { font-size: 18px; font-weight: 900; }
+          .info.addr { font-size: 13px; }
+          .divider { border-top: 1px dashed #999; margin: 3mm 0; }
+          .bottom { display: flex; justify-content: space-between; font-size: 10px; font-weight: 700; color: #666; }
+          @media print { body { -webkit-print-color-adjust: exact; } }
         </style>
-      </head><body>
-        <div style="text-align:center;margin-bottom:32px;font-size:11px;color:#94a3b8;font-weight:700;">列印日期：${today} ｜ 共 ${orderRows.length} 筆訂單</div>
-        ${invoicesHtml}
-      </body></html>`);
+      </head><body>${labelsHtml}</body></html>`);
       printWindow.document.close();
       printWindow.focus();
       setTimeout(() => printWindow.print(), 300);
@@ -1979,31 +2015,24 @@ const App: React.FC = () => {
     setBatchProcessing(false);
   };
 
-  /** Action D: 呼叫順豐 — call SF API sequentially, then update status */
+  /** PREPARING tab → 呼叫順豐 (confirm pickup) + auto transition to SHIPPING */
   const handleBatchCallCourier = async () => {
     if (selectedOrderIds.size === 0) return;
     setBatchProcessing(true);
     try {
-      // Filter to processing orders only
-      const eligibleOrders = orders.filter(o => selectedOrderIds.has(o.id) && o.status === OrderStatus.PROCESSING);
+      const eligibleOrders = orders.filter(o => selectedOrderIds.has(o.id) && o.status === OrderStatus.PREPARING);
       if (eligibleOrders.length === 0) {
-        showToast('沒有符合條件的訂單（僅限「處理中」狀態）', 'error');
+        showToast('沒有符合條件的訂單（僅限「備貨中」狀態）', 'error');
         setBatchProcessing(false);
         return;
       }
 
-      // Fetch full details for all eligible orders
       const dbIds = eligibleOrders.map(o => getOrderDbId(o.id)).filter((id): id is number => id !== null);
       const { data, error } = await supabase.from('orders').select('*').in('id', dbIds);
-      if (error || !data) {
-        showToast('載入訂單資料失敗', 'error');
-        setBatchProcessing(false);
-        return;
-      }
+      if (error || !data) { showToast('載入訂單資料失敗', 'error'); setBatchProcessing(false); return; }
 
       const orderRows = data as SupabaseOrderRow[];
 
-      // Validate: check address and contact info
       const problematic: { id: string; reason: string }[] = [];
       const valid: SupabaseOrderRow[] = [];
       for (const row of orderRows) {
@@ -2011,21 +2040,16 @@ const App: React.FC = () => {
         const reasons: string[] = [];
         if (!row.delivery_address && !row.delivery_district) reasons.push('缺少配送地址');
         if (!row.customer_phone && !row.contact_name) reasons.push('缺少聯絡人/電話');
-        if (reasons.length > 0) {
-          problematic.push({ id: orderId, reason: reasons.join('、') });
-        } else {
-          valid.push(row);
-        }
+        if (reasons.length > 0) { problematic.push({ id: orderId, reason: reasons.join('、') }); }
+        else { valid.push(row); }
       }
 
       if (problematic.length > 0) {
-        // Show validation modal
         setSfValidationModal({ problematic, valid });
         setBatchProcessing(false);
         return;
       }
 
-      // All valid — proceed to call SF
       await executeSfCalls(valid);
     } catch (e) {
       showToast(`呼叫順豐錯誤：${e instanceof Error ? e.message : String(e)}`, 'error');
@@ -2033,7 +2057,6 @@ const App: React.FC = () => {
     setBatchProcessing(false);
   };
 
-  /** Execute SF API calls sequentially with controlled flow */
   const executeSfCalls = async (validOrders: SupabaseOrderRow[]) => {
     setBatchProcessing(true);
     let successCount = 0;
@@ -2042,50 +2065,35 @@ const App: React.FC = () => {
     for (const row of validOrders) {
       const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
 
-      // Always advance to ready_for_pickup first — SF logistics is a bonus, not a gate
-      await supabase
-        .from('orders')
-        .update({ status: 'ready_for_pickup' })
-        .eq('id', row.id);
-
       try {
         const sfRes = await fetch(`${window.location.origin}/api/sf-order`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ orderId }),
         });
         const sfText = await sfRes.text();
         let sfJson: { waybillNo?: string; waybill_no?: string; success?: boolean } | null = null;
         try { sfJson = sfText ? JSON.parse(sfText) : null; } catch { sfJson = null; }
-
         const waybill = sfJson?.waybill_no ?? sfJson?.waybillNo ?? null;
 
         if (sfRes.ok && sfJson?.success && waybill) {
-          await supabase
-            .from('orders')
-            .update({
-              waybill_no: waybill,
-              sf_responses: { status: sfRes.status, body: sfJson, at: new Date().toISOString() },
-            })
-            .eq('id', row.id);
+          await supabase.from('orders').update({
+            status: 'shipping',
+            waybill_no: waybill,
+            sf_responses: { status: sfRes.status, body: sfJson, at: new Date().toISOString() },
+          }).eq('id', row.id);
           successCount++;
         } else {
-          // SF failed but order stays at ready_for_pickup — log the error for admin
-          await supabase
-            .from('orders')
-            .update({
-              sf_responses: { status: sfRes.status, body: sfJson ?? sfText, at: new Date().toISOString(), sfError: true },
-            })
-            .eq('id', row.id);
+          await supabase.from('orders').update({
+            status: 'shipping',
+            sf_responses: { status: sfRes.status, body: sfJson ?? sfText, at: new Date().toISOString(), sfError: true },
+          }).eq('id', row.id);
           failCount++;
         }
       } catch (e) {
-        await supabase
-          .from('orders')
-          .update({
-            sf_responses: { error: true, message: e instanceof Error ? e.message : String(e), at: new Date().toISOString() },
-          })
-          .eq('id', row.id);
+        await supabase.from('orders').update({
+          status: 'shipping',
+          sf_responses: { error: true, message: e instanceof Error ? e.message : String(e), at: new Date().toISOString() },
+        }).eq('id', row.id);
         failCount++;
       }
     }
@@ -2094,10 +2102,47 @@ const App: React.FC = () => {
     setSelectedOrderIds(new Set());
     setSfValidationModal(null);
     const msg = failCount > 0
-      ? `已更新 ${validOrders.length} 筆為「等待收件」。順豐下單：${successCount} 成功、${failCount} 失敗（管理員可手動補填單號）`
-      : `順豐下單完成：${successCount} 筆訂單已取得物流單號`;
+      ? `已更新 ${validOrders.length} 筆為「發貨中」。順豐下單：${successCount} 成功、${failCount} 失敗（管理員可手動補填單號）`
+      : `順豐下單完成：${successCount} 筆訂單已取得物流單號，狀態已轉為「發貨中」`;
     showToast(msg, failCount > 0 ? 'error' : 'success');
     setBatchProcessing(false);
+  };
+
+  const handleRefund = async () => {
+    if (!refundModal) return;
+    const amount = refundType === 'full' ? refundModal.total : Number(refundAmount);
+    if (!amount || amount <= 0) { showToast('請輸入有效退款金額', 'error'); return; }
+    if (amount > refundModal.total) { showToast('退款金額不能超過訂單總額', 'error'); return; }
+    setRefundProcessing(true);
+    try {
+      const res = await fetch(`${window.location.origin}/api/airwallex-refund`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: refundModal.orderId, amount }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showToast(`退款成功：$${amount}，狀態已更新為「${data.newStatus === 'refunded' ? '退款' : '部份退款'}」`);
+        setRefundModal(null);
+        setRefundAmount('');
+        setRefundType('full');
+        await fetchOrders();
+        if (inspectingOrder) {
+          const dbId = getOrderDbId(inspectingOrder.id);
+          if (dbId !== null) {
+            const { data: updated } = await supabase.from('orders').select('*').eq('id', dbId).single();
+            if (updated) {
+              setInspectingOrderDetails(updated as SupabaseOrderRow);
+              setOrderStatusDraft(normalizeOrderStatus(updated.status));
+            }
+          }
+        }
+      } else {
+        showToast(`退款失敗：${data.error || '未知錯誤'}`, 'error');
+      }
+    } catch (e) {
+      showToast(`退款錯誤：${e instanceof Error ? e.message : String(e)}`, 'error');
+    }
+    setRefundProcessing(false);
   };
 
   const handleLocateMe = () => {
@@ -2856,8 +2901,8 @@ const App: React.FC = () => {
     switch (adminModule) {
       case 'dashboard': {
         const todayStr = new Date().toISOString().slice(0, 10);
-        const todayRevenue = orders.filter(o => o.date.startsWith(todayStr) && ['paid','processing','ready_for_pickup','shipping','completed'].includes(o.status)).reduce((s, o) => s + o.total, 0);
-        const pendingCount = orders.filter(o => o.status === 'paid' || o.status === 'processing').length;
+        const todayRevenue = orders.filter(o => o.date.startsWith(todayStr) && ['paid','preparing','shipping','shipped','delivered'].includes(o.status)).reduce((s, o) => s + o.total, 0);
+        const pendingCount = orders.filter(o => o.status === 'paid' || o.status === 'preparing').length;
         const lowStockCount = products.filter(p => p.trackInventory && p.stock < 10).length;
         const totalMembers = members.length;
         return (
@@ -2974,43 +3019,37 @@ const App: React.FC = () => {
                 </table>
              </div>
 
-             {/* Floating Batch Action Bar */}
+             {/* Dynamic Batch Action Bar — buttons change based on current tab */}
              {selectedOrderIds.size > 0 && (
                <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[5000] bg-slate-900 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-4 animate-fade-in">
                  <span className="text-sm font-black whitespace-nowrap">已選 {selectedOrderIds.size} 筆訂單</span>
                  <div className="w-px h-8 bg-slate-700" />
-                 <button
-                   disabled={batchProcessing}
-                   onClick={handleBatchCutoff}
-                   className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-black transition-colors disabled:opacity-50"
-                 >
-                   <Scissors size={14} /> 截單
-                 </button>
-                 <button
-                   disabled={batchProcessing}
-                   onClick={handlePrintAggregateList}
-                   className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-black transition-colors disabled:opacity-50"
-                 >
-                   <ClipboardList size={14} /> 總揀貨單
-                 </button>
-                 <button
-                   disabled={batchProcessing}
-                   onClick={handlePrintIndividualInvoices}
-                   className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-black transition-colors disabled:opacity-50"
-                 >
-                   <Printer size={14} /> 個人清單
-                 </button>
-                 <button
-                   disabled={batchProcessing}
-                   onClick={handleBatchCallCourier}
-                   className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-xs font-black transition-colors disabled:opacity-50"
-                 >
-                   <Phone size={14} /> 呼叫順豐
-                 </button>
-                 <button
-                   onClick={() => setSelectedOrderIds(new Set())}
-                   className="ml-2 p-2 hover:bg-slate-700 rounded-xl transition-colors"
-                 >
+                 {ordersStatusFilter === OrderStatus.PAID && (
+                   <button disabled={batchProcessing} onClick={handlePrintPickingList}
+                     className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-xs font-black transition-colors disabled:opacity-50">
+                     <Printer size={14} /> 打印執貨單
+                   </button>
+                 )}
+                 {ordersStatusFilter === OrderStatus.PREPARING && (
+                   <>
+                     <button disabled={batchProcessing} onClick={handlePrintAggregateList}
+                       className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-black transition-colors disabled:opacity-50">
+                       <ClipboardList size={14} /> 打印總執貨單
+                     </button>
+                     <button disabled={batchProcessing} onClick={handlePrintSfLabels}
+                       className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-black transition-colors disabled:opacity-50">
+                       <FileText size={14} /> 打印順豐單
+                     </button>
+                     <button disabled={batchProcessing} onClick={handleBatchCallCourier}
+                       className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-xs font-black transition-colors disabled:opacity-50">
+                       <Phone size={14} /> 呼叫順豐
+                     </button>
+                   </>
+                 )}
+                 {ordersStatusFilter !== OrderStatus.PAID && ordersStatusFilter !== OrderStatus.PREPARING && (
+                   <span className="text-xs text-slate-400 font-bold">請切換到「已付款」或「備貨中」Tab 執行操作</span>
+                 )}
+                 <button onClick={() => setSelectedOrderIds(new Set())} className="ml-2 p-2 hover:bg-slate-700 rounded-xl transition-colors">
                    <X size={14} />
                  </button>
                </div>
@@ -4734,9 +4773,17 @@ const App: React.FC = () => {
                 </div>
                 <div className="p-10 bg-slate-50 border-t border-slate-100 flex justify-between items-center">
                   <button onClick={() => setInspectingOrder(null)} className="px-8 py-3 bg-white border border-slate-200 rounded-2xl font-black text-xs">關閉</button>
-                  {isAdminRoute && (
-                    <button onClick={() => updateOrderFields(inspectingOrder.id, { status: orderStatusDraft || inspectingOrder.status, waybill_no: trackingDraft || null })} className="px-8 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs">更新訂單</button>
-                  )}
+                  <div className="flex items-center gap-3">
+                    {isAdminRoute && inspectingOrderDetails && (
+                      <button onClick={() => setRefundModal({ orderId: inspectingOrder.id, total: inspectingOrderDetails.total })}
+                        className="px-6 py-3 bg-rose-600 text-white rounded-2xl font-black text-xs hover:bg-rose-500 transition-colors">
+                        退款操作
+                      </button>
+                    )}
+                    {isAdminRoute && (
+                      <button onClick={() => updateOrderFields(inspectingOrder.id, { status: orderStatusDraft || inspectingOrder.status, waybill_no: trackingDraft || null })} className="px-8 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs">更新訂單</button>
+                    )}
+                  </div>
                 </div>
              </div>
           </div>
@@ -4782,6 +4829,55 @@ const App: React.FC = () => {
                   {batchProcessing ? '處理中...' : `繼續處理 ${sfValidationModal.valid.length} 筆`}
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Refund Modal */}
+      {refundModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[7000] flex items-center justify-center p-6 animate-fade-in">
+          <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl p-8 space-y-6">
+            <div className="flex items-center gap-3">
+              <CreditCard className="text-rose-500" size={20} />
+              <h4 className="text-lg font-black text-slate-900">退款操作</h4>
+            </div>
+            <p className="text-sm font-bold text-slate-500">訂單 #{refundModal.orderId} ・ 總金額 ${refundModal.total}</p>
+
+            <div className="space-y-3">
+              <label className="flex items-center gap-3 p-4 bg-slate-50 rounded-2xl cursor-pointer hover:bg-slate-100 transition-colors"
+                onClick={() => { setRefundType('full'); setRefundAmount(String(refundModal.total)); }}>
+                <input type="radio" name="refundType" checked={refundType === 'full'} readOnly className="accent-rose-600" />
+                <div>
+                  <span className="font-black text-slate-900">全額退款</span>
+                  <span className="text-sm font-bold text-slate-500 ml-2">${refundModal.total}</span>
+                </div>
+              </label>
+              <label className="flex items-center gap-3 p-4 bg-slate-50 rounded-2xl cursor-pointer hover:bg-slate-100 transition-colors"
+                onClick={() => setRefundType('partial')}>
+                <input type="radio" name="refundType" checked={refundType === 'partial'} readOnly className="accent-rose-600" />
+                <span className="font-black text-slate-900">部分退款</span>
+              </label>
+              {refundType === 'partial' && (
+                <div className="pl-8">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl font-black text-slate-400">$</span>
+                    <input type="number" min="0.01" max={refundModal.total} step="0.01"
+                      value={refundAmount} onChange={e => setRefundAmount(e.target.value)}
+                      placeholder="輸入退款金額" className="flex-1 p-3 bg-white border border-slate-200 rounded-xl font-black text-lg focus:ring-2 focus:ring-rose-100" />
+                  </div>
+                  <p className="text-[10px] text-slate-400 font-bold mt-1">最大退款金額：${refundModal.total}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button onClick={() => { setRefundModal(null); setRefundAmount(''); setRefundType('full'); }}
+                className="px-6 py-3 bg-white border border-slate-200 rounded-2xl font-black text-xs">取消</button>
+              <button disabled={refundProcessing} onClick={handleRefund}
+                className="px-6 py-3 bg-rose-600 text-white rounded-2xl font-black text-xs disabled:opacity-50 hover:bg-rose-500 transition-colors">
+                {refundProcessing ? '處理中...' : '確認退款'}
+              </button>
             </div>
           </div>
         </div>

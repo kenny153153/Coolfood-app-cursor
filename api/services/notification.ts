@@ -64,13 +64,13 @@ function buildMessageContent(event: PhoneNotificationEvent): string | null {
   switch (newStatus) {
     case 'paid':
       return `Coolfood: 收到你嘅訂單 ${orderId}！我哋正準備處理，請耐心等候。`;
-    case 'processing':
-      return `Coolfood: 你嘅訂單 ${orderId} 已經開始處理，我哋會盡快安排出貨。`;
-    case 'ready_for_pickup':
-      return `Coolfood: 貨品已打包！順豐單號為 ${waybillNo || '（處理中）'}，好快會送到你手上。`;
+    case 'preparing':
+      return `Coolfood: 你嘅訂單 ${orderId} 已經開始備貨，我哋會盡快安排出貨。`;
     case 'shipping':
+      return `Coolfood: 你嘅訂單 ${orderId} 已安排發貨，順豐單號為 ${waybillNo || '（處理中）'}，好快會送到你手上。`;
+    case 'shipped':
       return `Coolfood: 順豐哥哥已經攞咗你件貨喇，單號 ${waybillNo || '（處理中）'}，留意收件。`;
-    case 'completed':
+    case 'delivered':
       return `Coolfood: 順豐顯示你已經收到貨。多謝支持！`;
     default:
       return null;

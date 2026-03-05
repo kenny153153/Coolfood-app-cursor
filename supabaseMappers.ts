@@ -110,9 +110,12 @@ export const normalizeOrderStatus = (status: string | null | undefined): OrderSt
   if ((Object.values(OrderStatus) as string[]).includes(normalized)) {
     return normalized as OrderStatus;
   }
-  if (normalized === 'paid' || normalized === 'success') {
-    return OrderStatus.PAID;
-  }
+  if (normalized === 'paid' || normalized === 'success') return OrderStatus.PAID;
+  if (normalized === 'processing') return OrderStatus.PREPARING;
+  if (normalized === 'ready_for_pickup') return OrderStatus.SHIPPING;
+  if (normalized === 'completed') return OrderStatus.DELIVERED;
+  if (normalized === 'abnormal') return OrderStatus.SHIPPING;
+  if (normalized === 'refund') return OrderStatus.REFUNDED;
   return OrderStatus.PENDING_PAYMENT;
 };
 

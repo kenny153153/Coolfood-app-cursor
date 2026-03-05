@@ -9,8 +9,8 @@
 import crypto from 'crypto';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const SHIPPING_CODES = new Set(['50', '51', '30', '31', '36', '44', '45', '46']);
-const COMPLETED_CODES = new Set(['80']);
+const SHIPPED_CODES = new Set(['50', '51', '30', '31', '36', '44', '45', '46']);
+const DELIVERED_CODES = new Set(['80']);
 
 function computeMsgDigest(msgData: string, timestamp: string, checkword: string): string {
   const str = msgData + timestamp + checkword;
@@ -43,8 +43,8 @@ async function sendWA(to: string, body: string): Promise<{ success: boolean; err
 
 function buildStatusMessage(orderId: string, status: string, waybillNo?: string): string | null {
   switch (status) {
-    case 'shipping': return `Coolfood: 順豐已取件，單號 ${waybillNo || '（處理中）'}，留意收件。`;
-    case 'completed': return `Coolfood: 順豐顯示你已經收到貨。多謝支持！`;
+    case 'shipped': return `Coolfood: 順豐已取件，單號 ${waybillNo || '（處理中）'}，留意收件。`;
+    case 'delivered': return `Coolfood: 順豐顯示你已經收到貨。多謝支持！`;
     default: return null;
   }
 }
@@ -123,8 +123,8 @@ export default async function handler(
   let latestRoute = routes[routes.length - 1];
   for (let i = routes.length - 1; i >= 0; i--) {
     const opCode = routes[i].opCode ?? '';
-    if (COMPLETED_CODES.has(opCode)) { targetStatus = 'completed'; latestRoute = routes[i]; break; }
-    if (SHIPPING_CODES.has(opCode) && !targetStatus) { targetStatus = 'shipping'; latestRoute = routes[i]; }
+    if (DELIVERED_CODES.has(opCode)) { targetStatus = 'delivered'; latestRoute = routes[i]; break; }
+    if (SHIPPED_CODES.has(opCode) && !targetStatus) { targetStatus = 'shipped'; latestRoute = routes[i]; }
   }
   if (!targetStatus) return res.status(200).json({ return_code: '0000', return_msg: 'success' });
 
@@ -149,8 +149,8 @@ export default async function handler(
     let updated = 0;
     for (const order of orderRows) {
       const cur = String(order.status).toLowerCase();
-      if (cur === 'completed' && targetStatus === 'shipping') continue;
-      if (cur === 'abnormal' || cur === 'refund') continue;
+      if (cur === 'delivered' && targetStatus === 'shipped') continue;
+      if (cur === 'refunded' || cur === 'partially_refunded' || cur === 'cancelled') continue;
 
       const { error: upErr } = await supabase.from('orders').update({
         status: targetStatus,

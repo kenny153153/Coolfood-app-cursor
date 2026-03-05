@@ -1,13 +1,15 @@
 
 export enum OrderStatus {
   PENDING_PAYMENT = 'pending_payment',
+  PAYMENT_FAILED = 'payment_failed',
+  CANCELLED = 'cancelled',
   PAID = 'paid',
-  PROCESSING = 'processing',
-  READY_FOR_PICKUP = 'ready_for_pickup',
+  PREPARING = 'preparing',
   SHIPPING = 'shipping',
-  COMPLETED = 'completed',
-  ABNORMAL = 'abnormal',
-  REFUND = 'refund'
+  SHIPPED = 'shipped',
+  DELIVERED = 'delivered',
+  REFUNDED = 'refunded',
+  PARTIALLY_REFUNDED = 'partially_refunded',
 }
 
 export interface Recipe {
@@ -191,6 +193,8 @@ export interface SupabaseOrderRow {
   waybill_no?: string | null;
   tracking_number?: string | null;
   sf_responses?: unknown | null;
+  payment_intent_id?: string | null;
+  delivery_date?: string | null;
 }
 
 /** Supabase public.products table – column names must match (snake_case). */

@@ -37,10 +37,10 @@ async function sendWA(to: string, body: string): Promise<{ success: boolean; err
 function buildMessage(ev: NotifRequest): string | null {
   switch (ev.newStatus) {
     case 'paid': return `Coolfood: 收到你嘅訂單 ${ev.orderId}！我哋正準備處理。`;
-    case 'processing': return `Coolfood: 你嘅訂單 ${ev.orderId} 已開始處理。`;
-    case 'ready_for_pickup': return `Coolfood: 貨品已打包！順豐單號 ${ev.waybillNo || '（處理中）'}。`;
-    case 'shipping': return `Coolfood: 順豐已取件，單號 ${ev.waybillNo || '（處理中）'}，留意收件。`;
-    case 'completed': return `Coolfood: 訂單 ${ev.orderId} 已完成，多謝支持！`;
+    case 'preparing': return `Coolfood: 你嘅訂單 ${ev.orderId} 已開始備貨。`;
+    case 'shipping': return `Coolfood: 你嘅訂單 ${ev.orderId} 已安排發貨，順豐單號 ${ev.waybillNo || '（處理中）'}。`;
+    case 'shipped': return `Coolfood: 順豐已取件，單號 ${ev.waybillNo || '（處理中）'}，留意收件。`;
+    case 'delivered': return `Coolfood: 訂單 ${ev.orderId} 已到達，多謝支持！`;
     default: return null;
   }
 }
