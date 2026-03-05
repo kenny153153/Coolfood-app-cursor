@@ -3605,53 +3605,59 @@ const App: React.FC = () => {
               <div className="flex justify-between items-center gap-3 flex-wrap">
                 <p className="text-slate-400 font-bold text-sm">{recipes.length} 個食譜</p>
                 <div className="flex gap-2">
-                  <button disabled={aiRecipeLoading} onClick={async () => {
-                    const BATCH_COUNT = 5;
-                    const COOLDOWN_MS = 1000;
-                    setAiRecipeLoading(true);
-                    let successCount = 0;
-                    let failCount = 0;
-                    const catMap = recipeCategories.map(c => ({ id: c.id, name: c.name }));
-                    const allTitles = recipes.map(r => r.title).filter(Boolean);
-                    for (let i = 0; i < BATCH_COUNT; i++) {
-                      setAiBatchProgress({ current: i + 1, total: BATCH_COUNT, label: `正在生成第 ${i + 1}/${BATCH_COUNT} 個食譜...` });
-                      try {
-                        const res = await fetch('/api/generate-recipe', {
-                          method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ action: 'single-recipe', payload: { title: '', linkedProductNames: [], categoryIds: catMap.map(c => c.id), categoryMap: catMap, existingTitles: allTitles } }),
-                        });
-                        const json = await res.json();
-                        if (!json.ok) { failCount++; continue; }
-                        const r = json.data;
-                        const chefTip = typeof r.chef_tip === 'string' ? r.chef_tip : '';
-                        const steps = Array.isArray(r.steps) ? r.steps : [];
-                        if (chefTip && steps.length > 0) {
-                          steps.push({ order: steps.length + 1, content: `💡 大廚小貼士：${chefTip}` });
+                  <button disabled={aiRecipeLoading} onClick={() => {
+                    setAiPromptModal({
+                      title: 'AI 批量生成食譜',
+                      placeholder: '例如：全部用氣炸鍋、以雞肉為主、適合小朋友吃的...',
+                      onConfirm: async (instruction) => {
+                        const BATCH_COUNT = 5;
+                        const COOLDOWN_MS = 1000;
+                        setAiRecipeLoading(true);
+                        let successCount = 0;
+                        let failCount = 0;
+                        const catMap = recipeCategories.map(c => ({ id: c.id, name: c.name }));
+                        const allTitles = recipes.map(r => r.title).filter(Boolean);
+                        for (let i = 0; i < BATCH_COUNT; i++) {
+                          setAiBatchProgress({ current: i + 1, total: BATCH_COUNT, label: `正在生成第 ${i + 1}/${BATCH_COUNT} 個食譜...` });
+                          try {
+                            const res = await fetch('/api/generate-recipe', {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ action: 'single-recipe', payload: { title: '', linkedProductNames: [], categoryIds: catMap.map(c => c.id), categoryMap: catMap, existingTitles: allTitles, userInstruction: instruction || undefined } }),
+                            });
+                            const json = await res.json();
+                            if (!json.ok) { failCount++; continue; }
+                            const r = json.data;
+                            const chefTip = typeof r.chef_tip === 'string' ? r.chef_tip : '';
+                            const steps = Array.isArray(r.steps) ? r.steps : [];
+                            if (chefTip && steps.length > 0) {
+                              steps.push({ order: steps.length + 1, content: `💡 大廚小貼士：${chefTip}` });
+                            }
+                            const recipe: StandaloneRecipe = {
+                              id: crypto.randomUUID(),
+                              title: r.title || '',
+                              description: r.description || '',
+                              mediaUrl: '',
+                              mediaType: 'image',
+                              cookingTime: r.cooking_time || 0,
+                              servingSize: r.serving_size || '1-2人份',
+                              tags: [],
+                              categoryIds: Array.isArray(r.category_ids) ? r.category_ids.filter((c: string) => recipeCategories.some(rc => rc.id === c)) : [],
+                              ingredientsRaw: Array.isArray(r.ingredients) ? r.ingredients : [],
+                              steps,
+                              linkedProductIds: [],
+                            };
+                            if (recipe.title) { allTitles.push(recipe.title); await upsertRecipe(recipe); successCount++; }
+                          } catch { failCount++; }
+                          if (i < BATCH_COUNT - 1) await new Promise(r => setTimeout(r, COOLDOWN_MS));
                         }
-                        const recipe: StandaloneRecipe = {
-                          id: crypto.randomUUID(),
-                          title: r.title || '',
-                          description: r.description || '',
-                          mediaUrl: '',
-                          mediaType: 'image',
-                          cookingTime: r.cooking_time || 0,
-                          servingSize: r.serving_size || '1-2人份',
-                          tags: [],
-                          categoryIds: Array.isArray(r.category_ids) ? r.category_ids.filter((c: string) => recipeCategories.some(rc => rc.id === c)) : [],
-                          ingredientsRaw: Array.isArray(r.ingredients) ? r.ingredients : [],
-                          steps,
-                          linkedProductIds: [],
-                        };
-                        if (recipe.title) { allTitles.push(recipe.title); await upsertRecipe(recipe); successCount++; }
-                      } catch { failCount++; }
-                      if (i < BATCH_COUNT - 1) await new Promise(r => setTimeout(r, COOLDOWN_MS));
-                    }
-                    setAiBatchProgress(null);
-                    setAiRecipeLoading(false);
-                    const msg = failCount > 0
-                      ? `AI 完成：${successCount} 個成功，${failCount} 個失敗`
-                      : `AI 已生成 ${successCount} 個食譜`;
-                    showToast(msg, failCount > 0 ? 'error' : 'success');
+                        setAiBatchProgress(null);
+                        setAiRecipeLoading(false);
+                        const msg = failCount > 0
+                          ? `AI 完成：${successCount} 個成功，${failCount} 個失敗`
+                          : `AI 已生成 ${successCount} 個食譜`;
+                        showToast(msg, failCount > 0 ? 'error' : 'success');
+                      },
+                    });
                   }} className="px-5 py-3 bg-purple-50 text-purple-600 border border-purple-200 rounded-2xl font-black text-xs flex items-center gap-2 hover:bg-purple-100 transition-all disabled:opacity-50">
                     {aiRecipeLoading ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />}
                     AI 批量生成食譜
