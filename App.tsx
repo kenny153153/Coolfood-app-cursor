@@ -3477,7 +3477,115 @@ const App: React.FC = () => {
                     <p className="text-[10px] text-slate-400 font-bold">管理所有原材料的買入成本、供應商及市場參考價</p>
                   </div>
                 </div>
-                <button onClick={() => setEditingIngredient({ id: `ing-${Date.now()}`, name: '', baseCostPerLb: 0, unit: 'lb' })} className="px-4 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Plus size={14}/> 新增原材料</button>
+                <div className="flex items-center gap-2">
+                  {/* CSV Export */}
+                  <button onClick={() => {
+                    const header = 'id,名稱,英文名稱,買入成本,單位,供應商,市場參考價,備註';
+                    const csvEscape = (v: string) => {
+                      if (!v) return '';
+                      if (v.includes(',') || v.includes('"') || v.includes('\n')) return `"${v.replace(/"/g, '""')}"`;
+                      return v;
+                    };
+                    const rows = ingredients.map(ing =>
+                      [ing.id, csvEscape(ing.name), csvEscape(ing.nameEn || ''), ing.baseCostPerLb, ing.unit, csvEscape(ing.supplier || ''), ing.marketBenchmark ?? '', csvEscape(ing.notes || '')].join(',')
+                    );
+                    const csvContent = '\uFEFF' + [header, ...rows].join('\n');
+                    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `原材料_${new Date().toISOString().slice(0, 10)}.csv`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    showToast('CSV 已匯出');
+                  }} className="px-3 py-2 bg-emerald-50 text-emerald-600 rounded-xl text-xs font-black border border-emerald-200 hover:bg-emerald-100 transition-all flex items-center gap-1.5"><Download size={14}/> 匯出 CSV</button>
+                  {/* CSV Import */}
+                  <label className="px-3 py-2 bg-amber-50 text-amber-600 rounded-xl text-xs font-black border border-amber-200 hover:bg-amber-100 transition-all flex items-center gap-1.5 cursor-pointer"><Upload size={14}/> 匯入 CSV
+                    <input type="file" accept=".csv" className="hidden" onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      e.target.value = '';
+                      const text = await file.text();
+                      const lines = text.replace(/^\uFEFF/, '').split('\n').map(l => l.trim()).filter(Boolean);
+                      if (lines.length < 2) { showToast('CSV 檔案無資料列', 'error'); return; }
+                      const parseCSVLine = (line: string): string[] => {
+                        const result: string[] = [];
+                        let current = '';
+                        let inQuotes = false;
+                        for (let i = 0; i < line.length; i++) {
+                          const ch = line[i];
+                          if (inQuotes) {
+                            if (ch === '"' && line[i + 1] === '"') { current += '"'; i++; }
+                            else if (ch === '"') { inQuotes = false; }
+                            else { current += ch; }
+                          } else {
+                            if (ch === '"') { inQuotes = true; }
+                            else if (ch === ',') { result.push(current); current = ''; }
+                            else { current += ch; }
+                          }
+                        }
+                        result.push(current);
+                        return result;
+                      };
+                      const imported: typeof ingredients = [];
+                      let skipped = 0;
+                      for (let i = 1; i < lines.length; i++) {
+                        const cols = parseCSVLine(lines[i]);
+                        const name = (cols[1] || '').trim();
+                        if (!name) { skipped++; continue; }
+                        imported.push({
+                          id: (cols[0] || '').trim() || `ing-${Date.now()}-${i}`,
+                          name,
+                          nameEn: (cols[2] || '').trim() || undefined,
+                          baseCostPerLb: Number(cols[3]) || 0,
+                          unit: (cols[4] || 'lb').trim(),
+                          supplier: (cols[5] || '').trim() || undefined,
+                          marketBenchmark: cols[6] ? Number(cols[6]) || undefined : undefined,
+                          notes: (cols[7] || '').trim() || undefined,
+                        });
+                      }
+                      if (imported.length === 0) { showToast('無有效資料可匯入', 'error'); return; }
+                      try {
+                        const rows = imported.map(mapIngredientToRow);
+                        const { error } = await supabase.from('ingredients').upsert(rows);
+                        if (error) throw error;
+                        setIngredients(prev => {
+                          const map = new Map(prev.map(x => [x.id, x]));
+                          imported.forEach(x => map.set(x.id, x));
+                          return Array.from(map.values());
+                        });
+                        showToast(`已匯入 ${imported.length} 筆原材料${skipped > 0 ? `（跳過 ${skipped} 筆空行）` : ''}`);
+                      } catch (err: any) {
+                        showToast(`匯入失敗：${err.message}`, 'error');
+                      }
+                    }} />
+                  </label>
+                  {/* Download Template */}
+                  <button onClick={() => {
+                    const template = '\uFEFF' + 'id,名稱,英文名稱,買入成本,單位,供應商,市場參考價,備註\n'
+                      + 'ing-001,美國 Prime 肋眼,US Prime Ribeye,45.5,lb,ABC Trading,52,頂級部位\n'
+                      + 'ing-002,澳洲 M5 和牛,AU M5 Wagyu,62,lb,XYZ Meats,70,\n'
+                      + 'ing-003,西班牙黑毛豬,Iberico Pork,28.5,lb,,35,梅頭部位';
+                    const blob = new Blob([template], { type: 'text/csv;charset=utf-8;' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = '原材料_範本.csv';
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    showToast('範本已下載');
+                  }} className="px-3 py-2 bg-slate-50 text-slate-500 rounded-xl text-xs font-black border border-slate-200 hover:bg-slate-100 transition-all flex items-center gap-1.5"><FileText size={14}/> 下載範本</button>
+                  <button onClick={() => setEditingIngredient({ id: `ing-${Date.now()}`, name: '', baseCostPerLb: 0, unit: 'lb' })} className="px-4 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Plus size={14}/> 新增原材料</button>
+                </div>
+              </div>
+              {/* CSV format hint */}
+              <div className="bg-blue-50/60 border border-blue-100 rounded-2xl p-4 flex items-start gap-3">
+                <FileText size={16} className="text-blue-400 mt-0.5 flex-shrink-0" />
+                <div className="text-[10px] text-blue-600 font-bold leading-relaxed">
+                  <p className="font-black text-blue-700 mb-1">CSV 批量匯入說明</p>
+                  <p>1. 點擊「下載範本」取得 CSV 格式範例 → 2. 用 Excel / Google Sheets 開啟編輯 → 3. 填入原材料資料後存成 CSV → 4. 點「匯入 CSV」上傳</p>
+                  <p className="mt-1 text-blue-400">欄位：ID, 名稱*, 英文名稱, 買入成本*, 單位(lb/kg/pc/box/pack), 供應商, 市場參考價, 備註。相同 ID 會覆蓋更新。</p>
+                </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
