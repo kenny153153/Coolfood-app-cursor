@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
-import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel } from './types';
+import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, WholesalePriceTier, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel, MemberType } from './types';
 import { useI18n, Language } from './i18n';
 import { supabase } from './supabaseClient';
 import {
@@ -532,7 +532,7 @@ const App: React.FC = () => {
     },
     wholesalePricingRules: {
       targetMarginFactor: 0.88,
-      salesCommissionFactor: 0.97,
+      priceTiers: [],
     },
     deliveryRules: {
       freeThreshold: 500,
@@ -595,6 +595,7 @@ const App: React.FC = () => {
   const [adminProductSearch, setAdminProductSearch] = useState('');
   const [adminOrderSearch, setAdminOrderSearch] = useState('');
   const [adminMemberSearch, setAdminMemberSearch] = useState('');
+  const [adminMemberTypeFilter, setAdminMemberTypeFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
   const [batchProcessing, setBatchProcessing] = useState(false);
   const [sfValidationModal, setSfValidationModal] = useState<{ problematic: { id: string; reason: string }[]; valid: SupabaseOrderRow[] } | null>(null);
@@ -2744,12 +2745,14 @@ const App: React.FC = () => {
   }, [orders, adminOrderSearch, ordersStatusFilter]);
 
   const filteredAdminMembers = useMemo(() => {
-    return members.filter(m => 
-      m.name.toLowerCase().includes(adminMemberSearch.toLowerCase()) || 
-      (m.email?.toLowerCase() ?? '').includes(adminMemberSearch.toLowerCase()) ||
-      (m.phoneNumber && m.phoneNumber.includes(adminMemberSearch))
-    );
-  }, [members, adminMemberSearch]);
+    return members.filter(m => {
+      const matchesSearch = m.name.toLowerCase().includes(adminMemberSearch.toLowerCase()) || 
+        (m.email?.toLowerCase() ?? '').includes(adminMemberSearch.toLowerCase()) ||
+        (m.phoneNumber && m.phoneNumber.includes(adminMemberSearch));
+      const matchesType = adminMemberTypeFilter === 'all' || (m.memberType || 'retail') === adminMemberTypeFilter;
+      return matchesSearch && matchesType;
+    });
+  }, [members, adminMemberSearch, adminMemberTypeFilter]);
 
   // --- UI Module Handlers ---
 
@@ -3228,11 +3231,18 @@ const App: React.FC = () => {
         return (
           <div className="space-y-6 animate-fade-in">
              <div className="flex flex-col md:flex-row gap-4 justify-between items-center">
-                <div className="relative flex-1 max-w-md w-full">
-                   <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
-                   <input value={adminMemberSearch} onChange={e => setAdminMemberSearch(e.target.value)} placeholder="搜索姓名、電郵或電話..." className="w-full pl-12 pr-6 py-3 bg-white border border-slate-100 rounded-2xl font-bold" />
+                <div className="flex items-center gap-3 flex-1">
+                  <div className="relative flex-1 max-w-md w-full">
+                     <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                     <input value={adminMemberSearch} onChange={e => setAdminMemberSearch(e.target.value)} placeholder="搜索姓名、電郵或電話..." className="w-full pl-12 pr-6 py-3 bg-white border border-slate-100 rounded-2xl font-bold" />
+                  </div>
+                  <div className="flex gap-1">
+                    {([{ id: 'all' as const, label: '全部' }, { id: 'retail' as const, label: '零售' }, { id: 'wholesale' as const, label: '批發' }]).map(f => (
+                      <button key={f.id} onClick={() => setAdminMemberTypeFilter(f.id)} className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all ${adminMemberTypeFilter === f.id ? 'bg-slate-900 text-white shadow-lg' : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-50'}`}>{f.label}</button>
+                    ))}
+                  </div>
                 </div>
-                <button onClick={() => { setEditingMember({ id: `u-${Date.now()}`, name: '', email: '', phoneNumber: '', points: 0, walletBalance: 0, tier: 'Bronze', role: 'customer', addresses: [] }); setEditingMemberPassword(''); }} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl"><Plus size={16}/> 新增會員</button>
+                <button onClick={() => { setEditingMember({ id: `u-${Date.now()}`, name: '', email: '', phoneNumber: '', points: 0, walletBalance: 0, tier: 'Bronze', role: 'customer', memberType: 'retail', addresses: [] }); setEditingMemberPassword(''); }} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl"><Plus size={16}/> 新增會員</button>
              </div>
              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {filteredAdminMembers.length === 0 && (
@@ -3244,8 +3254,14 @@ const App: React.FC = () => {
                    <div key={m.id} className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-6 hover:shadow-md transition-shadow relative overflow-hidden group">
                       <div className="flex justify-between items-start">
                          <div className="flex items-center gap-4">
-                            <div className="w-14 h-14 bg-slate-100 rounded-2xl flex items-center justify-center text-slate-400 group-hover:bg-blue-600 group-hover:text-white transition-all"><User size={28}/></div>
-                            <div><p className="font-black text-slate-900">{m.name}</p><TierBadge tier={m.tier}/></div>
+                            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all ${m.memberType === 'wholesale' ? 'bg-orange-100 text-orange-500 group-hover:bg-orange-500 group-hover:text-white' : 'bg-slate-100 text-slate-400 group-hover:bg-blue-600 group-hover:text-white'}`}><User size={28}/></div>
+                            <div>
+                              <p className="font-black text-slate-900">{m.name}</p>
+                              <div className="flex items-center gap-1.5">
+                                <TierBadge tier={m.tier}/>
+                                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-md ${m.memberType === 'wholesale' ? 'bg-orange-100 text-orange-600' : 'bg-blue-50 text-blue-400'}`}>{m.memberType === 'wholesale' ? `批發 ${m.wholesalePriceTier || 'P0'}` : '零售'}</span>
+                              </div>
+                            </div>
                          </div>
                          <button onClick={() => { setEditingMember(m); setEditingMemberPassword(''); }} className="p-3 bg-slate-50 rounded-2xl text-slate-400 hover:text-blue-600 transition-colors"><MoreHorizontal size={20}/></button>
                       </div>
@@ -3263,10 +3279,10 @@ const App: React.FC = () => {
           </div>
         );
       case 'pricing': {
-        const wsRules = siteConfig.wholesalePricingRules || { targetMarginFactor: 0.88, salesCommissionFactor: 0.97 };
+        const wsRules: WholesalePricingRules = siteConfig.wholesalePricingRules || { targetMarginFactor: 0.88, priceTiers: [] };
+        if (!wsRules.priceTiers) wsRules.priceTiers = [];
         const wsExampleCost = 100;
-        const wsP1 = wsExampleCost / wsRules.targetMarginFactor;
-        const wsP3 = wsExampleCost / wsRules.targetMarginFactor / wsRules.salesCommissionFactor;
+        const wsP0 = wsExampleCost / wsRules.targetMarginFactor;
         return (
           <div className="space-y-8 animate-fade-in pb-20">
             {/* ── Tab 切換 ── */}
@@ -3446,10 +3462,10 @@ const App: React.FC = () => {
             {pricingSubTab === 'wholesale' && (
               <>
                 {/* ── 批發定價全局參數 ── */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
-                    <div className="flex items-center gap-2"><div className="p-2.5 bg-orange-50 text-orange-600 rounded-xl"><Percent size={18}/></div><h4 className="font-black text-sm">目標利潤率</h4></div>
-                    <p className="text-[10px] text-slate-400 font-bold">Target Margin Factor — 用來從成本反算批發直銷價 (P1)</p>
+                    <div className="flex items-center gap-2"><div className="p-2.5 bg-orange-50 text-orange-600 rounded-xl"><Percent size={18}/></div><h4 className="font-black text-sm">目標利潤率（P0 基準）</h4></div>
+                    <p className="text-[10px] text-slate-400 font-bold">Target Margin Factor — 用來從成本反算批發直銷價 P0</p>
                     <div className="flex items-center gap-2">
                       <input
                         type="number" min="0.01" max="1" step="0.01"
@@ -3461,19 +3477,6 @@ const App: React.FC = () => {
                     <p className="text-[9px] text-slate-300 font-bold">0.88 = 12% 毛利、0.85 = 15% 毛利、0.80 = 20% 毛利</p>
                   </div>
                   <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
-                    <div className="flex items-center gap-2"><div className="p-2.5 bg-teal-50 text-teal-600 rounded-xl"><Users size={18}/></div><h4 className="font-black text-sm">業務佣金率</h4></div>
-                    <p className="text-[10px] text-slate-400 font-bold">Sales Commission Factor — 業務員賣出時額外加成 (P3)</p>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number" min="0.01" max="1" step="0.01"
-                        value={wsRules.salesCommissionFactor}
-                        onChange={e => setSiteConfig({...siteConfig, wholesalePricingRules: {...wsRules, salesCommissionFactor: Number(e.target.value) || 0.97}})}
-                        className="flex-1 p-4 bg-slate-50 rounded-2xl font-black text-xl text-center border border-slate-100 focus:ring-2 focus:ring-teal-100"
-                      />
-                    </div>
-                    <p className="text-[9px] text-slate-300 font-bold">0.97 = 3% 佣金、0.95 = 5% 佣金、0.90 = 10% 佣金</p>
-                  </div>
-                  <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
                     <div className="flex items-center gap-2"><div className="p-2.5 bg-slate-100 text-slate-600 rounded-xl"><Zap size={18}/></div><h4 className="font-black text-sm">定價預覽</h4></div>
                     <p className="text-[10px] text-slate-400 font-bold">如果 成本/出成率 = $100</p>
                     <div className="space-y-2 text-xs">
@@ -3483,19 +3486,92 @@ const App: React.FC = () => {
                       </div>
                       <div className="flex justify-between items-center p-2.5 bg-orange-50 rounded-xl">
                         <div>
-                          <span className="text-orange-600 font-bold">P1 直銷價</span>
+                          <span className="text-orange-600 font-bold">P0 直銷價</span>
                           <span className="text-[9px] text-orange-400 ml-1">÷ {wsRules.targetMarginFactor}</span>
                         </div>
-                        <span className="font-black text-orange-700">${wsP1.toFixed(1)}</span>
+                        <span className="font-black text-orange-700">${wsP0.toFixed(1)}</span>
                       </div>
-                      <div className="flex justify-between items-center p-2.5 bg-teal-50 rounded-xl">
-                        <div>
-                          <span className="text-teal-600 font-bold">P3 業務價</span>
-                          <span className="text-[9px] text-teal-400 ml-1">÷ {wsRules.targetMarginFactor} ÷ {wsRules.salesCommissionFactor}</span>
-                        </div>
-                        <span className="font-black text-teal-700">${wsP3.toFixed(1)}</span>
-                      </div>
+                      {wsRules.priceTiers.map(tier => {
+                        const tierPrice = wsP0 / tier.factor;
+                        return (
+                          <div key={tier.name} className="flex justify-between items-center p-2.5 bg-teal-50 rounded-xl">
+                            <div>
+                              <span className="text-teal-600 font-bold">{tier.name}</span>
+                              <span className="text-[9px] text-teal-400 ml-1">P0 ÷ {tier.factor}{tier.description ? ` (${tier.description})` : ''}</span>
+                            </div>
+                            <span className="font-black text-teal-700">${tierPrice.toFixed(1)}</span>
+                          </div>
+                        );
+                      })}
                     </div>
+                  </div>
+                </div>
+
+                {/* ── P 等級管理 ── */}
+                <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-6">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2"><div className="p-2.5 bg-teal-50 text-teal-600 rounded-xl"><Users size={18}/></div><h4 className="font-black text-sm">P 等級管理</h4></div>
+                    <button onClick={() => {
+                      const nextNum = wsRules.priceTiers.length > 0
+                        ? Math.max(...wsRules.priceTiers.map(t => parseInt(t.name.replace('P', '')) || 0)) + 1
+                        : 3;
+                      const factor = parseFloat((1 - nextNum / 100).toFixed(4));
+                      const newTier: WholesalePriceTier = { name: `P${nextNum}`, factor, description: '' };
+                      setSiteConfig({...siteConfig, wholesalePricingRules: {...wsRules, priceTiers: [...wsRules.priceTiers, newTier]}});
+                    }} className="px-4 py-2 bg-teal-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Plus size={14}/> 新增 P 等級</button>
+                  </div>
+                  <p className="text-[10px] text-slate-400 font-bold">P0 為基準直銷價（成本 ÷ 目標利潤率）。其餘 P 等級為在 P0 之上再加成。P 數字越大，客戶付出的售價越高。</p>
+                  <div className="bg-orange-50/60 border border-orange-100 rounded-2xl p-4">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <span className="font-black text-orange-700 text-sm">P0（直銷價）</span>
+                        <span className="text-[10px] text-orange-400 ml-2 font-bold">= 成本 ÷ {wsRules.targetMarginFactor}</span>
+                      </div>
+                      <span className="font-black text-orange-700">基準 — 新批發會員默認</span>
+                    </div>
+                  </div>
+                  {wsRules.priceTiers.length === 0 && (
+                    <p className="text-center text-slate-300 font-bold text-sm py-4">尚未設定額外 P 等級，點擊右上角「新增 P 等級」</p>
+                  )}
+                  <div className="space-y-3">
+                    {wsRules.priceTiers.map((tier, idx) => (
+                      <div key={idx} className="p-5 bg-slate-50 rounded-2xl border border-slate-100 space-y-3">
+                        <div className="grid grid-cols-3 gap-4 items-end">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">等級名稱</label>
+                            <input value={tier.name} onChange={e => {
+                              const updated = [...wsRules.priceTiers];
+                              updated[idx] = {...updated[idx], name: e.target.value};
+                              setSiteConfig({...siteConfig, wholesalePricingRules: {...wsRules, priceTiers: updated}});
+                            }} className="w-full p-3 bg-white rounded-2xl font-black text-sm border border-slate-100" placeholder="P3" />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">因子（P0 ÷ 此值）</label>
+                            <input type="number" min="0.01" max="1" step="0.01" value={tier.factor} onChange={e => {
+                              const updated = [...wsRules.priceTiers];
+                              updated[idx] = {...updated[idx], factor: Number(e.target.value) || 0.97};
+                              setSiteConfig({...siteConfig, wholesalePricingRules: {...wsRules, priceTiers: updated}});
+                            }} className="w-full p-3 bg-white rounded-2xl font-black text-sm border border-slate-100" />
+                            <p className="text-[9px] text-slate-300 font-bold">{tier.factor < 1 ? `加成 ${((1 - tier.factor) * 100).toFixed(1)}%` : '無加成'}</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 space-y-1">
+                              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">說明（選填）</label>
+                              <input value={tier.description || ''} onChange={e => {
+                                const updated = [...wsRules.priceTiers];
+                                updated[idx] = {...updated[idx], description: e.target.value};
+                                setSiteConfig({...siteConfig, wholesalePricingRules: {...wsRules, priceTiers: updated}});
+                              }} className="w-full p-3 bg-white rounded-2xl font-bold text-sm border border-slate-100" placeholder="業務佣金" />
+                            </div>
+                            <button onClick={() => {
+                              const updated = wsRules.priceTiers.filter((_, i) => i !== idx);
+                              setSiteConfig({...siteConfig, wholesalePricingRules: {...wsRules, priceTiers: updated}});
+                            }} className="p-2 text-rose-400 hover:bg-rose-50 rounded-xl transition-colors mt-5"><Trash2 size={16}/></button>
+                          </div>
+                        </div>
+                        <div className="text-[10px] text-teal-600 font-bold">如果成本=$100 → {tier.name} 價 = ${(wsExampleCost / wsRules.targetMarginFactor / tier.factor).toFixed(1)}</div>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
@@ -3516,14 +3592,14 @@ const App: React.FC = () => {
                   <div className="flex items-center gap-2"><div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl"><ClipboardList size={18}/></div><h4 className="font-black text-sm">計算公式</h4></div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
                     <div className="p-4 bg-orange-50 rounded-2xl space-y-1">
-                      <p className="font-black text-orange-700">P1 價（直銷價）</p>
-                      <p className="text-orange-600 font-bold">= 成本 ÷ 出成率 ÷ 目標利潤率</p>
-                      <p className="text-[10px] text-orange-400 font-bold">適用於：公司直接銷售給客戶</p>
+                      <p className="font-black text-orange-700">P0 價（直銷價）</p>
+                      <p className="text-orange-600 font-bold">= 總成本 ÷ 目標利潤率</p>
+                      <p className="text-[10px] text-orange-400 font-bold">新批發會員默認等級</p>
                     </div>
                     <div className="p-4 bg-teal-50 rounded-2xl space-y-1">
-                      <p className="font-black text-teal-700">P3 價（業務價）</p>
-                      <p className="text-teal-600 font-bold">= P1 價 ÷ 業務佣金率</p>
-                      <p className="text-[10px] text-teal-400 font-bold">適用於：業務員代銷，含佣金空間</p>
+                      <p className="font-black text-teal-700">P{'{n}'} 價（加成等級）</p>
+                      <p className="text-teal-600 font-bold">= P0 價 ÷ 等級因子</p>
+                      <p className="text-[10px] text-teal-400 font-bold">例：P3 = P0 ÷ 0.97（加 3%）</p>
                     </div>
                   </div>
                 </div>
@@ -3772,14 +3848,14 @@ const App: React.FC = () => {
                 <div className="flex items-center gap-2">
                   {/* CSV Export */}
                   <button onClick={() => {
-                    const header = 'id,名稱,英文名稱,買入成本,單位,供應商,市場參考價,備註';
+                    const header = 'id,舊系統ID,名稱,英文名稱,買入成本,單位,供應商,市場參考價,備註';
                     const csvEscape = (v: string) => {
                       if (!v) return '';
                       if (v.includes(',') || v.includes('"') || v.includes('\n')) return `"${v.replace(/"/g, '""')}"`;
                       return v;
                     };
                     const rows = ingredients.map(ing =>
-                      [ing.id, csvEscape(ing.name), csvEscape(ing.nameEn || ''), ing.baseCostPerLb, ing.unit, csvEscape(ing.supplier || ''), ing.marketBenchmark ?? '', csvEscape(ing.notes || '')].join(',')
+                      [ing.id, csvEscape(ing.legacyId || ''), csvEscape(ing.name), csvEscape(ing.nameEn || ''), ing.baseCostPerLb, ing.unit, csvEscape(ing.supplier || ''), ing.marketBenchmark ?? '', csvEscape(ing.notes || '')].join(',')
                     );
                     const csvContent = '\uFEFF' + [header, ...rows].join('\n');
                     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -3823,23 +3899,25 @@ const App: React.FC = () => {
                       let skipped = 0;
                       for (let i = 1; i < lines.length; i++) {
                         const cols = parseCSVLine(lines[i]);
-                        const name = (cols[1] || '').trim();
+                        const name = (cols[2] || '').trim();
                         if (!name) { skipped++; continue; }
                         imported.push({
                           id: (cols[0] || '').trim() || `ing-${Date.now()}-${i}`,
+                          legacyId: (cols[1] || '').trim() || undefined,
                           name,
-                          nameEn: (cols[2] || '').trim() || undefined,
-                          baseCostPerLb: Number(cols[3]) || 0,
-                          unit: (cols[4] || 'lb').trim() || 'lb',
-                          supplier: (cols[5] || '').trim() || undefined,
-                          marketBenchmark: cols[6] && cols[6].trim() ? Number(cols[6]) : undefined,
-                          notes: (cols[7] || '').trim() || undefined,
+                          nameEn: (cols[3] || '').trim() || undefined,
+                          baseCostPerLb: Number(cols[4]) || 0,
+                          unit: (cols[5] || 'lb').trim() || 'lb',
+                          supplier: (cols[6] || '').trim() || undefined,
+                          marketBenchmark: cols[7] && cols[7].trim() ? Number(cols[7]) : undefined,
+                          notes: (cols[8] || '').trim() || undefined,
                         });
                       }
                       if (imported.length === 0) { showToast('無有效資料可匯入', 'error'); return; }
                       try {
                         const rows = imported.map(ing => ({
                           id: ing.id,
+                          legacy_id: ing.legacyId || null,
                           name: ing.name,
                           name_en: ing.nameEn || null,
                           base_cost_per_lb: ing.baseCostPerLb,
@@ -3863,10 +3941,10 @@ const App: React.FC = () => {
                   </label>
                   {/* Download Template */}
                   <button onClick={() => {
-                    const template = '\uFEFF' + 'id,名稱,英文名稱,買入成本,單位,供應商,市場參考價,備註\n'
-                      + 'ing-001,美國 Prime 肋眼,US Prime Ribeye,45.5,lb,ABC Trading,52,頂級部位\n'
-                      + 'ing-002,澳洲 M5 和牛,AU M5 Wagyu,62,lb,XYZ Meats,70,\n'
-                      + 'ing-003,西班牙黑毛豬,Iberico Pork,28.5,lb,,35,梅頭部位';
+                    const template = '\uFEFF' + 'id,舊系統ID,名稱,英文名稱,買入成本,單位,供應商,市場參考價,備註\n'
+                      + 'ing-001,OLD-101,美國 Prime 肋眼,US Prime Ribeye,45.5,lb,ABC Trading,52,頂級部位\n'
+                      + 'ing-002,OLD-102,澳洲 M5 和牛,AU M5 Wagyu,62,lb,XYZ Meats,70,\n'
+                      + 'ing-003,,西班牙黑毛豬,Iberico Pork,28.5,lb,,35,梅頭部位';
                     const blob = new Blob([template], { type: 'text/csv;charset=utf-8;' });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
@@ -3885,7 +3963,7 @@ const App: React.FC = () => {
                 <div className="text-[10px] text-blue-600 font-bold leading-relaxed">
                   <p className="font-black text-blue-700 mb-1">CSV 批量匯入說明</p>
                   <p>1. 點擊「下載範本」取得 CSV 格式範例 → 2. 用 Excel / Google Sheets 開啟編輯 → 3. 填入原材料資料後存成 CSV → 4. 點「匯入 CSV」上傳</p>
-                  <p className="mt-1 text-blue-400">欄位：ID, 名稱*, 英文名稱, 買入成本*, 單位(lb/kg/pc/box/pack), 供應商, 市場參考價, 備註。相同 ID 會覆蓋更新。</p>
+                  <p className="mt-1 text-blue-400">欄位：ID, 舊系統ID, 名稱*, 英文名稱, 買入成本*, 單位(lb/kg/pc/box/pack), 供應商, 市場參考價, 備註。相同 ID 會覆蓋更新。</p>
                 </div>
               </div>
               <div className="overflow-x-auto">
@@ -3893,6 +3971,7 @@ const App: React.FC = () => {
                   <thead>
                     <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
                       <th className="text-left px-4 py-3">名稱</th>
+                      <th className="text-left px-4 py-3">舊系統ID</th>
                       <th className="text-right px-4 py-3">買入成本</th>
                       <th className="text-center px-4 py-3">單位</th>
                       <th className="text-left px-4 py-3">供應商</th>
@@ -3912,6 +3991,7 @@ const App: React.FC = () => {
                               {ing.nameEn && <span className="text-slate-400 text-[10px] ml-2">{ing.nameEn}</span>}
                             </div>
                           </td>
+                          <td className="px-4 py-3 text-slate-400 text-[10px] font-mono">{ing.legacyId || '—'}</td>
                           <td className="text-right px-4 py-3 font-black text-blue-600">${ing.baseCostPerLb.toFixed(2)}</td>
                           <td className="text-center px-4 py-3 text-slate-500">{ing.unit}</td>
                           <td className="px-4 py-3 text-slate-500">{ing.supplier || '—'}</td>
@@ -3934,7 +4014,7 @@ const App: React.FC = () => {
                       );
                     })}
                     {ingredients.length === 0 && (
-                      <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-300 font-bold text-sm">尚無原材料，點擊右上角「新增原材料」</td></tr>
+                      <tr><td colSpan={8} className="px-4 py-12 text-center text-slate-300 font-bold text-sm">尚無原材料，點擊右上角「新增原材料」</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -3962,6 +4042,10 @@ const App: React.FC = () => {
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">英文名稱</label>
                         <input value={editingIngredient.nameEn || ''} onChange={e => setEditingIngredient({ ...editingIngredient, nameEn: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100" placeholder="US Prime Ribeye" />
                       </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">舊系統 ID</label>
+                      <input value={editingIngredient.legacyId || ''} onChange={e => setEditingIngredient({ ...editingIngredient, legacyId: e.target.value || undefined })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100 font-mono" placeholder="舊系統的原材料編號（選填）" />
                     </div>
                     <div className="grid grid-cols-3 gap-4">
                       <div className="space-y-1">
@@ -4013,7 +4097,8 @@ const App: React.FC = () => {
           </div>
         );
       case 'costs': {
-        const costsWsRules = siteConfig.wholesalePricingRules || { targetMarginFactor: 0.88, salesCommissionFactor: 0.97 };
+        const costsWsRules: WholesalePricingRules = siteConfig.wholesalePricingRules || { targetMarginFactor: 0.88, priceTiers: [] };
+        if (!costsWsRules.priceTiers) costsWsRules.priceTiers = [];
         const costsFilteredProducts = products.filter(p => {
           const ch = p.saleChannel || 'both';
           if (costsChannelFilter === 'retail') return ch === 'retail' || ch === 'both';
@@ -4123,8 +4208,10 @@ const App: React.FC = () => {
                       <th className="text-right px-4 py-3">總成本</th>
                       {costsChannelFilter === 'wholesale' ? (
                         <>
-                          <th className="text-right px-4 py-3 text-orange-500">P1 直銷</th>
-                          <th className="text-right px-4 py-3 text-teal-500">P3 業務</th>
+                          <th className="text-right px-4 py-3 text-orange-500">P0 直銷</th>
+                          {costsWsRules.priceTiers.map(tier => (
+                            <th key={tier.name} className="text-right px-4 py-3 text-teal-500">{tier.name}</th>
+                          ))}
                         </>
                       ) : (
                         <>
@@ -4140,8 +4227,7 @@ const App: React.FC = () => {
                       const totalCost = computeProductCost(p, linkedIng, costItems);
                       const sellPrice = (p.memberPrice > 0 && p.memberPrice < p.price) ? p.memberPrice : p.price;
                       const profit = sellPrice - totalCost;
-                      const wsP1 = totalCost > 0 ? totalCost / costsWsRules.targetMarginFactor : 0;
-                      const wsP3 = totalCost > 0 ? wsP1 / costsWsRules.salesCommissionFactor : 0;
+                      const costP0 = totalCost > 0 ? totalCost / costsWsRules.targetMarginFactor : 0;
                       return (
                         <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
                           <td className="px-4 py-3">
@@ -4194,8 +4280,10 @@ const App: React.FC = () => {
                           <td className="text-right px-4 py-3 font-bold text-slate-900">${totalCost.toFixed(1)}</td>
                           {costsChannelFilter === 'wholesale' ? (
                             <>
-                              <td className="text-right px-4 py-3 font-black text-orange-600">{totalCost > 0 ? `$${wsP1.toFixed(1)}` : '—'}</td>
-                              <td className="text-right px-4 py-3 font-black text-teal-600">{totalCost > 0 ? `$${wsP3.toFixed(1)}` : '—'}</td>
+                              <td className="text-right px-4 py-3 font-black text-orange-600">{totalCost > 0 ? `$${costP0.toFixed(1)}` : '—'}</td>
+                              {costsWsRules.priceTiers.map(tier => (
+                                <td key={tier.name} className="text-right px-4 py-3 font-black text-teal-600">{totalCost > 0 ? `$${(costP0 / tier.factor).toFixed(1)}` : '—'}</td>
+                              ))}
                             </>
                           ) : (
                             <>
@@ -5475,6 +5563,24 @@ const App: React.FC = () => {
                             <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">電話</label><input type="tel" value={editingMember.phoneNumber || ''} onChange={e => setEditingMember({...editingMember, phoneNumber: e.target.value || undefined})} className="w-full p-3 bg-white rounded-2xl font-bold border border-slate-100" placeholder="電話" /></div>
                             <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">電郵（選填）</label><input type="email" value={editingMember.email ?? ''} onChange={e => setEditingMember({...editingMember, email: e.target.value || undefined})} className="w-full p-3 bg-white rounded-2xl font-bold border border-slate-100" placeholder="email@example.com" /></div>
                             <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">密碼（留空不更改；新會員請填）</label><input type="password" value={editingMemberPassword} onChange={e => setEditingMemberPassword(e.target.value)} className="w-full p-3 bg-white rounded-2xl font-bold border border-slate-100" placeholder="密碼" minLength={6} /></div>
+                            <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">會員類別</label>
+                              <div className="flex gap-2">
+                                {([{ id: 'retail' as const, label: '零售', icon: '🛒' }, { id: 'wholesale' as const, label: '批發', icon: '🏭' }]).map(t => (
+                                  <button key={t.id} type="button" onClick={() => setEditingMember({...editingMember, memberType: t.id, wholesalePriceTier: t.id === 'wholesale' ? (editingMember.wholesalePriceTier || 'P0') : undefined })} className={`flex-1 py-3 rounded-2xl text-xs font-black transition-all flex items-center justify-center gap-2 ${editingMember.memberType === t.id ? (t.id === 'wholesale' ? 'bg-orange-500 text-white shadow-lg' : 'bg-blue-500 text-white shadow-lg') : 'bg-white border border-slate-100 text-slate-500'}`}>{t.icon} {t.label}</button>
+                                ))}
+                              </div>
+                            </div>
+                            {editingMember.memberType === 'wholesale' && (
+                              <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">批發 P 等級</label>
+                                <select value={editingMember.wholesalePriceTier || 'P0'} onChange={e => setEditingMember({...editingMember, wholesalePriceTier: e.target.value})} className="w-full p-3 bg-white rounded-2xl font-bold border border-slate-100">
+                                  <option value="P0">P0（直銷價 — 默認）</option>
+                                  {(siteConfig.wholesalePricingRules?.priceTiers || []).map(tier => (
+                                    <option key={tier.name} value={tier.name}>{tier.name}{tier.description ? ` — ${tier.description}` : ''}</option>
+                                  ))}
+                                </select>
+                                <p className="text-[9px] text-slate-300 font-bold mt-1">決定此批發會員看到的售價等級</p>
+                              </div>
+                            )}
                          </div>
                       </div>
                       <div className="space-y-6">

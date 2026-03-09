@@ -94,6 +94,7 @@ export interface CostItem {
 /** Raw material / ingredient sourced from suppliers. */
 export interface Ingredient {
   id: string;
+  legacyId?: string;        // 舊系統 ID（方便對照）
   name: string;
   nameEn?: string;
   baseCostPerLb: number;    // 買入成本（每磅/每單位）
@@ -108,6 +109,7 @@ export interface Ingredient {
 /** Supabase public.ingredients row (snake_case). */
 export interface SupabaseIngredientRow {
   id: string;
+  legacy_id?: string | null;
   name: string;
   name_en?: string | null;
   base_cost_per_lb: number;
@@ -172,6 +174,8 @@ export interface UserAddress {
   altPhone?: string;
 }
 
+export type MemberType = 'retail' | 'wholesale';
+
 export interface User {
   id: string;
   name: string;
@@ -181,6 +185,8 @@ export interface User {
   walletBalance: number;
   tier: 'Bronze' | 'Silver' | 'Gold' | 'VIP';
   role: 'customer' | 'admin';
+  memberType: MemberType;                // 零售 / 批發
+  wholesalePriceTier?: string;           // 批發 P 等級（如 'P0', 'P3'）— 僅批發會員適用
   addresses?: UserAddress[];
 }
 
@@ -286,6 +292,8 @@ export interface SupabaseMemberRow {
   wallet_balance: number;
   tier: 'Bronze' | 'Silver' | 'Gold' | 'VIP';
   role: 'customer' | 'admin';
+  member_type?: string | null;            // 'retail' | 'wholesale'
+  wholesale_price_tier?: string | null;   // e.g. 'P0', 'P3'
   addresses?: UserAddress[] | null;
 }
 
@@ -325,9 +333,18 @@ export interface GlobalPricingRules {
   markupPercent?: number;
 }
 
+/** One wholesale price tier above P0. name encodes the markup: 'P3' → 3% markup (÷0.97). */
+export interface WholesalePriceTier {
+  name: string;        // e.g. 'P3', 'P5', 'P10'
+  factor: number;      // e.g. 0.97, 0.95, 0.90 — P0 price ÷ factor
+  description?: string;
+}
+
 export interface WholesalePricingRules {
-  targetMarginFactor: number;       // 目標利潤率因子（如 0.88 = 12% 毛利）
-  salesCommissionFactor: number;    // 業務佣金率因子（如 0.97 = 3% 佣金）
+  targetMarginFactor: number;          // 目標利潤率因子（如 0.88 = 12% 毛利）→ P0 = cost ÷ factor
+  priceTiers: WholesalePriceTier[];    // 自訂 P 等級（P0 以外的加成等級）
+  /** @deprecated kept for backward compat; migrated to priceTiers */
+  salesCommissionFactor?: number;
 }
 
 export interface DeliveryTier {

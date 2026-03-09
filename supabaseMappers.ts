@@ -5,6 +5,7 @@ import {
   Order,
   OrderStatus,
   SaleChannel,
+  MemberType,
   SupabaseProductRow,
   SupabaseCategoryRow,
   SupabaseMemberRow,
@@ -84,6 +85,7 @@ export const mapProductToRow = (product: Product): SupabaseProductRow => ({
 
 export const mapIngredientRowToIngredient = (row: SupabaseIngredientRow): Ingredient => ({
   id: row.id,
+  legacyId: row.legacy_id ?? undefined,
   name: row.name,
   nameEn: row.name_en ?? undefined,
   baseCostPerLb: row.base_cost_per_lb,
@@ -97,6 +99,7 @@ export const mapIngredientRowToIngredient = (row: SupabaseIngredientRow): Ingred
 
 export const mapIngredientToRow = (ing: Ingredient): SupabaseIngredientRow => ({
   id: ing.id,
+  legacy_id: ing.legacyId ?? null,
   name: ing.name,
   name_en: ing.nameEn ?? null,
   base_cost_per_lb: ing.baseCostPerLb,
@@ -155,6 +158,8 @@ export const mapMemberRowToUser = (row: SupabaseMemberRow): User => ({
   walletBalance: row.wallet_balance,
   tier: row.tier,
   role: row.role,
+  memberType: (row.member_type === 'wholesale' ? 'wholesale' : 'retail') as MemberType,
+  wholesalePriceTier: row.wholesale_price_tier ?? undefined,
   addresses: row.addresses ?? undefined
 });
 
@@ -168,6 +173,8 @@ export const mapUserToMemberRow = (user: User, passwordHash?: string | null): Su
     wallet_balance: user.walletBalance,
     tier: user.tier,
     role: user.role,
+    member_type: user.memberType || 'retail',
+    wholesale_price_tier: user.memberType === 'wholesale' ? (user.wholesalePriceTier || 'P0') : null,
     addresses: user.addresses ?? null
   };
   if (passwordHash !== undefined) row.password_hash = passwordHash;
