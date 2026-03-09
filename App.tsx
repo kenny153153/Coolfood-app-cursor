@@ -9,7 +9,7 @@ import {
   MoreHorizontal, MapPin, ShieldCheck, Key, Image as ImageIcon,
   Check, Filter, List, Video, FileText, ChevronUp, ChevronDown, GripVertical,
   Printer, ExternalLink, Calendar, Hash, UserCheck, CreditCard as CardIcon,
-  Award, Smartphone, Mail, Save, PlusCircle, Map, Download, Upload, Zap,
+  Award, Smartphone, Mail, Save, PlusCircle, Download, Upload, Zap,
   Layers, Percent, Globe, Crosshair, Scissors, Phone, Square, CheckSquare, Coins,
   UtensilsCrossed, Play, CookingPot
 } from 'lucide-react';
