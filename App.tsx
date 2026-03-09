@@ -662,6 +662,10 @@ const App: React.FC = () => {
   // Ingredients (原材料) management
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [editingIngredient, setEditingIngredient] = useState<Ingredient | null>(null);
+  const [ingredientSubTab, setIngredientSubTab] = useState<'list' | 'units'>('list');
+  const [customUnits, setCustomUnits] = useState<{ id: string; label: string; value: string }[]>([]);
+  const DEFAULT_UNITS = [{ value: 'lb', label: '磅 (lb)' }, { value: 'kg', label: '公斤 (kg)' }, { value: 'pc', label: '件 (pc)' }, { value: 'box', label: '箱 (box)' }, { value: 'pack', label: '包 (pack)' }];
+  const allUnits = useMemo(() => [...DEFAULT_UNITS, ...customUnits.filter(u => u.value && u.label).map(u => ({ value: u.value, label: u.label }))], [customUnits]);
 
   // AI State
   const [aiAnalysis, setAiAnalysis] = useState<string>('');
@@ -980,6 +984,7 @@ const App: React.FC = () => {
             pricingRules: cfgMap.pricing_rules ? { ...prev.pricingRules, ...cfgMap.pricing_rules } : prev.pricingRules,
           }));
           if (Array.isArray(cfgMap.cost_items)) setCostItems(cfgMap.cost_items);
+          if (Array.isArray(cfgMap.custom_units)) setCustomUnits(cfgMap.custom_units);
         }
       } catch {
         console.warn('[site_config] Failed to load, using defaults');
@@ -3467,8 +3472,100 @@ const App: React.FC = () => {
       case 'ingredients':
         return (
           <div className="space-y-8 animate-fade-in pb-20">
-            {/* Ingredients Management */}
-            <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-6">
+            {/* Sub-tab Navigation */}
+            <div className="flex items-center gap-2">
+              {[
+                { id: 'list' as const, label: '原材料一覽', icon: <Layers size={16}/> },
+                { id: 'units' as const, label: '單位管理', icon: <Tag size={16}/> },
+              ].map(tab => (
+                <button key={tab.id} onClick={() => setIngredientSubTab(tab.id)} className={`px-5 py-2.5 rounded-xl text-sm font-black transition-all flex items-center gap-2 ${ingredientSubTab === tab.id ? 'bg-blue-600 text-white shadow-lg' : 'bg-white text-slate-500 border border-slate-200 hover:border-blue-300'}`}>
+                  {tab.icon} {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Units Management Sub-tab */}
+            {ingredientSubTab === 'units' && (
+              <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-6">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 bg-purple-50 text-purple-600 rounded-xl"><Tag size={18}/></div>
+                    <div>
+                      <h4 className="font-black text-lg">單位管理</h4>
+                      <p className="text-[10px] text-slate-400 font-bold">預設單位不可刪除，可自由新增自訂單位</p>
+                    </div>
+                  </div>
+                  <button onClick={async () => {
+                    try {
+                      await supabase.from('site_config').upsert({ id: 'custom_units', value: customUnits });
+                      showToast('單位設定已儲存');
+                    } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
+                  }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Save size={14}/> 儲存</button>
+                </div>
+
+                {/* Default units (read-only) */}
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">預設單位</label>
+                  <div className="flex flex-wrap gap-2">
+                    {DEFAULT_UNITS.map(u => (
+                      <div key={u.value} className="px-4 py-2.5 bg-slate-50 rounded-xl text-xs font-black text-slate-500 border border-slate-100 flex items-center gap-2">
+                        <Lock size={10} className="text-slate-300" />
+                        <span className="text-slate-700">{u.label}</span>
+                        <span className="text-slate-300 text-[10px]">{u.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Custom units (editable) */}
+                <div className="space-y-3">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">自訂單位</label>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                          <th className="text-left px-4 py-3">顯示名稱</th>
+                          <th className="text-left px-4 py-3">值（英文縮寫）</th>
+                          <th className="text-right px-4 py-3 w-20">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {customUnits.map(u => (
+                          <tr key={u.id} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="px-4 py-3">
+                              <input value={u.label} onChange={e => setCustomUnits(prev => prev.map(x => x.id === u.id ? { ...x, label: e.target.value } : x))} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100 focus:ring-2 focus:ring-purple-100" placeholder="例：條" />
+                            </td>
+                            <td className="px-4 py-3">
+                              <input value={u.value} onChange={e => setCustomUnits(prev => prev.map(x => x.id === u.id ? { ...x, value: e.target.value.replace(/\s/g, '') } : x))} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100 focus:ring-2 focus:ring-purple-100 font-mono" placeholder="例：strip" />
+                            </td>
+                            <td className="px-4 py-3 text-right">
+                              <button onClick={() => setCustomUnits(prev => prev.filter(x => x.id !== u.id))} className="p-1.5 text-rose-400 hover:bg-rose-50 rounded-lg transition-colors"><Trash2 size={14}/></button>
+                            </td>
+                          </tr>
+                        ))}
+                        {customUnits.length === 0 && (
+                          <tr><td colSpan={3} className="px-4 py-8 text-center text-slate-300 font-bold text-xs">尚無自訂單位，點擊下方新增</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <button onClick={() => setCustomUnits(prev => [...prev, { id: `unit-${Date.now()}`, label: '', value: '' }])} className="px-4 py-2.5 border-2 border-dashed border-slate-200 rounded-xl text-xs font-black text-slate-400 hover:border-purple-400 hover:text-purple-600 transition-all flex items-center gap-1.5"><Plus size={14}/> 新增單位</button>
+                </div>
+
+                {/* Preview */}
+                <div className="bg-purple-50/50 border border-purple-100 rounded-2xl p-4">
+                  <label className="text-[10px] font-bold text-purple-400 uppercase tracking-widest">所有可用單位預覽</label>
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {allUnits.map(u => (
+                      <span key={u.value} className="px-3 py-1.5 bg-white rounded-lg text-xs font-bold text-slate-600 border border-purple-100">{u.label}</span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Ingredients List Sub-tab */}
+            {ingredientSubTab === 'list' && <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-6">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><Layers size={18}/></div>
@@ -3647,7 +3744,7 @@ const App: React.FC = () => {
                   </tbody>
                 </table>
               </div>
-            </div>
+            </div>}
 
             {/* Editing Ingredient Modal */}
             {editingIngredient && (
@@ -3679,11 +3776,7 @@ const App: React.FC = () => {
                       <div className="space-y-1">
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">單位</label>
                         <select value={editingIngredient.unit} onChange={e => setEditingIngredient({ ...editingIngredient, unit: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100">
-                          <option value="lb">磅 (lb)</option>
-                          <option value="kg">公斤 (kg)</option>
-                          <option value="pc">件 (pc)</option>
-                          <option value="box">箱 (box)</option>
-                          <option value="pack">包 (pack)</option>
+                          {allUnits.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
                         </select>
                       </div>
                       <div className="space-y-1">
