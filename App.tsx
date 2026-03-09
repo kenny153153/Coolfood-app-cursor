@@ -483,6 +483,13 @@ const SuccessView: React.FC<{
   );
 };
 
+// Fixed ingredient categories — the canonical list used across cost management,
+// product cost linking, and admin filters. NOT to be confused with product
+// storefront categories (Category[]) or recipe categories (RecipeCategory[]).
+export const INGREDIENT_CATEGORY_PRESETS = [
+  '牛肉', '豬肉', '雞肉', '羊肉', '海鮮', '蔬菜', '調味料', '乾貨', '其他',
+];
+
 // Default advertisement slideshow when Supabase has no data
 const DEFAULT_SLIDESHOW: SlideshowItem[] = [
   { id: 'slide-1', type: 'image', url: 'https://placehold.co/800x320/slate-800/white?text=歡迎光臨+冷凍肉專門店', title: '歡迎光臨', sortOrder: 0 },
@@ -677,12 +684,9 @@ const App: React.FC = () => {
   const [ingredientChannelFilter, setIngredientChannelFilter] = useState<string>('all');
   const DEFAULT_UNITS = [{ value: 'lb', label: '磅 (lb)' }, { value: 'kg', label: '公斤 (kg)' }, { value: 'pc', label: '件 (pc)' }, { value: 'box', label: '箱 (box)' }, { value: 'pack', label: '包 (pack)' }];
   const allUnits = useMemo(() => [...DEFAULT_UNITS, ...customUnits.filter(u => u.value && u.label).map(u => ({ value: u.value, label: u.label }))], [customUnits]);
-  const INGREDIENT_CATEGORY_PRESETS = ['牛肉', '豬肉', '雞肉', '羊肉', '海鮮', '蔬菜', '調味料', '乾貨', '其他'];
-  const ingredientCategories = useMemo(() => {
-    const cats = new Set(INGREDIENT_CATEGORY_PRESETS);
-    ingredients.forEach(i => { if (i.category) cats.add(i.category); });
-    return Array.from(cats);
-  }, [ingredients]);
+  // ingredientCategories is simply the fixed preset list — ingredient categories
+  // are NOT free-form text; they must come from INGREDIENT_CATEGORY_PRESETS.
+  const ingredientCategories = INGREDIENT_CATEGORY_PRESETS;
   const filteredIngredients = useMemo(() => {
     return ingredients.filter(ing => {
       if (ingredientCategoryFilter !== 'all' && ing.category !== ingredientCategoryFilter) return false;
@@ -4171,12 +4175,10 @@ const App: React.FC = () => {
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-1">
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">類別</label>
-                        <div className="relative">
-                          <input list="ingredientCategoryList" value={editingIngredient.category || ''} onChange={e => setEditingIngredient({ ...editingIngredient, category: e.target.value || undefined })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100" placeholder="例：牛肉、豬肉、海鮮..." />
-                          <datalist id="ingredientCategoryList">
-                            {ingredientCategories.map(c => <option key={c} value={c} />)}
-                          </datalist>
-                        </div>
+                        <select value={editingIngredient.category || ''} onChange={e => setEditingIngredient({ ...editingIngredient, category: e.target.value || undefined })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100">
+                          <option value="">（未分類）</option>
+                          {INGREDIENT_CATEGORY_PRESETS.map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
                       </div>
                       <div className="space-y-1">
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">渠道</label>
