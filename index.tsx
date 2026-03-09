@@ -13,15 +13,24 @@ class ErrorBoundary extends React.Component<
   }
   render() {
     if (this.state.hasError && this.state.error) {
+      const envUrl = import.meta.env.VITE_SUPABASE_URL ?? '(not set)';
+      const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY ? '***set***' : '(not set)';
       return (
-        <div style={{ padding: 24, fontFamily: 'sans-serif', maxWidth: 600 }}>
+        <div style={{ padding: 24, fontFamily: 'sans-serif', maxWidth: 700 }}>
           <h1 style={{ color: '#b91c1c' }}>Something went wrong</h1>
-          <pre style={{ background: '#fef2f2', padding: 16, overflow: 'auto' }}>
+          <pre style={{ background: '#fef2f2', padding: 16, overflow: 'auto', fontSize: 13 }}>
             {this.state.error.message}
           </pre>
-          <p style={{ color: '#64748b' }}>
-            Check Vercel env: VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+          <details style={{ marginTop: 12 }}>
+            <summary style={{ cursor: 'pointer', color: '#64748b', fontSize: 13 }}>Stack trace</summary>
+            <pre style={{ background: '#f8fafc', padding: 12, overflow: 'auto', fontSize: 11, marginTop: 8 }}>
+              {this.state.error.stack}
+            </pre>
+          </details>
+          <p style={{ color: '#64748b', marginTop: 12, fontSize: 13 }}>
+            Env check — VITE_SUPABASE_URL: {envUrl.slice(0, 30)}… | VITE_SUPABASE_ANON_KEY: {envKey}
           </p>
+          <button onClick={() => window.location.reload()} style={{ marginTop: 12, padding: '8px 16px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700 }}>重新載入</button>
         </div>
       );
     }
