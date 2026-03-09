@@ -72,9 +72,9 @@ export const mapProductToRow = (product: Product): SupabaseProductRow => ({
   cost_item_ids: product.costItemIds ?? null,
   ingredient_id: product.ingredientId ?? null,
   yield_rate: product.yieldRate ?? null,
-  processing_cost: product.processingCost ?? null,
-  packaging_cost: product.packagingCost ?? null,
-  misc_cost: product.miscCost ?? null,
+  processing_cost: product.processingCost ?? 0,
+  packaging_cost: product.packagingCost ?? 0,
+  misc_cost: product.miscCost ?? 0,
 });
 
 export const mapIngredientRowToIngredient = (row: SupabaseIngredientRow): Ingredient => ({

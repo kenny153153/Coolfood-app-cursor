@@ -2619,6 +2619,8 @@ const App: React.FC = () => {
       '# 4. trackInventory 填 true 或 false',
       '# 5. image 可填圖片 URL，留空則預設為 emoji',
       '# 6. SEO 欄位選填，有助 Google 搜尋排名',
+      '# 7. stock 必須為整數（例如 10，不可填 10.5）',
+      '# 8. 所有成本欄位選填，留空則預設為 0',
     ];
     const csvContent = [instructions.join('\n'), headers.join(','), sample1.join(','), sample2.join(',')].join('\n');
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -2635,10 +2637,11 @@ const App: React.FC = () => {
       const reader = new FileReader();
       reader.onload = async (event) => {
         const text = event.target?.result as string;
-        const lines = text.split('\n').filter(l => l.trim().length > 0 && !l.trim().startsWith('#'));
+        const lines = text.replace(/^\uFEFF/, '').split('\n').filter(l => l.trim().length > 0 && !l.trim().startsWith('#'));
         if (lines.length < 2) { showToast('CSV 格式錯誤：缺少標題列或資料列', 'error'); return; }
         const headers = lines[0].split(',').map(h => h.trim());
         const existingIds = new Set(products.map(p => p.id));
+        const numericFields = new Set(['price', 'memberPrice', 'costPrice', 'yieldRate', 'processingCost', 'packagingCost', 'miscCost']);
         const newProducts: Product[] = lines.slice(1).map(line => {
           const values = line.split(',').map(v => v.trim());
           const p: any = { tags: [], image: '🥩', recipes: [], categories: [], trackInventory: true, memberPrice: 0, stock: 0, price: 0 };
@@ -2646,8 +2649,10 @@ const App: React.FC = () => {
             const val = values[i] || '';
             if (h === 'categories') p.categories = val ? val.split('|').map((v: string) => v.trim()).filter(Boolean) : [];
             else if (h === 'tags') p.tags = val ? val.split('|').map((v: string) => v.trim()).filter(Boolean) : [];
-            else if (h === 'price' || h === 'memberPrice' || h === 'stock') p[h] = Number(val) || 0;
+            else if (h === 'stock') p.stock = Math.round(Number(val) || 0);
+            else if (numericFields.has(h)) { if (val) p[h] = Number(val) || 0; }
             else if (h === 'trackInventory') p[h] = val ? val.toLowerCase() === 'true' : true;
+            else if (h === 'costItemIds' || h === 'cost_item_ids') p.costItemIds = val ? val.split('|').map((v: string) => v.trim()).filter(Boolean) : [];
             else if (val) p[h] = val;
           });
           if (!p.id || p.id === '') {
