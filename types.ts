@@ -321,6 +321,11 @@ export interface GlobalPricingRules {
   markupPercent?: number;
 }
 
+export interface WholesalePricingRules {
+  targetMarginFactor: number;       // 目標利潤率因子（如 0.88 = 12% 毛利）
+  salesCommissionFactor: number;    // 業務佣金率因子（如 0.97 = 3% 佣金）
+}
+
 export interface DeliveryTier {
   min: number;
   fee: number;
@@ -349,5 +354,6 @@ export interface SiteConfig {
   logoUrl?: string;       // Uploaded logo image URL (Supabase Storage)
   accentColor?: string;
   pricingRules?: GlobalPricingRules;
+  wholesalePricingRules?: WholesalePricingRules;
   deliveryRules?: DeliveryRules;
 }

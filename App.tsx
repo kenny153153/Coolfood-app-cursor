@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
-import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient } from './types';
+import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient } from './types';
 import { useI18n, Language } from './i18n';
 import { supabase } from './supabaseClient';
 import {
@@ -509,6 +509,7 @@ const App: React.FC = () => {
   const [isRedirectingToPayment, setIsRedirectingToPayment] = useState(false);
   const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'pricing' | 'costs' | 'ingredients' | 'language' | 'recipes' | 'settings'>('dashboard');
   const [inventorySubTab, setInventorySubTab] = useState<'products' | 'categories' | 'rules'>('products');
+  const [pricingSubTab, setPricingSubTab] = useState<'retail' | 'wholesale'>('retail');
   const [ordersStatusFilter, setOrdersStatusFilter] = useState<'all' | OrderStatus>('all');
   const [isAdminSidebarOpen, setIsAdminSidebarOpen] = useState(false);
 
@@ -526,6 +527,10 @@ const App: React.FC = () => {
       excludedProductIds: [],
       excludedCategoryIds: [],
       markupPercent: 0
+    },
+    wholesalePricingRules: {
+      targetMarginFactor: 0.88,
+      salesCommissionFactor: 0.97,
     },
     deliveryRules: {
       freeThreshold: 500,
@@ -982,6 +987,7 @@ const App: React.FC = () => {
             ...prev,
             ...(cfgMap.site_branding || {}),
             pricingRules: cfgMap.pricing_rules ? { ...prev.pricingRules, ...cfgMap.pricing_rules } : prev.pricingRules,
+            wholesalePricingRules: cfgMap.wholesale_pricing_rules ? { ...prev.wholesalePricingRules, ...cfgMap.wholesale_pricing_rules } : prev.wholesalePricingRules,
           }));
           if (Array.isArray(cfgMap.cost_items)) setCostItems(cfgMap.cost_items);
           if (Array.isArray(cfgMap.custom_units)) setCustomUnits(cfgMap.custom_units);
@@ -3193,163 +3199,276 @@ const App: React.FC = () => {
              </div>
           </div>
         );
-      case 'pricing':
+      case 'pricing': {
+        const wsRules = siteConfig.wholesalePricingRules || { targetMarginFactor: 0.88, salesCommissionFactor: 0.97 };
+        const wsExampleCost = 100;
+        const wsP1 = wsExampleCost / wsRules.targetMarginFactor;
+        const wsP3 = wsExampleCost / wsRules.targetMarginFactor / wsRules.salesCommissionFactor;
         return (
           <div className="space-y-8 animate-fade-in pb-20">
-            {/* ── 定價規則卡片 ── */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
-                <div className="flex items-center gap-2"><div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><Tag size={18}/></div><h4 className="font-black text-sm">會員折扣</h4></div>
-                <p className="text-[10px] text-slate-400 font-bold">登入會員後，在售價/折扣價基礎上自動減價</p>
-                <div className="flex items-center gap-2">
-                  <input type="number" min="0" max="50" step="1" value={siteConfig.pricingRules?.memberDiscountPercent || ''} onChange={e => setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, memberDiscountPercent: Number(e.target.value) || 0}})} placeholder="0" className="flex-1 p-4 bg-slate-50 rounded-2xl font-black text-xl text-center border border-slate-100 focus:ring-2 focus:ring-blue-100" />
-                  <span className="text-2xl font-black text-slate-300">%</span>
-                </div>
-                <p className="text-[9px] text-slate-300 font-bold">填 0 或留空 = 會員不額外減價</p>
-              </div>
-              <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
-                <div className="flex items-center gap-2"><div className="p-2.5 bg-purple-50 text-purple-600 rounded-xl"><Wallet size={18}/></div><h4 className="font-black text-sm">錢包折扣</h4></div>
-                <p className="text-[10px] text-slate-400 font-bold">使用預付錢包餘額付款時，在會員價基礎上再減</p>
-                <div className="flex items-center gap-2">
-                  <input type="number" min="0" max="50" step="1" value={siteConfig.pricingRules?.walletDiscountPercent || ''} onChange={e => setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, walletDiscountPercent: Number(e.target.value) || 0}})} placeholder="0" className="flex-1 p-4 bg-slate-50 rounded-2xl font-black text-xl text-center border border-slate-100 focus:ring-2 focus:ring-purple-100" />
-                  <span className="text-2xl font-black text-slate-300">%</span>
-                </div>
-                <p className="text-[9px] text-slate-300 font-bold">疊加在會員折扣之上，填 0 = 不額外減</p>
-              </div>
-              <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
-                <div className="flex items-center gap-2"><div className="p-2.5 bg-slate-100 text-slate-600 rounded-xl"><Zap size={18}/></div><h4 className="font-black text-sm">定價預覽</h4></div>
-                <p className="text-[10px] text-slate-400 font-bold">以 $100 售價為例</p>
-                <div className="space-y-2 text-xs">
-                  <div className="flex justify-between items-center p-2.5 bg-slate-50 rounded-xl"><span className="text-slate-500 font-bold">🛒 訪客</span><span className="font-black text-slate-900">$100</span></div>
-                  <div className="flex justify-between items-center p-2.5 bg-blue-50 rounded-xl"><span className="text-blue-600 font-bold">👤 會員</span><span className="font-black text-blue-700">${Math.round(100 * (1 - (siteConfig.pricingRules?.memberDiscountPercent || 0) / 100))}</span></div>
-                  <div className="flex justify-between items-center p-2.5 bg-purple-50 rounded-xl"><span className="text-purple-600 font-bold">💳 錢包</span><span className="font-black text-purple-700">${Math.round(100 * (1 - (siteConfig.pricingRules?.memberDiscountPercent || 0) / 100) * (1 - (siteConfig.pricingRules?.walletDiscountPercent || 0) / 100))}</span></div>
-                </div>
-              </div>
+            {/* ── Tab 切換 ── */}
+            <div className="flex gap-2">
+              {([
+                { id: 'retail' as const, label: '零售定價設定', icon: <ShoppingBag size={16}/> },
+                { id: 'wholesale' as const, label: '批發定價設定', icon: <Truck size={16}/> },
+              ]).map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setPricingSubTab(tab.id)}
+                  className={`flex items-center gap-2 px-6 py-3 rounded-2xl text-sm font-black transition-all ${pricingSubTab === tab.id ? 'bg-slate-900 text-white shadow-xl' : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-50'}`}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </button>
+              ))}
             </div>
 
-            {/* ── 全產品定價矩陣 ── */}
-            <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden">
-              <div className="p-8 pb-4 flex items-center justify-between flex-wrap gap-3">
-                <div className="flex items-center gap-3"><div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><ClipboardList size={18}/></div><h4 className="font-black text-lg">全產品定價一覽</h4></div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <button onClick={() => setShowCostColumns(v => !v)} className={`px-4 py-2 rounded-xl text-xs font-black transition-colors ${showCostColumns ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
-                    {showCostColumns ? '隱藏成本' : '顯示成本'}
-                  </button>
-                  <button onClick={() => {
-                    const allIds = products.map(p => p.id);
-                    const current = siteConfig.pricingRules?.excludedProductIds || [];
-                    if (current.length === 0) {
-                      setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, excludedProductIds: allIds}});
-                      showToast('已排除全部產品');
-                    } else {
-                      setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, excludedProductIds: []}});
-                      showToast('已對全部產品實行折扣');
-                    }
-                  }} className="px-4 py-2 bg-slate-100 rounded-xl text-xs font-black text-slate-600 hover:bg-slate-200 transition-colors">
-                    {(siteConfig.pricingRules?.excludedProductIds?.length || 0) > 0 ? '✓ 全部實行' : '✗ 全部排除'}
-                  </button>
+            {pricingSubTab === 'retail' && (
+              <>
+                {/* ── 零售定價規則卡片 ── */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                    <div className="flex items-center gap-2"><div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><Tag size={18}/></div><h4 className="font-black text-sm">會員折扣</h4></div>
+                    <p className="text-[10px] text-slate-400 font-bold">登入會員後，在售價/折扣價基礎上自動減價</p>
+                    <div className="flex items-center gap-2">
+                      <input type="number" min="0" max="50" step="1" value={siteConfig.pricingRules?.memberDiscountPercent || ''} onChange={e => setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, memberDiscountPercent: Number(e.target.value) || 0}})} placeholder="0" className="flex-1 p-4 bg-slate-50 rounded-2xl font-black text-xl text-center border border-slate-100 focus:ring-2 focus:ring-blue-100" />
+                      <span className="text-2xl font-black text-slate-300">%</span>
+                    </div>
+                    <p className="text-[9px] text-slate-300 font-bold">填 0 或留空 = 會員不額外減價</p>
+                  </div>
+                  <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                    <div className="flex items-center gap-2"><div className="p-2.5 bg-purple-50 text-purple-600 rounded-xl"><Wallet size={18}/></div><h4 className="font-black text-sm">錢包折扣</h4></div>
+                    <p className="text-[10px] text-slate-400 font-bold">使用預付錢包餘額付款時，在會員價基礎上再減</p>
+                    <div className="flex items-center gap-2">
+                      <input type="number" min="0" max="50" step="1" value={siteConfig.pricingRules?.walletDiscountPercent || ''} onChange={e => setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, walletDiscountPercent: Number(e.target.value) || 0}})} placeholder="0" className="flex-1 p-4 bg-slate-50 rounded-2xl font-black text-xl text-center border border-slate-100 focus:ring-2 focus:ring-purple-100" />
+                      <span className="text-2xl font-black text-slate-300">%</span>
+                    </div>
+                    <p className="text-[9px] text-slate-300 font-bold">疊加在會員折扣之上，填 0 = 不額外減</p>
+                  </div>
+                  <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                    <div className="flex items-center gap-2"><div className="p-2.5 bg-slate-100 text-slate-600 rounded-xl"><Zap size={18}/></div><h4 className="font-black text-sm">定價預覽</h4></div>
+                    <p className="text-[10px] text-slate-400 font-bold">以 $100 售價為例</p>
+                    <div className="space-y-2 text-xs">
+                      <div className="flex justify-between items-center p-2.5 bg-slate-50 rounded-xl"><span className="text-slate-500 font-bold">🛒 訪客</span><span className="font-black text-slate-900">$100</span></div>
+                      <div className="flex justify-between items-center p-2.5 bg-blue-50 rounded-xl"><span className="text-blue-600 font-bold">👤 會員</span><span className="font-black text-blue-700">${Math.round(100 * (1 - (siteConfig.pricingRules?.memberDiscountPercent || 0) / 100))}</span></div>
+                      <div className="flex justify-between items-center p-2.5 bg-purple-50 rounded-xl"><span className="text-purple-600 font-bold">💳 錢包</span><span className="font-black text-purple-700">${Math.round(100 * (1 - (siteConfig.pricingRules?.memberDiscountPercent || 0) / 100) * (1 - (siteConfig.pricingRules?.walletDiscountPercent || 0) / 100))}</span></div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── 零售全產品定價矩陣 ── */}
+                <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden">
+                  <div className="p-8 pb-4 flex items-center justify-between flex-wrap gap-3">
+                    <div className="flex items-center gap-3"><div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><ClipboardList size={18}/></div><h4 className="font-black text-lg">全產品定價一覽</h4></div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button onClick={() => setShowCostColumns(v => !v)} className={`px-4 py-2 rounded-xl text-xs font-black transition-colors ${showCostColumns ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                        {showCostColumns ? '隱藏成本' : '顯示成本'}
+                      </button>
+                      <button onClick={() => {
+                        const allIds = products.map(p => p.id);
+                        const current = siteConfig.pricingRules?.excludedProductIds || [];
+                        if (current.length === 0) {
+                          setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, excludedProductIds: allIds}});
+                          showToast('已排除全部產品');
+                        } else {
+                          setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, excludedProductIds: []}});
+                          showToast('已對全部產品實行折扣');
+                        }
+                      }} className="px-4 py-2 bg-slate-100 rounded-xl text-xs font-black text-slate-600 hover:bg-slate-200 transition-colors">
+                        {(siteConfig.pricingRules?.excludedProductIds?.length || 0) > 0 ? '✓ 全部實行' : '✗ 全部排除'}
+                      </button>
+                      <button onClick={async () => {
+                        try {
+                          await supabase.from('site_config').upsert({ id: 'pricing_rules', value: siteConfig.pricingRules });
+                          await supabase.from('site_config').upsert({ id: 'site_branding', value: { logoText: siteConfig.logoText, logoIcon: siteConfig.logoIcon, logoUrl: siteConfig.logoUrl, accentColor: siteConfig.accentColor } });
+                          for (const p of products) { await supabase.from('products').update({ price: p.price, member_price: p.memberPrice }).eq('id', p.id); }
+                          showToast('零售定價規則已儲存');
+                        } catch (err: any) {
+                          showToast(`儲存失敗：${err.message}`, 'error');
+                        }
+                      }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Save size={14}/> 儲存</button>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                          <th className="text-left px-6 py-3 w-10">參與</th>
+                          <th className="text-left px-4 py-3">產品</th>
+                          <th className="text-right px-4 py-3">售價</th>
+                          <th className="text-right px-4 py-3">折扣價</th>
+                          <th className="text-right px-4 py-3 text-blue-500">會員價</th>
+                          <th className="text-right px-4 py-3 text-purple-500">錢包價</th>
+                          {showCostColumns && <th className="text-right px-4 py-3 text-amber-500">成本</th>}
+                          {showCostColumns && <th className="text-right px-4 py-3 text-emerald-500">利潤</th>}
+                          <th className="text-center px-3 py-3 w-16">手動</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {products.map(p => {
+                          const excluded = siteConfig.pricingRules?.excludedProductIds?.includes(p.id) || false;
+                          const hasDiscount = p.memberPrice > 0 && p.memberPrice < p.price;
+                          const base = hasDiscount ? p.memberPrice : p.price;
+                          const mPct = siteConfig.pricingRules?.memberDiscountPercent || 0;
+                          const wPct = siteConfig.pricingRules?.walletDiscountPercent || 0;
+                          const memberP = excluded ? base : Math.round(base * (1 - mPct / 100));
+                          const walletP = excluded ? base : Math.round(base * (1 - mPct / 100) * (1 - wPct / 100));
+                          const linkedIng = ingredients.find(i => i.id === p.ingredientId);
+                          const totalCost = computeProductCost(p, linkedIng, costItems);
+                          const sellPrice = hasDiscount ? p.memberPrice : p.price;
+                          const profit = sellPrice - totalCost;
+                          const manualEdit = manualPriceEditIds.has(p.id);
+                          return (
+                            <tr key={p.id} className={`hover:bg-slate-50/50 transition-colors ${excluded ? 'opacity-50' : ''}`}>
+                              <td className="px-6 py-3">
+                                <button onClick={() => {
+                                  const ids = siteConfig.pricingRules?.excludedProductIds || [];
+                                  const newIds = excluded ? ids.filter(x => x !== p.id) : [...ids, p.id];
+                                  setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, excludedProductIds: newIds}});
+                                }} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all ${excluded ? 'border-slate-200 bg-white' : 'border-emerald-500 bg-emerald-500 text-white'}`}>
+                                  {!excluded && <Check size={12} strokeWidth={3}/>}
+                                </button>
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-8 h-8 bg-slate-50 rounded-lg flex items-center justify-center text-base overflow-hidden flex-shrink-0 border border-slate-100">
+                                    {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-sm">{p.image || '📦'}</span>}
+                                  </div>
+                                  <span className="font-bold text-slate-700">{p.name}</span>
+                                </div>
+                              </td>
+                              <td className="text-right px-4 py-3">
+                                {manualEdit ? (
+                                  <input type="number" min="0" value={p.price} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, price: Number(e.target.value) || 0 } : x))} className="w-20 p-1 bg-amber-50 rounded-lg font-bold text-right border border-amber-200 text-xs" />
+                                ) : (
+                                  <span className="font-bold text-slate-900">${p.price}</span>
+                                )}
+                              </td>
+                              <td className="text-right px-4 py-3">
+                                {manualEdit ? (
+                                  <input type="number" min="0" value={p.memberPrice || ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, memberPrice: Number(e.target.value) || 0 } : x))} className="w-20 p-1 bg-amber-50 rounded-lg font-bold text-right border border-amber-200 text-xs" placeholder="—" />
+                                ) : (
+                                  hasDiscount ? <span className="font-black text-rose-500">${p.memberPrice}</span> : <span className="text-slate-300">—</span>
+                                )}
+                              </td>
+                              <td className="text-right px-4 py-3">
+                                {!excluded && mPct > 0 ? <span className="font-black text-blue-600">${memberP}</span> : <span className="text-slate-300">{excluded ? '排除' : `$${base}`}</span>}
+                              </td>
+                              <td className="text-right px-4 py-3">
+                                {!excluded && (mPct > 0 || wPct > 0) ? <span className="font-black text-purple-600">${walletP}</span> : <span className="text-slate-300">{excluded ? '排除' : `$${base}`}</span>}
+                              </td>
+                              {showCostColumns && (
+                                <td className="text-right px-4 py-3 font-bold text-amber-600">{totalCost > 0 ? `$${totalCost.toFixed(1)}` : <span className="text-slate-300">—</span>}</td>
+                              )}
+                              {showCostColumns && (
+                                <td className={`text-right px-4 py-3 font-black ${totalCost > 0 ? (profit >= 0 ? 'text-emerald-600' : 'text-rose-600') : 'text-slate-300'}`}>
+                                  {totalCost > 0 ? `${profit >= 0 ? '+' : ''}$${profit.toFixed(1)}` : '—'}
+                                </td>
+                              )}
+                              <td className="text-center px-3 py-3">
+                                <button onClick={() => setManualPriceEditIds(prev => { const next = new Set(prev); if (next.has(p.id)) next.delete(p.id); else next.add(p.id); return next; })} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${manualEdit ? 'border-amber-500 bg-amber-500 text-white' : 'border-slate-200 bg-white'}`}>
+                                  {manualEdit && <Edit size={10} strokeWidth={3}/>}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {pricingSubTab === 'wholesale' && (
+              <>
+                {/* ── 批發定價全局參數 ── */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                    <div className="flex items-center gap-2"><div className="p-2.5 bg-orange-50 text-orange-600 rounded-xl"><Percent size={18}/></div><h4 className="font-black text-sm">目標利潤率</h4></div>
+                    <p className="text-[10px] text-slate-400 font-bold">Target Margin Factor — 用來從成本反算批發直銷價 (P1)</p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number" min="0.01" max="1" step="0.01"
+                        value={wsRules.targetMarginFactor}
+                        onChange={e => setSiteConfig({...siteConfig, wholesalePricingRules: {...wsRules, targetMarginFactor: Number(e.target.value) || 0.88}})}
+                        className="flex-1 p-4 bg-slate-50 rounded-2xl font-black text-xl text-center border border-slate-100 focus:ring-2 focus:ring-orange-100"
+                      />
+                    </div>
+                    <p className="text-[9px] text-slate-300 font-bold">0.88 = 12% 毛利、0.85 = 15% 毛利、0.80 = 20% 毛利</p>
+                  </div>
+                  <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                    <div className="flex items-center gap-2"><div className="p-2.5 bg-teal-50 text-teal-600 rounded-xl"><Users size={18}/></div><h4 className="font-black text-sm">業務佣金率</h4></div>
+                    <p className="text-[10px] text-slate-400 font-bold">Sales Commission Factor — 業務員賣出時額外加成 (P3)</p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number" min="0.01" max="1" step="0.01"
+                        value={wsRules.salesCommissionFactor}
+                        onChange={e => setSiteConfig({...siteConfig, wholesalePricingRules: {...wsRules, salesCommissionFactor: Number(e.target.value) || 0.97}})}
+                        className="flex-1 p-4 bg-slate-50 rounded-2xl font-black text-xl text-center border border-slate-100 focus:ring-2 focus:ring-teal-100"
+                      />
+                    </div>
+                    <p className="text-[9px] text-slate-300 font-bold">0.97 = 3% 佣金、0.95 = 5% 佣金、0.90 = 10% 佣金</p>
+                  </div>
+                  <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                    <div className="flex items-center gap-2"><div className="p-2.5 bg-slate-100 text-slate-600 rounded-xl"><Zap size={18}/></div><h4 className="font-black text-sm">定價預覽</h4></div>
+                    <p className="text-[10px] text-slate-400 font-bold">如果 成本/出成率 = $100</p>
+                    <div className="space-y-2 text-xs">
+                      <div className="flex justify-between items-center p-2.5 bg-slate-50 rounded-xl">
+                        <span className="text-slate-500 font-bold">📦 成本</span>
+                        <span className="font-black text-slate-900">${wsExampleCost}</span>
+                      </div>
+                      <div className="flex justify-between items-center p-2.5 bg-orange-50 rounded-xl">
+                        <div>
+                          <span className="text-orange-600 font-bold">P1 直銷價</span>
+                          <span className="text-[9px] text-orange-400 ml-1">÷ {wsRules.targetMarginFactor}</span>
+                        </div>
+                        <span className="font-black text-orange-700">${wsP1.toFixed(1)}</span>
+                      </div>
+                      <div className="flex justify-between items-center p-2.5 bg-teal-50 rounded-xl">
+                        <div>
+                          <span className="text-teal-600 font-bold">P3 業務價</span>
+                          <span className="text-[9px] text-teal-400 ml-1">÷ {wsRules.targetMarginFactor} ÷ {wsRules.salesCommissionFactor}</span>
+                        </div>
+                        <span className="font-black text-teal-700">${wsP3.toFixed(1)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── 批發儲存按鈕 ── */}
+                <div className="flex justify-end">
                   <button onClick={async () => {
                     try {
-                      await supabase.from('site_config').upsert({ id: 'pricing_rules', value: siteConfig.pricingRules });
-                      await supabase.from('site_config').upsert({ id: 'site_branding', value: { logoText: siteConfig.logoText, logoIcon: siteConfig.logoIcon, logoUrl: siteConfig.logoUrl, accentColor: siteConfig.accentColor } });
-                      for (const p of products) { await supabase.from('products').update({ price: p.price, member_price: p.memberPrice }).eq('id', p.id); }
-                      showToast('定價規則已儲存');
+                      await supabase.from('site_config').upsert({ id: 'wholesale_pricing_rules', value: wsRules });
+                      showToast('批發定價規則已儲存');
                     } catch (err: any) {
                       showToast(`儲存失敗：${err.message}`, 'error');
                     }
-                  }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Save size={14}/> 儲存</button>
+                  }} className="px-6 py-3 bg-emerald-600 text-white rounded-2xl text-sm font-black shadow-lg active:scale-95 transition-all flex items-center gap-2"><Save size={16}/> 儲存批發設定</button>
                 </div>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                      <th className="text-left px-6 py-3 w-10">參與</th>
-                      <th className="text-left px-4 py-3">產品</th>
-                      <th className="text-right px-4 py-3">售價</th>
-                      <th className="text-right px-4 py-3">折扣價</th>
-                      <th className="text-right px-4 py-3 text-blue-500">會員價</th>
-                      <th className="text-right px-4 py-3 text-purple-500">錢包價</th>
-                      {showCostColumns && <th className="text-right px-4 py-3 text-amber-500">成本</th>}
-                      {showCostColumns && <th className="text-right px-4 py-3 text-emerald-500">利潤</th>}
-                      <th className="text-center px-3 py-3 w-16">手動</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {products.map(p => {
-                      const excluded = siteConfig.pricingRules?.excludedProductIds?.includes(p.id) || false;
-                      const hasDiscount = p.memberPrice > 0 && p.memberPrice < p.price;
-                      const base = hasDiscount ? p.memberPrice : p.price;
-                      const mPct = siteConfig.pricingRules?.memberDiscountPercent || 0;
-                      const wPct = siteConfig.pricingRules?.walletDiscountPercent || 0;
-                      const memberP = excluded ? base : Math.round(base * (1 - mPct / 100));
-                      const walletP = excluded ? base : Math.round(base * (1 - mPct / 100) * (1 - wPct / 100));
-                      const linkedIng = ingredients.find(i => i.id === p.ingredientId);
-                      const totalCost = computeProductCost(p, linkedIng, costItems);
-                      const sellPrice = hasDiscount ? p.memberPrice : p.price;
-                      const profit = sellPrice - totalCost;
-                      const manualEdit = manualPriceEditIds.has(p.id);
-                      return (
-                        <tr key={p.id} className={`hover:bg-slate-50/50 transition-colors ${excluded ? 'opacity-50' : ''}`}>
-                          <td className="px-6 py-3">
-                            <button onClick={() => {
-                              const ids = siteConfig.pricingRules?.excludedProductIds || [];
-                              const newIds = excluded ? ids.filter(x => x !== p.id) : [...ids, p.id];
-                              setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, excludedProductIds: newIds}});
-                            }} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all ${excluded ? 'border-slate-200 bg-white' : 'border-emerald-500 bg-emerald-500 text-white'}`}>
-                              {!excluded && <Check size={12} strokeWidth={3}/>}
-                            </button>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-2">
-                              <div className="w-8 h-8 bg-slate-50 rounded-lg flex items-center justify-center text-base overflow-hidden flex-shrink-0 border border-slate-100">
-                                {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-sm">{p.image || '📦'}</span>}
-                              </div>
-                              <span className="font-bold text-slate-700">{p.name}</span>
-                            </div>
-                          </td>
-                          <td className="text-right px-4 py-3">
-                            {manualEdit ? (
-                              <input type="number" min="0" value={p.price} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, price: Number(e.target.value) || 0 } : x))} className="w-20 p-1 bg-amber-50 rounded-lg font-bold text-right border border-amber-200 text-xs" />
-                            ) : (
-                              <span className="font-bold text-slate-900">${p.price}</span>
-                            )}
-                          </td>
-                          <td className="text-right px-4 py-3">
-                            {manualEdit ? (
-                              <input type="number" min="0" value={p.memberPrice || ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, memberPrice: Number(e.target.value) || 0 } : x))} className="w-20 p-1 bg-amber-50 rounded-lg font-bold text-right border border-amber-200 text-xs" placeholder="—" />
-                            ) : (
-                              hasDiscount ? <span className="font-black text-rose-500">${p.memberPrice}</span> : <span className="text-slate-300">—</span>
-                            )}
-                          </td>
-                          <td className="text-right px-4 py-3">
-                            {!excluded && mPct > 0 ? <span className="font-black text-blue-600">${memberP}</span> : <span className="text-slate-300">{excluded ? '排除' : `$${base}`}</span>}
-                          </td>
-                          <td className="text-right px-4 py-3">
-                            {!excluded && (mPct > 0 || wPct > 0) ? <span className="font-black text-purple-600">${walletP}</span> : <span className="text-slate-300">{excluded ? '排除' : `$${base}`}</span>}
-                          </td>
-                          {showCostColumns && (
-                            <td className="text-right px-4 py-3 font-bold text-amber-600">{totalCost > 0 ? `$${totalCost.toFixed(1)}` : <span className="text-slate-300">—</span>}</td>
-                          )}
-                          {showCostColumns && (
-                            <td className={`text-right px-4 py-3 font-black ${totalCost > 0 ? (profit >= 0 ? 'text-emerald-600' : 'text-rose-600') : 'text-slate-300'}`}>
-                              {totalCost > 0 ? `${profit >= 0 ? '+' : ''}$${profit.toFixed(1)}` : '—'}
-                            </td>
-                          )}
-                          <td className="text-center px-3 py-3">
-                            <button onClick={() => setManualPriceEditIds(prev => { const next = new Set(prev); if (next.has(p.id)) next.delete(p.id); else next.add(p.id); return next; })} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${manualEdit ? 'border-amber-500 bg-amber-500 text-white' : 'border-slate-200 bg-white'}`}>
-                              {manualEdit && <Edit size={10} strokeWidth={3}/>}
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+
+                {/* ── 批發公式說明卡片 ── */}
+                <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2"><div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl"><ClipboardList size={18}/></div><h4 className="font-black text-sm">計算公式</h4></div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                    <div className="p-4 bg-orange-50 rounded-2xl space-y-1">
+                      <p className="font-black text-orange-700">P1 價（直銷價）</p>
+                      <p className="text-orange-600 font-bold">= 成本 ÷ 出成率 ÷ 目標利潤率</p>
+                      <p className="text-[10px] text-orange-400 font-bold">適用於：公司直接銷售給客戶</p>
+                    </div>
+                    <div className="p-4 bg-teal-50 rounded-2xl space-y-1">
+                      <p className="font-black text-teal-700">P3 價（業務價）</p>
+                      <p className="text-teal-600 font-bold">= P1 價 ÷ 業務佣金率</p>
+                      <p className="text-[10px] text-teal-400 font-bold">適用於：業務員代銷，含佣金空間</p>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         );
+      }
       case 'settings':
         return (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-fade-in pb-20">
