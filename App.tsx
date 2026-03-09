@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
-import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient } from './types';
+import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel } from './types';
 import { useI18n, Language } from './i18n';
 import { supabase } from './supabaseClient';
 import {
@@ -510,6 +510,8 @@ const App: React.FC = () => {
   const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'pricing' | 'costs' | 'ingredients' | 'language' | 'recipes' | 'settings'>('dashboard');
   const [inventorySubTab, setInventorySubTab] = useState<'products' | 'categories' | 'rules'>('products');
   const [pricingSubTab, setPricingSubTab] = useState<'retail' | 'wholesale'>('retail');
+  const [inventoryChannelFilter, setInventoryChannelFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
+  const [costsChannelFilter, setCostsChannelFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
   const [ordersStatusFilter, setOrdersStatusFilter] = useState<'all' | OrderStatus>('all');
   const [isAdminSidebarOpen, setIsAdminSidebarOpen] = useState(false);
 
@@ -2695,11 +2697,16 @@ const App: React.FC = () => {
   const filteredAdminProducts = useMemo(() => {
     return products.filter(p => {
       const q = adminProductSearch.toLowerCase();
-      return p.name.toLowerCase().includes(q) ||
+      const matchSearch = p.name.toLowerCase().includes(q) ||
         p.id.toLowerCase().includes(q) ||
         (p.legacyId?.toLowerCase() ?? '').includes(q);
+      if (!matchSearch) return false;
+      const ch = p.saleChannel || 'both';
+      if (inventoryChannelFilter === 'retail') return ch === 'retail' || ch === 'both';
+      if (inventoryChannelFilter === 'wholesale') return ch === 'wholesale' || ch === 'both';
+      return true;
     });
-  }, [products, adminProductSearch]);
+  }, [products, adminProductSearch, inventoryChannelFilter]);
 
   const filteredStoreProducts = useMemo(() => {
     if (!storeSearch.trim()) return products;
@@ -2751,6 +2758,18 @@ const App: React.FC = () => {
 
       {inventorySubTab === 'products' && (
         <>
+          {/* Channel filter tabs */}
+          <div className="flex gap-2">
+            {([
+              { id: 'all' as const, label: '全部' },
+              { id: 'retail' as const, label: '零售' },
+              { id: 'wholesale' as const, label: '批發' },
+            ]).map(ch => (
+              <button key={ch.id} onClick={() => setInventoryChannelFilter(ch.id)} className={`px-5 py-2 rounded-xl text-xs font-black transition-all ${inventoryChannelFilter === ch.id ? 'bg-slate-900 text-white shadow-lg' : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-50'}`}>
+                {ch.label}
+              </button>
+            ))}
+          </div>
           <div className="flex flex-col md:flex-row gap-4 justify-between">
             <div className="relative flex-1 max-w-md">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
@@ -2802,7 +2821,7 @@ const App: React.FC = () => {
               }} className="px-6 py-3 bg-purple-600 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-sm hover:bg-purple-700 transition-all disabled:opacity-50">
                 {aiDescLoading ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />} AI 批量寫描述
               </button>
-              <button onClick={() => setEditingProduct({ id: 'P-'+Date.now(), name: '', price: 0, memberPrice: 0, stock: 0, categories: [], tags: [], image: '🥩', trackInventory: true, recipes: [], seoTitle: '', seoDescription: '', imageAlt: '' })} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 transition-all">
+              <button onClick={() => setEditingProduct({ id: 'P-'+Date.now(), name: '', price: 0, memberPrice: 0, stock: 0, categories: [], tags: [], image: '🥩', trackInventory: true, recipes: [], seoTitle: '', seoDescription: '', imageAlt: '', saleChannel: 'both' })} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 transition-all">
                 <Plus size={16}/> 上架新產品
               </button>
             </div>
@@ -2833,7 +2852,12 @@ const App: React.FC = () => {
                           {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-xl">{p.image}</span>}
                         </div>
                         <div className="flex flex-col">
-                           <span className="font-bold text-slate-800">{p.name}</span>
+                           <div className="flex items-center gap-1.5">
+                             <span className="font-bold text-slate-800">{p.name}</span>
+                             {(p.saleChannel === 'retail') && <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded text-[8px] font-black">零售</span>}
+                             {(p.saleChannel === 'wholesale') && <span className="px-1.5 py-0.5 bg-orange-50 text-orange-600 rounded text-[8px] font-black">批發</span>}
+                             {(!p.saleChannel || p.saleChannel === 'both') && <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-600 rounded text-[8px] font-black">零售+批發</span>}
+                           </div>
                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">${p.price}{p.memberPrice > 0 && p.memberPrice < p.price ? ` / 折扣: $${p.memberPrice}` : ''}</span>
                         </div>
                       </td>
@@ -3949,9 +3973,29 @@ const App: React.FC = () => {
             )}
           </div>
         );
-      case 'costs':
+      case 'costs': {
+        const costsWsRules = siteConfig.wholesalePricingRules || { targetMarginFactor: 0.88, salesCommissionFactor: 0.97 };
+        const costsFilteredProducts = products.filter(p => {
+          const ch = p.saleChannel || 'both';
+          if (costsChannelFilter === 'retail') return ch === 'retail' || ch === 'both';
+          if (costsChannelFilter === 'wholesale') return ch === 'wholesale' || ch === 'both';
+          return true;
+        });
         return (
           <div className="space-y-8 animate-fade-in pb-20">
+            {/* Channel filter tabs */}
+            <div className="flex gap-2">
+              {([
+                { id: 'all' as const, label: '全部' },
+                { id: 'retail' as const, label: '零售' },
+                { id: 'wholesale' as const, label: '批發' },
+              ]).map(ch => (
+                <button key={ch.id} onClick={() => setCostsChannelFilter(ch.id)} className={`px-5 py-2 rounded-xl text-xs font-black transition-all ${costsChannelFilter === ch.id ? 'bg-slate-900 text-white shadow-lg' : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-50'}`}>
+                  {ch.label}
+                </button>
+              ))}
+            </div>
+
             {/* Cost Items Configuration */}
             <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-6">
               <div className="flex items-center justify-between">
@@ -4006,11 +4050,11 @@ const App: React.FC = () => {
               <div className="p-8 pb-4 flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><ClipboardList size={18}/></div>
-                  <h4 className="font-black text-lg">產品成本一覽</h4>
+                  <h4 className="font-black text-lg">產品成本一覽{costsChannelFilter === 'wholesale' ? '（批發）' : costsChannelFilter === 'retail' ? '（零售）' : ''}</h4>
                 </div>
                 <button onClick={async () => {
                   try {
-                    for (const p of products) {
+                    for (const p of costsFilteredProducts) {
                       await supabase.from('products').update({
                         cost_price: p.costPrice ?? null,
                         cost_item_ids: p.costItemIds ?? null,
@@ -4038,16 +4082,27 @@ const App: React.FC = () => {
                       <th className="text-right px-3 py-3">其他</th>
                       {costItems.map(ci => <th key={ci.id} className="text-center px-2 py-3">{ci.name}<br/><span className="text-slate-300">${ci.defaultPrice}</span></th>)}
                       <th className="text-right px-4 py-3">總成本</th>
-                      <th className="text-right px-4 py-3">售價</th>
-                      <th className="text-right px-4 py-3">利潤</th>
+                      {costsChannelFilter === 'wholesale' ? (
+                        <>
+                          <th className="text-right px-4 py-3 text-orange-500">P1 直銷</th>
+                          <th className="text-right px-4 py-3 text-teal-500">P3 業務</th>
+                        </>
+                      ) : (
+                        <>
+                          <th className="text-right px-4 py-3">售價</th>
+                          <th className="text-right px-4 py-3">利潤</th>
+                        </>
+                      )}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {products.map(p => {
+                    {costsFilteredProducts.map(p => {
                       const linkedIng = ingredients.find(i => i.id === p.ingredientId);
                       const totalCost = computeProductCost(p, linkedIng, costItems);
                       const sellPrice = (p.memberPrice > 0 && p.memberPrice < p.price) ? p.memberPrice : p.price;
                       const profit = sellPrice - totalCost;
+                      const wsP1 = totalCost > 0 ? totalCost / costsWsRules.targetMarginFactor : 0;
+                      const wsP3 = totalCost > 0 ? wsP1 / costsWsRules.salesCommissionFactor : 0;
                       return (
                         <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
                           <td className="px-4 py-3">
@@ -4098,8 +4153,17 @@ const App: React.FC = () => {
                             );
                           })}
                           <td className="text-right px-4 py-3 font-bold text-slate-900">${totalCost.toFixed(1)}</td>
-                          <td className="text-right px-4 py-3 font-bold text-slate-700">${sellPrice}</td>
-                          <td className={`text-right px-4 py-3 font-black ${profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{profit >= 0 ? '+' : ''}${profit.toFixed(1)}</td>
+                          {costsChannelFilter === 'wholesale' ? (
+                            <>
+                              <td className="text-right px-4 py-3 font-black text-orange-600">{totalCost > 0 ? `$${wsP1.toFixed(1)}` : '—'}</td>
+                              <td className="text-right px-4 py-3 font-black text-teal-600">{totalCost > 0 ? `$${wsP3.toFixed(1)}` : '—'}</td>
+                            </>
+                          ) : (
+                            <>
+                              <td className="text-right px-4 py-3 font-bold text-slate-700">${sellPrice}</td>
+                              <td className={`text-right px-4 py-3 font-black ${profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{profit >= 0 ? '+' : ''}${profit.toFixed(1)}</td>
+                            </>
+                          )}
                         </tr>
                       );
                     })}
@@ -4109,6 +4173,7 @@ const App: React.FC = () => {
             </div>
           </div>
         );
+      }
       case 'language':
         return (
           <div className="space-y-8 animate-fade-in pb-20">
@@ -4897,6 +4962,14 @@ const App: React.FC = () => {
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">折扣價</label>
                   <input type="number" min="0" value={editingProduct.memberPrice || ''} onChange={e => setEditingProduct({ ...editingProduct, memberPrice: Number(e.target.value) || 0 })} placeholder="留空 = 不設折扣" className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
                   <p className="text-[9px] text-slate-400 font-bold leading-relaxed">留空或填 0 = 不設折扣，以售價出售。<br/>例如售價 $100，填 <span className="text-blue-600">90</span> = 以 $90 出售（減 $10）。<br/>折扣價為所有客人可見的特價，會員/錢包折扣會在此基礎上再計算。</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">銷售渠道</label>
+                  <select value={editingProduct.saleChannel || 'both'} onChange={e => setEditingProduct({ ...editingProduct, saleChannel: e.target.value as SaleChannel })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold">
+                    <option value="both">零售 + 批發</option>
+                    <option value="retail">僅零售</option>
+                    <option value="wholesale">僅批發</option>
+                  </select>
                 </div>
                 {/* ── Cost Section ── */}
                 <div className="space-y-3 md:col-span-2 p-4 bg-gradient-to-r from-amber-50/60 to-orange-50/60 rounded-2xl border border-amber-100/60">

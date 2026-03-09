@@ -77,6 +77,8 @@ export interface SupabaseRecipeProductLinkRow {
   product_id: string;
 }
 
+export type SaleChannel = 'retail' | 'wholesale' | 'both';
+
 export interface BulkDiscount {
   threshold: number;
   type: 'fixed' | 'percent'; // 'fixed' means new unit price, 'percent' means % off unit price
@@ -146,6 +148,7 @@ export interface Product {
   processingCost?: number;  // 加工費
   packagingCost?: number;   // 包裝費 (Skin Pack, 真空袋, etc.)
   miscCost?: number;        // 稅費 / 其他
+  saleChannel?: SaleChannel; // 銷售渠道：retail / wholesale / both
 }
 
 export interface CartItem extends Product {
@@ -262,6 +265,7 @@ export interface SupabaseProductRow {
   packaging_cost?: number | null;
   misc_cost?: number | null;
   legacy_id?: string | null;
+  sale_channel?: string | null;
 }
 
 /** Supabase public.categories table – column names must match (snake_case). */

@@ -4,6 +4,7 @@ import {
   User,
   Order,
   OrderStatus,
+  SaleChannel,
   SupabaseProductRow,
   SupabaseCategoryRow,
   SupabaseMemberRow,
@@ -46,6 +47,7 @@ export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
   packagingCost: row.packaging_cost ?? undefined,
   miscCost: row.misc_cost ?? undefined,
   legacyId: row.legacy_id ?? undefined,
+  saleChannel: (['retail', 'wholesale', 'both'].includes(row.sale_channel ?? '') ? row.sale_channel as SaleChannel : 'both'),
 });
 
 export const mapProductToRow = (product: Product): SupabaseProductRow => ({
@@ -77,6 +79,7 @@ export const mapProductToRow = (product: Product): SupabaseProductRow => ({
   packaging_cost: product.packagingCost ?? 0,
   misc_cost: product.miscCost ?? 0,
   legacy_id: product.legacyId ?? null,
+  sale_channel: product.saleChannel ?? 'both',
 });
 
 export const mapIngredientRowToIngredient = (row: SupabaseIngredientRow): Ingredient => ({
