@@ -2608,13 +2608,14 @@ const App: React.FC = () => {
   };
 
   const downloadCSVTemplate = () => {
-    const headers = ['id', 'name', 'price', 'memberPrice', 'stock', 'categories', 'tags', 'trackInventory', 'description', 'origin', 'weight', 'image', 'imageAlt', 'seoTitle', 'seoDescription'];
-    const sample1 = ['', '澳洲M5和牛肉眼', '350', '298', '10', 'beef|wagyu', '急凍|牛扒', 'true', '頂級和牛肉眼扒', '澳洲', '300g', '', '澳洲M5和牛肉眼 急凍真空包裝', '澳洲M5和牛肉眼 | 香港急凍肉網購', '新鮮急凍澳洲M5和牛肉眼扒，順豐冷鏈配送到家'];
-    const sample2 = ['', '安格斯牛扒', '120', '', '20', 'beef', '牛扒|安格斯', 'true', '優質安格斯牛扒', '美國', '250g', '', '', '', ''];
+    const headers = ['id', 'legacyId', 'name', 'price', 'memberPrice', 'stock', 'categories', 'tags', 'trackInventory', 'description', 'origin', 'weight', 'image', 'imageAlt', 'seoTitle', 'seoDescription'];
+    const sample1 = ['', 'OLD-101', '澳洲M5和牛肉眼', '350', '298', '10', 'beef|wagyu', '急凍|牛扒', 'true', '頂級和牛肉眼扒', '澳洲', '300g', '', '澳洲M5和牛肉眼 急凍真空包裝', '澳洲M5和牛肉眼 | 香港急凍肉網購', '新鮮急凍澳洲M5和牛肉眼扒，順豐冷鏈配送到家'];
+    const sample2 = ['', 'OLD-102', '安格斯牛扒', '120', '', '20', 'beef', '牛扒|安格斯', 'true', '優質安格斯牛扒', '美國', '250g', '', '', '', ''];
     const instructions = [
       '# 使用說明：',
       '# 1. id 留空則自動生成（推薦），填寫則用你自訂的 ID',
-      '# 2. categories 和 tags 用 | (直線) 分隔多個值，例如: beef|wagyu',
+      '# 2. legacyId 為舊系統 ID，選填，方便對照舊系統',
+      '# 3. categories 和 tags 用 | (直線) 分隔多個值，例如: beef|wagyu',
       '# 3. memberPrice 留空或填 0 = 不設折扣',
       '# 4. trackInventory 填 true 或 false',
       '# 5. image 可填圖片 URL，留空則預設為 emoji',
@@ -2653,6 +2654,7 @@ const App: React.FC = () => {
             else if (numericFields.has(h)) { if (val) p[h] = Number(val) || 0; }
             else if (h === 'trackInventory') p[h] = val ? val.toLowerCase() === 'true' : true;
             else if (h === 'costItemIds' || h === 'cost_item_ids') p.costItemIds = val ? val.split('|').map((v: string) => v.trim()).filter(Boolean) : [];
+            else if (h === 'legacyId' || h === 'legacy_id') { if (val) p.legacyId = val; }
             else if (val) p[h] = val;
           });
           if (!p.id || p.id === '') {
@@ -2685,10 +2687,12 @@ const App: React.FC = () => {
   };
 
   const filteredAdminProducts = useMemo(() => {
-    return products.filter(p => 
-      p.name.toLowerCase().includes(adminProductSearch.toLowerCase()) ||
-      p.id.toLowerCase().includes(adminProductSearch.toLowerCase())
-    );
+    return products.filter(p => {
+      const q = adminProductSearch.toLowerCase();
+      return p.name.toLowerCase().includes(q) ||
+        p.id.toLowerCase().includes(q) ||
+        (p.legacyId?.toLowerCase() ?? '').includes(q);
+    });
   }, [products, adminProductSearch]);
 
   const filteredStoreProducts = useMemo(() => {
@@ -2802,6 +2806,7 @@ const App: React.FC = () => {
                 <thead className="bg-slate-50 border-b border-slate-100">
                   <tr>
                     <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">產品</th>
+                    <th className="px-4 py-4 font-bold text-slate-400 uppercase text-[10px]">ID (舊)</th>
                     <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">分類</th>
                     <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">庫存</th>
                     <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">操作</th>
@@ -2810,7 +2815,7 @@ const App: React.FC = () => {
                 <tbody className="divide-y divide-slate-50">
                   {filteredAdminProducts.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="px-6 py-10 text-center text-slate-400 font-bold">
+                      <td colSpan={5} className="px-6 py-10 text-center text-slate-400 font-bold">
                         尚未有產品
                       </td>
                     </tr>
@@ -2825,6 +2830,9 @@ const App: React.FC = () => {
                            <span className="font-bold text-slate-800">{p.name}</span>
                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">${p.price}{p.memberPrice > 0 && p.memberPrice < p.price ? ` / 折扣: $${p.memberPrice}` : ''}</span>
                         </div>
+                      </td>
+                      <td className="px-4 py-4">
+                        {p.legacyId ? <span className="px-2 py-0.5 bg-amber-50 text-amber-700 rounded-md text-[9px] font-black font-mono">{p.legacyId}</span> : <span className="text-slate-200 text-[10px]">—</span>}
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex flex-wrap gap-1">
@@ -4757,6 +4765,10 @@ const App: React.FC = () => {
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">商品 ID</label>
                   <input value={editingProduct.id} onChange={e => setEditingProduct({ ...editingProduct, id: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">ID (舊系統)</label>
+                  <input value={editingProduct.legacyId || ''} onChange={e => setEditingProduct({ ...editingProduct, legacyId: e.target.value || undefined })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold font-mono" placeholder="選填，舊系統產品編號" />
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">價格</label>

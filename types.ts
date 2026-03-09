@@ -119,6 +119,7 @@ export interface SupabaseIngredientRow {
 
 export interface Product {
   id: string;
+  legacyId?: string;        // 舊系統 ID（方便對照）
   name: string;
   nameEn?: string;
   categories: string[];
@@ -260,6 +261,7 @@ export interface SupabaseProductRow {
   processing_cost?: number | null;
   packaging_cost?: number | null;
   misc_cost?: number | null;
+  legacy_id?: string | null;
 }
 
 /** Supabase public.categories table – column names must match (snake_case). */
