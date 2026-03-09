@@ -12,7 +12,9 @@ import {
   SupabaseSlideshowRow,
   StandaloneRecipe,
   SupabaseRecipeRow,
-  RecipeCategory
+  RecipeCategory,
+  Ingredient,
+  SupabaseIngredientRow
 } from './types';
 
 export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
@@ -38,6 +40,11 @@ export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
   descriptionEn: row.description_en ?? undefined,
   costPrice: row.cost_price ?? undefined,
   costItemIds: row.cost_item_ids ?? undefined,
+  ingredientId: row.ingredient_id ?? undefined,
+  yieldRate: row.yield_rate ?? undefined,
+  processingCost: row.processing_cost ?? undefined,
+  packagingCost: row.packaging_cost ?? undefined,
+  miscCost: row.misc_cost ?? undefined,
 });
 
 export const mapProductToRow = (product: Product): SupabaseProductRow => ({
@@ -63,7 +70,64 @@ export const mapProductToRow = (product: Product): SupabaseProductRow => ({
   description_en: product.descriptionEn ?? null,
   cost_price: product.costPrice ?? null,
   cost_item_ids: product.costItemIds ?? null,
+  ingredient_id: product.ingredientId ?? null,
+  yield_rate: product.yieldRate ?? null,
+  processing_cost: product.processingCost ?? null,
+  packaging_cost: product.packagingCost ?? null,
+  misc_cost: product.miscCost ?? null,
 });
+
+export const mapIngredientRowToIngredient = (row: SupabaseIngredientRow): Ingredient => ({
+  id: row.id,
+  name: row.name,
+  nameEn: row.name_en ?? undefined,
+  baseCostPerLb: row.base_cost_per_lb,
+  supplier: row.supplier ?? undefined,
+  marketBenchmark: row.market_benchmark ?? undefined,
+  unit: row.unit || 'lb',
+  notes: row.notes ?? undefined,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+export const mapIngredientToRow = (ing: Ingredient): SupabaseIngredientRow => ({
+  id: ing.id,
+  name: ing.name,
+  name_en: ing.nameEn ?? null,
+  base_cost_per_lb: ing.baseCostPerLb,
+  supplier: ing.supplier ?? null,
+  market_benchmark: ing.marketBenchmark ?? null,
+  unit: ing.unit || 'lb',
+  notes: ing.notes ?? null,
+});
+
+/** Compute the final cost of a product using the ingredient -> product formula.
+ *  Formula: (ingredient.baseCostPerLb / yieldRate) + processingCost + packagingCost + miscCost + extraCostItems
+ *  Falls back to legacy costPrice if no ingredient is linked. */
+export const computeProductCost = (
+  product: Product,
+  ingredient: Ingredient | undefined,
+  costItems: { id: string; defaultPrice: number }[]
+): number => {
+  let baseMaterialCost = product.costPrice || 0;
+
+  if (ingredient && product.yieldRate && product.yieldRate > 0) {
+    baseMaterialCost = ingredient.baseCostPerLb / product.yieldRate;
+  } else if (ingredient) {
+    baseMaterialCost = ingredient.baseCostPerLb;
+  }
+
+  const processing = product.processingCost || 0;
+  const packaging = product.packagingCost || 0;
+  const misc = product.miscCost || 0;
+
+  const extraCost = (product.costItemIds || []).reduce(
+    (sum, cid) => sum + (costItems.find(ci => ci.id === cid)?.defaultPrice || 0),
+    0
+  );
+
+  return baseMaterialCost + processing + packaging + misc + extraCost;
+};
 
 export const mapCategoryRowToCategory = (row: SupabaseCategoryRow): Category => ({
   id: row.id,

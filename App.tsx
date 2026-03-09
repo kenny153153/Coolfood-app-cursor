@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
-import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory } from './types';
+import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient } from './types';
 import { useI18n, Language } from './i18n';
 import { supabase } from './supabaseClient';
 import {
@@ -31,7 +31,10 @@ import {
   normalizeOrderStatus,
   mapRecipeRowToRecipe,
   mapRecipeToRow,
-  mapRecipeCategoryRow
+  mapRecipeCategoryRow,
+  mapIngredientRowToIngredient,
+  mapIngredientToRow,
+  computeProductCost
 } from './supabaseMappers';
 import { hashPassword, verifyPassword } from './authHelpers';
 import { uploadImage, uploadImages, deleteImage, isMediaUrl } from './imageUpload';
@@ -504,7 +507,7 @@ const App: React.FC = () => {
     () => (typeof window !== 'undefined' && (window.location.pathname === '/success' || window.location.hash === '#success') ? 'success' : 'store')
   );
   const [isRedirectingToPayment, setIsRedirectingToPayment] = useState(false);
-  const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'pricing' | 'costs' | 'language' | 'recipes' | 'settings'>('dashboard');
+  const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'pricing' | 'costs' | 'ingredients' | 'language' | 'recipes' | 'settings'>('dashboard');
   const [inventorySubTab, setInventorySubTab] = useState<'products' | 'categories' | 'rules'>('products');
   const [ordersStatusFilter, setOrdersStatusFilter] = useState<'all' | OrderStatus>('all');
   const [isAdminSidebarOpen, setIsAdminSidebarOpen] = useState(false);
@@ -655,6 +658,10 @@ const App: React.FC = () => {
   const [costItems, setCostItems] = useState<CostItem[]>([]);
   const [showCostColumns, setShowCostColumns] = useState(false);
   const [manualPriceEditIds, setManualPriceEditIds] = useState<Set<string>>(new Set());
+
+  // Ingredients (原材料) management
+  const [ingredients, setIngredients] = useState<Ingredient[]>([]);
+  const [editingIngredient, setEditingIngredient] = useState<Ingredient | null>(null);
 
   // AI State
   const [aiAnalysis, setAiAnalysis] = useState<string>('');
@@ -949,6 +956,16 @@ const App: React.FC = () => {
         }
       } catch {
         console.warn('[recipes] Failed to load');
+      }
+
+      // ── 載入原材料 (Ingredients) ──
+      try {
+        const { data: ingRows, error: ingErr } = await supabase.from('ingredients').select('*').order('name');
+        if (!ingErr && ingRows) {
+          setIngredients(ingRows.map(mapIngredientRowToIngredient));
+        }
+      } catch {
+        console.warn('[ingredients] Failed to load');
       }
 
       // ── 載入 site_config（定價規則、品牌設定、成本項目）──
@@ -3249,9 +3266,8 @@ const App: React.FC = () => {
                       const wPct = siteConfig.pricingRules?.walletDiscountPercent || 0;
                       const memberP = excluded ? base : Math.round(base * (1 - mPct / 100));
                       const walletP = excluded ? base : Math.round(base * (1 - mPct / 100) * (1 - wPct / 100));
-                      const meatCost = p.costPrice || 0;
-                      const extraCost = (p.costItemIds || []).reduce((sum, cid) => sum + (costItems.find(ci => ci.id === cid)?.defaultPrice || 0), 0);
-                      const totalCost = meatCost + extraCost;
+                      const linkedIng = ingredients.find(i => i.id === p.ingredientId);
+                      const totalCost = computeProductCost(p, linkedIng, costItems);
                       const sellPrice = hasDiscount ? p.memberPrice : p.price;
                       const profit = sellPrice - totalCost;
                       const manualEdit = manualPriceEditIds.has(p.id);
@@ -3448,6 +3464,149 @@ const App: React.FC = () => {
              </div>
           </div>
         );
+      case 'ingredients':
+        return (
+          <div className="space-y-8 animate-fade-in pb-20">
+            {/* Ingredients Management */}
+            <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-6">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><Layers size={18}/></div>
+                  <div>
+                    <h4 className="font-black text-lg">原材料一覽</h4>
+                    <p className="text-[10px] text-slate-400 font-bold">管理所有原材料的買入成本、供應商及市場參考價</p>
+                  </div>
+                </div>
+                <button onClick={() => setEditingIngredient({ id: `ing-${Date.now()}`, name: '', baseCostPerLb: 0, unit: 'lb' })} className="px-4 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Plus size={14}/> 新增原材料</button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                      <th className="text-left px-4 py-3">名稱</th>
+                      <th className="text-right px-4 py-3">買入成本</th>
+                      <th className="text-center px-4 py-3">單位</th>
+                      <th className="text-left px-4 py-3">供應商</th>
+                      <th className="text-right px-4 py-3">市場參考價</th>
+                      <th className="text-center px-4 py-3">關聯產品</th>
+                      <th className="text-right px-4 py-3 w-24">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {ingredients.map(ing => {
+                      const linkedCount = products.filter(p => p.ingredientId === ing.id).length;
+                      return (
+                        <tr key={ing.id} className="hover:bg-slate-50/50 transition-colors">
+                          <td className="px-4 py-3">
+                            <div>
+                              <span className="font-bold text-slate-700">{ing.name}</span>
+                              {ing.nameEn && <span className="text-slate-400 text-[10px] ml-2">{ing.nameEn}</span>}
+                            </div>
+                          </td>
+                          <td className="text-right px-4 py-3 font-black text-blue-600">${ing.baseCostPerLb.toFixed(2)}</td>
+                          <td className="text-center px-4 py-3 text-slate-500">{ing.unit}</td>
+                          <td className="px-4 py-3 text-slate-500">{ing.supplier || '—'}</td>
+                          <td className="text-right px-4 py-3">{ing.marketBenchmark != null ? <span className="text-emerald-600 font-bold">${ing.marketBenchmark.toFixed(2)}</span> : <span className="text-slate-300">—</span>}</td>
+                          <td className="text-center px-4 py-3"><span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full text-[10px] font-bold">{linkedCount} 個產品</span></td>
+                          <td className="text-right px-4 py-3">
+                            <div className="flex items-center justify-end gap-1">
+                              <button onClick={() => setEditingIngredient({ ...ing })} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded-lg transition-colors"><Edit size={14}/></button>
+                              <button onClick={async () => {
+                                if (!confirm(`確定刪除「${ing.name}」？關聯產品將取消關聯。`)) return;
+                                const { error } = await supabase.from('ingredients').delete().eq('id', ing.id);
+                                if (error) { showToast(`刪除失敗：${error.message}`, 'error'); return; }
+                                setIngredients(prev => prev.filter(x => x.id !== ing.id));
+                                setProducts(prev => prev.map(p => p.ingredientId === ing.id ? { ...p, ingredientId: undefined } : p));
+                                showToast('已刪除原材料');
+                              }} className="p-1.5 text-rose-400 hover:bg-rose-50 rounded-lg transition-colors"><Trash2 size={14}/></button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {ingredients.length === 0 && (
+                      <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-300 font-bold text-sm">尚無原材料，點擊右上角「新增原材料」</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Editing Ingredient Modal */}
+            {editingIngredient && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm animate-fade-in" onClick={() => setEditingIngredient(null)}>
+                <div className="bg-white rounded-[2.5rem] w-full max-w-lg mx-4 shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+                  <div className="p-8 border-b border-slate-100 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><Layers size={18}/></div>
+                      <h3 className="font-black text-lg">{ingredients.find(i => i.id === editingIngredient.id) ? '編輯原材料' : '新增原材料'}</h3>
+                    </div>
+                    <button onClick={() => setEditingIngredient(null)} className="p-2 hover:bg-slate-100 rounded-xl transition-colors"><X size={18}/></button>
+                  </div>
+                  <div className="p-8 space-y-5 max-h-[60vh] overflow-y-auto">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">名稱 *</label>
+                        <input value={editingIngredient.name} onChange={e => setEditingIngredient({ ...editingIngredient, name: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100" placeholder="例：美國 Prime 肋眼" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">英文名稱</label>
+                        <input value={editingIngredient.nameEn || ''} onChange={e => setEditingIngredient({ ...editingIngredient, nameEn: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100" placeholder="US Prime Ribeye" />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">買入成本 *</label>
+                        <input type="number" min="0" step="0.01" value={editingIngredient.baseCostPerLb} onChange={e => setEditingIngredient({ ...editingIngredient, baseCostPerLb: Number(e.target.value) || 0 })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">單位</label>
+                        <select value={editingIngredient.unit} onChange={e => setEditingIngredient({ ...editingIngredient, unit: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100">
+                          <option value="lb">磅 (lb)</option>
+                          <option value="kg">公斤 (kg)</option>
+                          <option value="pc">件 (pc)</option>
+                          <option value="box">箱 (box)</option>
+                          <option value="pack">包 (pack)</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">市場參考價</label>
+                        <input type="number" min="0" step="0.01" value={editingIngredient.marketBenchmark ?? ''} onChange={e => setEditingIngredient({ ...editingIngredient, marketBenchmark: e.target.value ? Number(e.target.value) : undefined })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100" placeholder="—" />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">供應商</label>
+                      <input value={editingIngredient.supplier || ''} onChange={e => setEditingIngredient({ ...editingIngredient, supplier: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100" placeholder="例：ABC Trading Co." />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">備註</label>
+                      <textarea value={editingIngredient.notes || ''} onChange={e => setEditingIngredient({ ...editingIngredient, notes: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100 resize-none h-20" placeholder="任何額外備註..." />
+                    </div>
+                  </div>
+                  <div className="p-6 border-t border-slate-100">
+                    <button onClick={async () => {
+                      if (!editingIngredient.name.trim()) { showToast('請填寫原材料名稱', 'error'); return; }
+                      try {
+                        const row = mapIngredientToRow(editingIngredient);
+                        const { error } = await supabase.from('ingredients').upsert(row);
+                        if (error) throw error;
+                        setIngredients(prev => {
+                          const exists = prev.find(x => x.id === editingIngredient.id);
+                          if (exists) return prev.map(x => x.id === editingIngredient.id ? editingIngredient : x);
+                          return [...prev, editingIngredient];
+                        });
+                        setEditingIngredient(null);
+                        showToast('原材料已儲存');
+                      } catch (err: any) {
+                        showToast(`儲存失敗：${err.message}`, 'error');
+                      }
+                    }} className="w-full py-3.5 bg-blue-600 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2"><Save size={16}/> 儲存原材料</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
       case 'costs':
         return (
           <div className="space-y-8 animate-fade-in pb-20">
@@ -3509,7 +3668,17 @@ const App: React.FC = () => {
                 </div>
                 <button onClick={async () => {
                   try {
-                    for (const p of products) { await supabase.from('products').update({ cost_price: p.costPrice ?? null, cost_item_ids: p.costItemIds ?? null }).eq('id', p.id); }
+                    for (const p of products) {
+                      await supabase.from('products').update({
+                        cost_price: p.costPrice ?? null,
+                        cost_item_ids: p.costItemIds ?? null,
+                        ingredient_id: p.ingredientId ?? null,
+                        yield_rate: p.yieldRate ?? null,
+                        processing_cost: p.processingCost ?? null,
+                        packaging_cost: p.packagingCost ?? null,
+                        misc_cost: p.miscCost ?? null,
+                      }).eq('id', p.id);
+                    }
                     showToast('所有產品成本已儲存');
                   } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
                 }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Save size={14}/> 全部儲存</button>
@@ -3519,7 +3688,12 @@ const App: React.FC = () => {
                   <thead>
                     <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
                       <th className="text-left px-4 py-3">產品</th>
-                      <th className="text-right px-4 py-3">肉品成本</th>
+                      <th className="text-left px-3 py-3">原材料</th>
+                      <th className="text-right px-3 py-3">原料成本</th>
+                      <th className="text-right px-3 py-3">出成率</th>
+                      <th className="text-right px-3 py-3">加工費</th>
+                      <th className="text-right px-3 py-3">包裝費</th>
+                      <th className="text-right px-3 py-3">其他</th>
                       {costItems.map(ci => <th key={ci.id} className="text-center px-2 py-3">{ci.name}<br/><span className="text-slate-300">${ci.defaultPrice}</span></th>)}
                       <th className="text-right px-4 py-3">總成本</th>
                       <th className="text-right px-4 py-3">售價</th>
@@ -3528,9 +3702,8 @@ const App: React.FC = () => {
                   </thead>
                   <tbody className="divide-y divide-slate-50">
                     {products.map(p => {
-                      const meatCost = p.costPrice || 0;
-                      const extraCost = (p.costItemIds || []).reduce((sum, cid) => sum + (costItems.find(ci => ci.id === cid)?.defaultPrice || 0), 0);
-                      const totalCost = meatCost + extraCost;
+                      const linkedIng = ingredients.find(i => i.id === p.ingredientId);
+                      const totalCost = computeProductCost(p, linkedIng, costItems);
                       const sellPrice = (p.memberPrice > 0 && p.memberPrice < p.price) ? p.memberPrice : p.price;
                       const profit = sellPrice - totalCost;
                       return (
@@ -3543,8 +3716,30 @@ const App: React.FC = () => {
                               <span className="font-bold text-slate-700 truncate max-w-[120px]">{p.name}</span>
                             </div>
                           </td>
-                          <td className="px-4 py-3 text-right">
-                            <input type="number" min="0" step="0.5" value={p.costPrice ?? ''} onChange={e => { const val = Number(e.target.value) || 0; setProducts(prev => prev.map(x => x.id === p.id ? { ...x, costPrice: val } : x)); }} placeholder="0" className="w-20 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
+                          <td className="px-3 py-3">
+                            <select value={p.ingredientId || ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, ingredientId: e.target.value || undefined } : x))} className="w-28 p-1.5 bg-slate-50 rounded-lg font-bold border border-slate-100 text-xs">
+                              <option value="">（手動）</option>
+                              {ingredients.map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}
+                            </select>
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            {linkedIng ? (
+                              <span className="font-bold text-blue-600">${linkedIng.baseCostPerLb.toFixed(1)}/{linkedIng.unit}</span>
+                            ) : (
+                              <input type="number" min="0" step="0.5" value={p.costPrice ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, costPrice: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-16 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
+                            )}
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            <input type="number" min="0" max="1" step="0.01" value={p.yieldRate ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, yieldRate: Number(e.target.value) || undefined } : x))} placeholder="—" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            <input type="number" min="0" step="0.5" value={p.processingCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, processingCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            <input type="number" min="0" step="0.5" value={p.packagingCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, packagingCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            <input type="number" min="0" step="0.5" value={p.miscCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, miscCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
                           </td>
                           {costItems.map(ci => {
                             const checked = (p.costItemIds || []).includes(ci.id);
@@ -4363,16 +4558,45 @@ const App: React.FC = () => {
                     <Coins size={14} className="text-amber-600" />
                     <label className="text-[10px] font-bold text-amber-700 uppercase tracking-widest">成本設定</label>
                   </div>
+                  {/* Ingredient Link */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-slate-500 ml-1">肉品成本 ($)</label>
-                      <input type="number" min="0" step="0.5" value={editingProduct.costPrice ?? ''} onChange={e => setEditingProduct({ ...editingProduct, costPrice: Number(e.target.value) || 0 })} placeholder="0" className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" />
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">關聯原材料</label>
+                      <select value={editingProduct.ingredientId || ''} onChange={e => setEditingProduct({ ...editingProduct, ingredientId: e.target.value || undefined })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100">
+                        <option value="">無（手動輸入成本）</option>
+                        {ingredients.map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}
+                      </select>
                     </div>
                     <div className="space-y-1">
                       <label className="text-[9px] font-bold text-slate-500 ml-1">總成本</label>
                       <div className="p-2.5 bg-white rounded-xl font-black text-xs border border-slate-100 text-amber-700">
-                        ${((editingProduct.costPrice || 0) + (editingProduct.costItemIds || []).reduce((s, cid) => s + (costItems.find(ci => ci.id === cid)?.defaultPrice || 0), 0)).toFixed(1)}
+                        ${computeProductCost(editingProduct, ingredients.find(i => i.id === editingProduct.ingredientId), costItems).toFixed(1)}
                       </div>
+                    </div>
+                  </div>
+                  {/* Manual cost (when no ingredient linked) / Yield + Processing + Packaging + Misc */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {!editingProduct.ingredientId && (
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold text-slate-500 ml-1">原料成本 ($)</label>
+                        <input type="number" min="0" step="0.5" value={editingProduct.costPrice ?? ''} onChange={e => setEditingProduct({ ...editingProduct, costPrice: Number(e.target.value) || 0 })} placeholder="0" className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" />
+                      </div>
+                    )}
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">出成率 (0~1)</label>
+                      <input type="number" min="0" max="1" step="0.01" value={editingProduct.yieldRate ?? ''} onChange={e => setEditingProduct({ ...editingProduct, yieldRate: e.target.value ? Number(e.target.value) : undefined })} placeholder="例: 0.7" className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">加工費 ($)</label>
+                      <input type="number" min="0" step="0.5" value={editingProduct.processingCost ?? ''} onChange={e => setEditingProduct({ ...editingProduct, processingCost: Number(e.target.value) || 0 })} placeholder="0" className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">包裝費 ($)</label>
+                      <input type="number" min="0" step="0.5" value={editingProduct.packagingCost ?? ''} onChange={e => setEditingProduct({ ...editingProduct, packagingCost: Number(e.target.value) || 0 })} placeholder="0" className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">其他費用 ($)</label>
+                      <input type="number" min="0" step="0.5" value={editingProduct.miscCost ?? ''} onChange={e => setEditingProduct({ ...editingProduct, miscCost: Number(e.target.value) || 0 })} placeholder="0" className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" />
                     </div>
                   </div>
                   {costItems.length > 0 && (
@@ -5794,6 +6018,7 @@ const App: React.FC = () => {
                  { id: 'slideshow', label: t.admin.slideshow, icon: <ImageIcon size={20}/> },
                  { id: 'pricing', label: '價錢設定', icon: <DollarSign size={20}/> },
                  { id: 'recipes', label: t.recipes.recipes, icon: <BookOpen size={20}/> },
+                 { id: 'ingredients', label: '原材料', icon: <Layers size={20}/> },
                  { id: 'costs', label: '成本管理', icon: <Coins size={20}/> },
                  { id: 'language', label: '語言翻譯', icon: <Globe size={20}/> },
                  { id: 'settings', label: t.admin.settings, icon: <Settings size={20}/> }
@@ -5813,7 +6038,7 @@ const App: React.FC = () => {
             </button>
           </aside>
           <main className="flex-1 min-w-0 p-6 md:p-10 overflow-y-auto bg-[#f8fafc] hide-scrollbar">
-            <header className="flex justify-between items-center mb-10"><div><h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: t.admin.dashboard, inventory: t.admin.inventory, orders: t.admin.orders, members: t.admin.members, slideshow: t.admin.slideshow, pricing: '價錢設定', costs: '成本管理', language: '語言翻譯', recipes: t.recipes.recipes, settings: t.admin.settings } as Record<string, string>)[adminModule] || adminModule}</h1><p className="text-slate-400 font-bold text-sm">{t.admin.realtimeAdmin}</p></div><div className="flex items-center gap-4"><button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button><button onClick={() => showToast('帳戶功能開發中', 'error')} className="w-12 h-12 bg-slate-200 rounded-2xl border border-slate-100"></button></div></header>
+            <header className="flex justify-between items-center mb-10"><div><h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: t.admin.dashboard, inventory: t.admin.inventory, orders: t.admin.orders, members: t.admin.members, slideshow: t.admin.slideshow, pricing: '價錢設定', ingredients: '原材料管理', costs: '成本管理', language: '語言翻譯', recipes: t.recipes.recipes, settings: t.admin.settings } as Record<string, string>)[adminModule] || adminModule}</h1><p className="text-slate-400 font-bold text-sm">{t.admin.realtimeAdmin}</p></div><div className="flex items-center gap-4"><button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button><button onClick={() => showToast('帳戶功能開發中', 'error')} className="w-12 h-12 bg-slate-200 rounded-2xl border border-slate-100"></button></div></header>
             {renderAdminModuleContent()}
           </main>
         </>

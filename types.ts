@@ -89,17 +89,45 @@ export interface CostItem {
   defaultPrice: number;
 }
 
+/** Raw material / ingredient sourced from suppliers. */
+export interface Ingredient {
+  id: string;
+  name: string;
+  nameEn?: string;
+  baseCostPerLb: number;    // 買入成本（每磅/每單位）
+  supplier?: string;
+  marketBenchmark?: number; // 市場參考價
+  unit: string;             // 'lb' | 'kg' | 'pc' etc.
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** Supabase public.ingredients row (snake_case). */
+export interface SupabaseIngredientRow {
+  id: string;
+  name: string;
+  name_en?: string | null;
+  base_cost_per_lb: number;
+  supplier?: string | null;
+  market_benchmark?: number | null;
+  unit: string;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface Product {
   id: string;
   name: string;
   nameEn?: string;
-  categories: string[]; // Changed from string to string[]
+  categories: string[];
   price: number;
   memberPrice: number;
   stock: number;
-  trackInventory: boolean; // Added for optional stock tracking
+  trackInventory: boolean;
   tags: string[];
-  image: string; // Base64 or URL
+  image: string;
   description?: string;
   descriptionEn?: string;
   gallery?: string[];
@@ -107,11 +135,16 @@ export interface Product {
   bulkDiscount?: BulkDiscount;
   origin?: string;
   weight?: string;
-  seoTitle?: string;        // SEO: custom page title for search engines
-  seoDescription?: string;  // SEO: meta description for search engines
-  imageAlt?: string;        // SEO: alt text for the main product image
-  costPrice?: number;       // Raw material / meat cost per unit
+  seoTitle?: string;
+  seoDescription?: string;
+  imageAlt?: string;
+  costPrice?: number;       // Legacy / manual raw material cost per unit
   costItemIds?: string[];   // IDs of applicable CostItem entries (packaging, plates, etc.)
+  ingredientId?: string;    // FK → ingredients.id (原材料關聯)
+  yieldRate?: number;       // 出成率 0.0-1.0 (e.g. 0.7 = 70%)
+  processingCost?: number;  // 加工費
+  packagingCost?: number;   // 包裝費 (Skin Pack, 真空袋, etc.)
+  miscCost?: number;        // 稅費 / 其他
 }
 
 export interface CartItem extends Product {
@@ -222,6 +255,11 @@ export interface SupabaseProductRow {
   description_en?: string | null;
   cost_price?: number | null;
   cost_item_ids?: string[] | null;
+  ingredient_id?: string | null;
+  yield_rate?: number | null;
+  processing_cost?: number | null;
+  packaging_cost?: number | null;
+  misc_cost?: number | null;
 }
 
 /** Supabase public.categories table – column names must match (snake_case). */

@@ -34,6 +34,12 @@ DO $$ BEGIN
   ALTER TABLE public.products ADD COLUMN IF NOT EXISTS description_en TEXT;
   ALTER TABLE public.products ADD COLUMN IF NOT EXISTS cost_price NUMERIC;
   ALTER TABLE public.products ADD COLUMN IF NOT EXISTS cost_item_ids JSONB;
+  -- Ingredient-based cost fields (see supabase-ingredients-schema.sql)
+  ALTER TABLE public.products ADD COLUMN IF NOT EXISTS ingredient_id TEXT;
+  ALTER TABLE public.products ADD COLUMN IF NOT EXISTS yield_rate NUMERIC;
+  ALTER TABLE public.products ADD COLUMN IF NOT EXISTS processing_cost NUMERIC NOT NULL DEFAULT 0;
+  ALTER TABLE public.products ADD COLUMN IF NOT EXISTS packaging_cost NUMERIC NOT NULL DEFAULT 0;
+  ALTER TABLE public.products ADD COLUMN IF NOT EXISTS misc_cost NUMERIC NOT NULL DEFAULT 0;
 END $$;
 
 ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
