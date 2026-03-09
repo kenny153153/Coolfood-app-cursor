@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
-import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, WholesalePriceTier, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel, MemberType } from './types';
+import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, WholesalePriceTier, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel, MemberType, IngredientCategory } from './types';
 import { useI18n, Language } from './i18n';
 import { supabase } from './supabaseClient';
 import {
@@ -34,6 +34,7 @@ import {
   mapRecipeCategoryRow,
   mapIngredientRowToIngredient,
   mapIngredientToRow,
+  mapIngredientCategoryRow,
   computeProductCost
 } from './supabaseMappers';
 import { hashPassword, verifyPassword } from './authHelpers';
@@ -677,16 +678,20 @@ const App: React.FC = () => {
   // Ingredients (原材料) management
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [editingIngredient, setEditingIngredient] = useState<Ingredient | null>(null);
-  const [ingredientSubTab, setIngredientSubTab] = useState<'list' | 'units'>('list');
+  const [ingredientSubTab, setIngredientSubTab] = useState<'list' | 'units' | 'categories'>('list');
+  const [ingredientCategoryList, setIngredientCategoryList] = useState<IngredientCategory[]>([]);
+  const [editingIngredientCategory, setEditingIngredientCategory] = useState<IngredientCategory | null>(null);
   const [customUnits, setCustomUnits] = useState<{ id: string; label: string; value: string }[]>([]);
   const [selectedIngredientIds, setSelectedIngredientIds] = useState<Set<string>>(new Set());
   const [ingredientCategoryFilter, setIngredientCategoryFilter] = useState<string>('all');
   const [ingredientChannelFilter, setIngredientChannelFilter] = useState<string>('all');
   const DEFAULT_UNITS = [{ value: 'lb', label: '磅 (lb)' }, { value: 'kg', label: '公斤 (kg)' }, { value: 'pc', label: '件 (pc)' }, { value: 'box', label: '箱 (box)' }, { value: 'pack', label: '包 (pack)' }];
   const allUnits = useMemo(() => [...DEFAULT_UNITS, ...customUnits.filter(u => u.value && u.label).map(u => ({ value: u.value, label: u.label }))], [customUnits]);
-  // ingredientCategories is simply the fixed preset list — ingredient categories
-  // are NOT free-form text; they must come from INGREDIENT_CATEGORY_PRESETS.
-  const ingredientCategories = INGREDIENT_CATEGORY_PRESETS;
+  // ingredientCategories: use the Supabase-backed list when loaded, else the
+  // hardcoded presets as a fallback (e.g. before the table is created).
+  const ingredientCategories = ingredientCategoryList.length > 0
+    ? ingredientCategoryList.map(c => c.name)
+    : INGREDIENT_CATEGORY_PRESETS;
   const filteredIngredients = useMemo(() => {
     return ingredients.filter(ing => {
       if (ingredientCategoryFilter !== 'all' && ing.category !== ingredientCategoryFilter) return false;
@@ -996,9 +1001,15 @@ const App: React.FC = () => {
 
       // ── 載入原材料 (Ingredients) ──
       try {
-        const { data: ingRows, error: ingErr } = await supabase.from('ingredients').select('*').order('name');
-        if (!ingErr && ingRows) {
-          setIngredients(ingRows.map(mapIngredientRowToIngredient));
+        const [ingRes, icRes] = await Promise.all([
+          supabase.from('ingredients').select('*').order('name'),
+          supabase.from('ingredient_categories').select('*').order('sort_order'),
+        ]);
+        if (!ingRes.error && ingRes.data) {
+          setIngredients(ingRes.data.map(mapIngredientRowToIngredient));
+        }
+        if (!icRes.error && icRes.data && icRes.data.length > 0) {
+          setIngredientCategoryList(icRes.data.map(mapIngredientCategoryRow));
         }
       } catch {
         console.warn('[ingredients] Failed to load');
@@ -1589,6 +1600,29 @@ const App: React.FC = () => {
     }
     setCategories(prev => prev.filter(c => c.id !== categoryId));
     showToast('分類已刪除');
+  };
+
+  // ── 原材料類別 CRUD ──
+  const upsertIngredientCategory = async (cat: IngredientCategory) => {
+    const { error } = await supabase.from('ingredient_categories').upsert({
+      id: cat.id, name: cat.name, emoji: cat.emoji, sort_order: cat.sortOrder,
+    });
+    if (error) { showToast(`儲存失敗：${error.message}`, 'error'); return; }
+    setIngredientCategoryList(prev => {
+      const exists = prev.find(x => x.id === cat.id);
+      const next = exists ? prev.map(x => x.id === cat.id ? cat : x) : [...prev, cat];
+      return next.sort((a, b) => a.sortOrder - b.sortOrder);
+    });
+    showToast(`類別「${cat.name}」已儲存`);
+    setEditingIngredientCategory(null);
+  };
+
+  const deleteIngredientCategory = async (id: string) => {
+    const cat = ingredientCategoryList.find(c => c.id === id);
+    const { error } = await supabase.from('ingredient_categories').delete().eq('id', id);
+    if (error) { showToast(`刪除失敗：${error.message}`, 'error'); return; }
+    setIngredientCategoryList(prev => prev.filter(x => x.id !== id));
+    showToast(`類別「${cat?.name}」已刪除`);
   };
 
   // ── 食譜 CRUD ──
@@ -3771,13 +3805,65 @@ const App: React.FC = () => {
             <div className="flex items-center gap-2">
               {[
                 { id: 'list' as const, label: '原材料一覽', icon: <Layers size={16}/> },
-                { id: 'units' as const, label: '單位管理', icon: <Tag size={16}/> },
+                { id: 'categories' as const, label: '類別管理', icon: <Tag size={16}/> },
+                { id: 'units' as const, label: '單位管理', icon: <Filter size={16}/> },
               ].map(tab => (
                 <button key={tab.id} onClick={() => setIngredientSubTab(tab.id)} className={`px-5 py-2.5 rounded-xl text-sm font-black transition-all flex items-center gap-2 ${ingredientSubTab === tab.id ? 'bg-blue-600 text-white shadow-lg' : 'bg-white text-slate-500 border border-slate-200 hover:border-blue-300'}`}>
                   {tab.icon} {tab.label}
                 </button>
               ))}
             </div>
+
+            {/* Categories Management Sub-tab */}
+            {ingredientSubTab === 'categories' && (
+              <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-6">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 bg-violet-50 text-violet-600 rounded-xl"><Tag size={18}/></div>
+                    <div>
+                      <h4 className="font-black text-lg">原材料類別管理</h4>
+                      <p className="text-[10px] text-slate-400 font-bold">定義固定的原材料類別，供全系統（成本管理、產品關聯）統一使用</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setEditingIngredientCategory({ id: 'ic-' + Date.now(), name: '', emoji: '📦', sortOrder: ingredientCategoryList.length })}
+                    className="px-5 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl active:scale-95 transition-all"
+                  >
+                    <Plus size={16}/> 新增類別
+                  </button>
+                </div>
+
+                {ingredientCategoryList.length === 0 && (
+                  <div className="text-center py-16 text-slate-400">
+                    <Tag size={32} className="mx-auto mb-3 opacity-30"/>
+                    <p className="font-bold text-sm">尚未有類別</p>
+                    <p className="text-xs mt-1">點擊「新增類別」開始建立</p>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {ingredientCategoryList.map(cat => (
+                    <div key={cat.id} className="bg-slate-50 p-5 rounded-2xl border border-slate-100 flex items-center justify-between group hover:border-violet-200 transition-all">
+                      <div className="flex items-center gap-4">
+                        <span className="text-3xl">{cat.emoji}</span>
+                        <div>
+                          <p className="font-black text-slate-900">{cat.name}</p>
+                          <p className="text-[10px] text-slate-400 uppercase tracking-widest">{cat.id}</p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => setEditingIngredientCategory(cat)} className="p-2 text-slate-400 hover:text-blue-500 transition-colors"><Edit size={16}/></button>
+                        <button onClick={() => setConfirmation({
+                          title: '刪除類別',
+                          message: `確定刪除「${cat.name}」？已設定此類別的原材料不受影響，只是類別標籤會保留原字串。`,
+                          onConfirm: () => deleteIngredientCategory(cat.id),
+                        })} className="p-2 text-slate-400 hover:text-rose-500 transition-colors"><Trash2 size={16}/></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Units Management Sub-tab */}
             {ingredientSubTab === 'units' && (
@@ -5530,6 +5616,61 @@ const App: React.FC = () => {
                 upsertProduct(editingProduct);
                 setEditingProduct(null);
               }} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs">保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Ingredient Category Edit Modal ── */}
+      {editingIngredientCategory && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[6000] flex items-center justify-center p-6 animate-fade-in">
+          <div className="bg-white w-full max-w-md rounded-[3rem] shadow-2xl overflow-hidden flex flex-col animate-scale-up">
+            <div className="p-8 border-b border-slate-50 flex justify-between items-center bg-violet-900 text-white">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center text-2xl">{editingIngredientCategory.emoji || '📦'}</div>
+                <div>
+                  <h4 className="text-2xl font-black tracking-tight">{editingIngredientCategory.name || '新增類別'}</h4>
+                  <p className="text-[10px] font-bold text-white/40 uppercase tracking-[0.2em]">原材料類別</p>
+                </div>
+              </div>
+              <button onClick={() => setEditingIngredientCategory(null)} className="p-3 bg-white/10 rounded-full hover:bg-white/20 transition-all text-white"><X size={20}/></button>
+            </div>
+            <div className="p-8 space-y-4">
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">類別名稱 *</label>
+                <input
+                  value={editingIngredientCategory.name}
+                  onChange={e => setEditingIngredientCategory({ ...editingIngredientCategory, name: e.target.value })}
+                  className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100"
+                  placeholder="例：牛肉、海鮮、調味料..."
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Emoji 圖示</label>
+                <input
+                  value={editingIngredientCategory.emoji}
+                  onChange={e => setEditingIngredientCategory({ ...editingIngredientCategory, emoji: e.target.value })}
+                  className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100"
+                  placeholder="例：🐄 🐷 🦞"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">排序（數字愈小愈前）</label>
+                <input
+                  type="number" min="0"
+                  value={editingIngredientCategory.sortOrder}
+                  onChange={e => setEditingIngredientCategory({ ...editingIngredientCategory, sortOrder: Number(e.target.value) })}
+                  className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100"
+                />
+              </div>
+            </div>
+            <div className="p-8 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+              <button onClick={() => setEditingIngredientCategory(null)} className="px-6 py-3 bg-white border border-slate-200 rounded-2xl font-black text-xs">取消</button>
+              <button onClick={() => {
+                if (!editingIngredientCategory.name.trim()) { showToast('請輸入類別名稱', 'error'); return; }
+                upsertIngredientCategory(editingIngredientCategory);
+              }} className="px-6 py-3 bg-violet-700 text-white rounded-2xl font-black text-xs active:scale-95 transition-all">保存</button>
             </div>
           </div>
         </div>

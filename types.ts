@@ -108,6 +108,14 @@ export interface Ingredient {
   updatedAt?: string;
 }
 
+/** A managed ingredient category (stored in ingredient_categories table). */
+export interface IngredientCategory {
+  id: string;
+  name: string;
+  emoji: string;
+  sortOrder: number;
+}
+
 /** Supabase public.ingredients row (snake_case). */
 export interface SupabaseIngredientRow {
   id: string;

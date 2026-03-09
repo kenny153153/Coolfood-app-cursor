@@ -16,7 +16,8 @@ import {
   SupabaseRecipeRow,
   RecipeCategory,
   Ingredient,
-  SupabaseIngredientRow
+  SupabaseIngredientRow,
+  IngredientCategory,
 } from './types';
 
 export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
@@ -262,4 +263,11 @@ export const mapRecipeCategoryRow = (row: { id: string; name: string; icon: stri
   icon: row.icon ?? '📁',
   sortOrder: row.sort_order ?? 0,
   categoryType: (row.category_type === 'meat' ? 'meat' : 'method'),
+});
+
+export const mapIngredientCategoryRow = (row: { id: string; name: string; emoji: string; sort_order: number }): IngredientCategory => ({
+  id: row.id,
+  name: row.name,
+  emoji: row.emoji ?? '📦',
+  sortOrder: row.sort_order ?? 0,
 });
