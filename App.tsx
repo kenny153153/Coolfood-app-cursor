@@ -2651,12 +2651,21 @@ const App: React.FC = () => {
         const headers = lines[0].split(',').map(h => h.trim());
         const existingIds = new Set(products.map(p => p.id));
         const numericFields = new Set(['price', 'memberPrice', 'costPrice', 'yieldRate', 'processingCost', 'packagingCost', 'miscCost']);
+        const catLookup = new Map<string, string>();
+        categories.forEach(c => {
+          catLookup.set(c.id.toLowerCase(), c.id);
+          catLookup.set(c.name.toLowerCase(), c.id);
+        });
+        const resolveCategory = (raw: string): string => {
+          const lower = raw.toLowerCase();
+          return catLookup.get(lower) || raw;
+        };
         const newProducts: Product[] = lines.slice(1).map(line => {
           const values = line.split(',').map(v => v.trim());
           const p: any = { tags: [], image: '🥩', recipes: [], categories: [], trackInventory: true, memberPrice: 0, stock: 0, price: 0 };
           headers.forEach((h, i) => {
             const val = values[i] || '';
-            if (h === 'categories') p.categories = val ? val.split('|').map((v: string) => v.trim()).filter(Boolean) : [];
+            if (h === 'categories') p.categories = val ? val.split('|').map((v: string) => resolveCategory(v.trim())).filter(Boolean) : [];
             else if (h === 'tags') p.tags = val ? val.split('|').map((v: string) => v.trim()).filter(Boolean) : [];
             else if (h === 'stock') p.stock = Math.round(Number(val) || 0);
             else if (numericFields.has(h)) { if (val) p[h] = Number(val) || 0; }
@@ -2673,8 +2682,15 @@ const App: React.FC = () => {
           }
           return p as Product;
         });
+        const unmatchedCats = new Set<string>();
+        newProducts.forEach(p => p.categories.forEach(c => {
+          if (!categories.some(cat => cat.id === c)) unmatchedCats.add(c);
+        }));
         const success = await upsertProducts(newProducts);
-        if (success) showToast(`成功批量上傳 ${newProducts.length} 個產品`);
+        if (success) {
+          const warn = unmatchedCats.size > 0 ? `\n⚠️ 未匹配分類：${[...unmatchedCats].join(', ')}` : '';
+          showToast(`成功批量上傳 ${newProducts.length} 個產品${warn}`);
+        }
       };
       reader.readAsText(file);
     }
@@ -2788,6 +2804,29 @@ const App: React.FC = () => {
                 <Upload size={16}/> 批量上傳 CSV
                 <input type="file" accept=".csv" className="hidden" onChange={handleCSVUpload} />
               </label>
+              {(() => {
+                const catLookup = new Map<string, string>();
+                categories.forEach(c => { catLookup.set(c.id.toLowerCase(), c.id); catLookup.set(c.name.toLowerCase(), c.id); });
+                const needFix = products.filter(p => p.categories.some(c => !categories.some(cat => cat.id === c) && catLookup.has(c.toLowerCase())));
+                if (needFix.length === 0) return null;
+                return (
+                  <button onClick={async () => {
+                    const fixed = products.map(p => {
+                      const newCats = p.categories.map(c => {
+                        if (categories.some(cat => cat.id === c)) return c;
+                        return catLookup.get(c.toLowerCase()) || c;
+                      });
+                      return { ...p, categories: newCats };
+                    });
+                    const changed = fixed.filter((p, i) => JSON.stringify(p.categories) !== JSON.stringify(products[i].categories));
+                    if (changed.length === 0) { showToast('無需修正'); return; }
+                    const ok = await upsertProducts(fixed);
+                    if (ok) showToast(`已修正 ${changed.length} 個產品的分類`);
+                  }} className="px-5 py-3 bg-amber-500 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-sm hover:bg-amber-600 transition-all animate-pulse">
+                    <AlertTriangle size={16}/> 修正分類 ({needFix.length})
+                  </button>
+                );
+              })()}
               <button disabled={aiDescLoading} onClick={async () => {
                 const toGenerate = products.filter(p => p.name.trim() && (!p.description || p.description.trim() === ''));
                 if (toGenerate.length === 0) { showToast('所有產品已有描述'); return; }
