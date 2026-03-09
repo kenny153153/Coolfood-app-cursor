@@ -4099,8 +4099,37 @@ const App: React.FC = () => {
                               {ing.nameEn && <span className="text-slate-400 text-[10px] ml-2">{ing.nameEn}</span>}
                             </div>
                           </td>
-                          <td className="px-3 py-3">{ing.category ? <span className="bg-violet-50 text-violet-600 px-2.5 py-1 rounded-full text-[10px] font-black">{ing.category}</span> : <span className="text-slate-300 text-[10px]">—</span>}</td>
-                          <td className="text-center px-3 py-3">{ing.saleChannel === 'retail' ? <span className="bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-full text-[10px] font-bold">零售</span> : ing.saleChannel === 'wholesale' ? <span className="bg-orange-50 text-orange-600 px-2 py-0.5 rounded-full text-[10px] font-bold">批發</span> : <span className="text-slate-300 text-[10px]">通用</span>}</td>
+                          <td className="px-3 py-3">
+                            <select
+                              value={ing.category || ''}
+                              onChange={async e => {
+                                const cat = e.target.value || undefined;
+                                const { error } = await supabase.from('ingredients').update({ category: cat ?? null }).eq('id', ing.id);
+                                if (error) { showToast(`更新失敗：${error.message}`, 'error'); return; }
+                                setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, category: cat } : x));
+                              }}
+                              className={`px-2.5 py-1 rounded-full text-[10px] font-black border-0 cursor-pointer focus:ring-2 focus:ring-violet-300 outline-none ${ing.category ? 'bg-violet-50 text-violet-600' : 'bg-slate-100 text-slate-400'}`}
+                            >
+                              <option value="">— 設定</option>
+                              {INGREDIENT_CATEGORY_PRESETS.map(c => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                          </td>
+                          <td className="text-center px-3 py-3">
+                            <select
+                              value={ing.saleChannel || 'both'}
+                              onChange={async e => {
+                                const ch = e.target.value as SaleChannel;
+                                const { error } = await supabase.from('ingredients').update({ sale_channel: ch }).eq('id', ing.id);
+                                if (error) { showToast(`更新失敗：${error.message}`, 'error'); return; }
+                                setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, saleChannel: ch } : x));
+                              }}
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold border-0 cursor-pointer focus:ring-2 outline-none ${ing.saleChannel === 'retail' ? 'bg-emerald-50 text-emerald-600 focus:ring-emerald-300' : ing.saleChannel === 'wholesale' ? 'bg-orange-50 text-orange-600 focus:ring-orange-300' : 'bg-slate-100 text-slate-400 focus:ring-slate-300'}`}
+                            >
+                              <option value="both">通用</option>
+                              <option value="retail">零售</option>
+                              <option value="wholesale">批發</option>
+                            </select>
+                          </td>
                           <td className="text-right px-4 py-3 font-black text-blue-600">${ing.baseCostPerLb.toFixed(2)}</td>
                           <td className="text-center px-4 py-3 text-slate-500">{ing.unit}</td>
                           <td className="px-4 py-3 text-slate-500">{ing.supplier || '—'}</td>
