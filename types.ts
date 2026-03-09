@@ -79,6 +79,33 @@ export interface SupabaseRecipeProductLinkRow {
 
 export type SaleChannel = 'retail' | 'wholesale' | 'both';
 
+export interface AdminPermissions {
+  dashboard: boolean;
+  inventory: boolean;
+  orders: boolean;
+  members: boolean;
+  slideshow: boolean;
+  pricing: boolean;
+  recipes: boolean;
+  ingredients: boolean;
+  costs: boolean;
+  language: boolean;
+  settings: boolean;
+  admin_management: boolean;
+}
+
+export type AdminRole = 'super_admin' | 'admin';
+
+export interface AdminAccount {
+  id: string;
+  name: string;
+  phone: string;
+  role: AdminRole;
+  permissions: AdminPermissions;
+  isActive: boolean;
+  lastLoginAt?: string;
+}
+
 export interface BulkDiscount {
   threshold: number;
   type: 'fixed' | 'percent'; // 'fixed' means new unit price, 'percent' means % off unit price

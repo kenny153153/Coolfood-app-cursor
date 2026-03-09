@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
-import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, WholesalePriceTier, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel, MemberType, IngredientCategory } from './types';
+import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, WholesalePriceTier, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel, MemberType, IngredientCategory, AdminPermissions, AdminAccount, AdminRole } from './types';
 import { useI18n, Language } from './i18n';
 import { supabase } from './supabaseClient';
 import {
@@ -491,6 +491,53 @@ const DEFAULT_SLIDESHOW: SlideshowItem[] = [
   { id: 'slide-2', type: 'image', url: 'https://placehold.co/800x320/blue-900/white?text=新鮮急凍+直送到家', title: '新鮮急凍 直送到家', sortOrder: 1 },
 ];
 
+// --- Admin Auth Constants ---
+
+const DEFAULT_ADMIN_PERMISSIONS: AdminPermissions = {
+  dashboard: true,
+  inventory: true,
+  orders: true,
+  members: true,
+  slideshow: true,
+  pricing: true,
+  recipes: true,
+  ingredients: true,
+  costs: true,
+  language: true,
+  settings: true,
+  admin_management: false,
+};
+
+const ADMIN_MODULE_PERMISSION_MAP: Record<string, keyof AdminPermissions> = {
+  dashboard: 'dashboard',
+  inventory: 'inventory',
+  orders: 'orders',
+  members: 'members',
+  slideshow: 'slideshow',
+  pricing: 'pricing',
+  recipes: 'recipes',
+  ingredients: 'ingredients',
+  costs: 'costs',
+  language: 'language',
+  settings: 'settings',
+  admin_management: 'admin_management',
+};
+
+const ADMIN_PERMISSION_LABELS: Record<keyof AdminPermissions, string> = {
+  dashboard: '儀表板',
+  inventory: '產品/分類',
+  orders: '訂單管理',
+  members: '會員管理',
+  slideshow: '廣告輪播',
+  pricing: '價錢設定',
+  recipes: '食譜',
+  ingredients: '原材料',
+  costs: '成本管理',
+  language: '語言翻譯',
+  settings: '系統設定',
+  admin_management: '管理員管理',
+};
+
 // --- Main App ---
 
 const App: React.FC = () => {
@@ -509,7 +556,10 @@ const App: React.FC = () => {
     () => (typeof window !== 'undefined' && (window.location.pathname === '/success' || window.location.hash === '#success') ? 'success' : 'store')
   );
   const [isRedirectingToPayment, setIsRedirectingToPayment] = useState(false);
-  const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'pricing' | 'costs' | 'ingredients' | 'language' | 'recipes' | 'settings'>('dashboard');
+  const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'pricing' | 'costs' | 'ingredients' | 'language' | 'recipes' | 'settings' | 'admin_management'>('dashboard');
+  const [adminUser, setAdminUser] = useState<AdminAccount | null>(null);
+  const [adminAccounts, setAdminAccounts] = useState<AdminAccount[]>([]);
+  const [editingAdminAccount, setEditingAdminAccount] = useState<(Partial<AdminAccount> & { isNew?: boolean; newPhone?: string }) | null>(null);
   const [inventorySubTab, setInventorySubTab] = useState<'products' | 'categories' | 'rules'>('products');
   const [pricingSubTab, setPricingSubTab] = useState<'retail' | 'wholesale'>('retail');
   const [inventoryChannelFilter, setInventoryChannelFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
@@ -1052,6 +1102,36 @@ const App: React.FC = () => {
     restoreUser();
   }, []);
 
+  // Restore admin session from localStorage
+  useEffect(() => {
+    if (!isAdminRoute) return;
+    try {
+      const saved = localStorage.getItem('coolfood_admin_session');
+      if (!saved) return;
+      const session = JSON.parse(saved) as AdminAccount;
+      if (!session?.id || !session?.role) return;
+      // Re-verify the session against Supabase to ensure the account is still active
+      supabase
+        .from('members')
+        .select('id, name, phone_number, role, admin_permissions')
+        .eq('id', session.id)
+        .in('role', ['admin', 'super_admin'])
+        .maybeSingle()
+        .then(({ data }) => {
+          if (!data) {
+            try { localStorage.removeItem('coolfood_admin_session'); } catch { /* ignore */ }
+            return;
+          }
+          const permissions = buildAdminPermissions(data.role, data.admin_permissions as Record<string, boolean> | null);
+          const admin: AdminAccount = { id: data.id, name: data.name, phone: data.phone_number, role: data.role as AdminRole, permissions, isActive: true };
+          setAdminUser(admin);
+          setIsAdminAuthenticated(true);
+          try { localStorage.setItem('coolfood_admin_session', JSON.stringify(admin)); } catch { /* ignore */ }
+        });
+    } catch { /* ignore */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdminRoute]);
+
   const fetchOrders = useCallback(async () => {
     const { data, error } = await supabase
       .from('orders')
@@ -1103,6 +1183,19 @@ const App: React.FC = () => {
     loadOrderDetails();
   }, [inspectingOrder]);
 
+  const buildAdminPermissions = (role: string, overrides?: Record<string, boolean> | null): AdminPermissions => {
+    if (role === 'super_admin') {
+      return { ...DEFAULT_ADMIN_PERMISSIONS, admin_management: true };
+    }
+    return { ...DEFAULT_ADMIN_PERMISSIONS, ...(overrides || {}), admin_management: false };
+  };
+
+  const hasAdminPermission = (module: keyof AdminPermissions): boolean => {
+    if (!adminUser) return false;
+    if (adminUser.role === 'super_admin') return true;
+    return adminUser.permissions[module] ?? false;
+  };
+
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -1110,16 +1203,89 @@ const App: React.FC = () => {
         .from('members')
         .select('*')
         .eq('phone_number', adminLoginForm.username)
-        .eq('role', 'admin')
+        .in('role', ['admin', 'super_admin'])
         .single();
       if (error || !data) { showToast('帳號或密碼錯誤', 'error'); return; }
       const ok = await verifyPassword(adminLoginForm.password, data.password_hash || '');
       if (!ok) { showToast('帳號或密碼錯誤', 'error'); return; }
+      const permissions = buildAdminPermissions(data.role, data.admin_permissions as Record<string, boolean> | null);
+      const admin: AdminAccount = {
+        id: data.id,
+        name: data.name,
+        phone: data.phone_number,
+        role: data.role as AdminRole,
+        permissions,
+        isActive: true,
+      };
+      setAdminUser(admin);
       setIsAdminAuthenticated(true);
-      showToast('後台登入成功');
+      try { localStorage.setItem('coolfood_admin_session', JSON.stringify(admin)); } catch { /* ignore */ }
+      showToast(`歡迎回來，${admin.name}！`);
     } catch {
       showToast('登入失敗，請稍後再試', 'error');
     }
+  };
+
+  const loadAdminAccounts = async () => {
+    const { data, error } = await supabase
+      .from('members')
+      .select('id, name, phone_number, role, admin_permissions')
+      .in('role', ['admin', 'super_admin'])
+      .order('role', { ascending: false });
+    if (error) { showToast(`載入管理員列表失敗：${error.message}`, 'error'); return; }
+    setAdminAccounts((data || []).map(r => ({
+      id: r.id,
+      name: r.name,
+      phone: r.phone_number,
+      role: r.role as AdminRole,
+      permissions: buildAdminPermissions(r.role, r.admin_permissions as Record<string, boolean> | null),
+      isActive: true,
+    })));
+  };
+
+  const grantAdminAccess = async (phone: string, role: AdminRole, permissions: AdminPermissions) => {
+    const { data: member, error: findErr } = await supabase
+      .from('members')
+      .select('id, name, phone_number')
+      .eq('phone_number', phone.trim())
+      .maybeSingle();
+    if (findErr || !member) { showToast('找不到此電話號碼的會員帳戶', 'error'); return; }
+    const { error } = await supabase
+      .from('members')
+      .update({ role, admin_permissions: permissions })
+      .eq('id', member.id);
+    if (error) { showToast(`授權失敗：${error.message}`, 'error'); return; }
+    await loadAdminAccounts();
+    showToast(`已將 ${member.name}（${phone}）設為管理員`);
+    setEditingAdminAccount(null);
+  };
+
+  const updateAdminAccount = async (id: string, role: AdminRole, permissions: AdminPermissions) => {
+    const { error } = await supabase
+      .from('members')
+      .update({ role, admin_permissions: permissions })
+      .eq('id', id);
+    if (error) { showToast(`更新失敗：${error.message}`, 'error'); return; }
+    // If updating the current logged-in admin, refresh their session
+    if (adminUser?.id === id) {
+      const updated: AdminAccount = { ...adminUser, role, permissions };
+      setAdminUser(updated);
+      try { localStorage.setItem('coolfood_admin_session', JSON.stringify(updated)); } catch { /* ignore */ }
+    }
+    await loadAdminAccounts();
+    showToast('管理員權限已更新');
+    setEditingAdminAccount(null);
+  };
+
+  const revokeAdminAccess = async (id: string, name: string) => {
+    if (!window.confirm(`確定要撤銷 ${name} 的管理員權限嗎？`)) return;
+    const { error } = await supabase
+      .from('members')
+      .update({ role: 'customer', admin_permissions: null })
+      .eq('id', id);
+    if (error) { showToast(`撤銷失敗：${error.message}`, 'error'); return; }
+    await loadAdminAccounts();
+    showToast(`已撤銷 ${name} 的管理員權限`);
   };
 
   const accentClass = 'bg-blue-600';
@@ -4855,6 +5021,222 @@ const App: React.FC = () => {
             )}
           </div>
         );
+      case 'admin_management': {
+        if (!hasAdminPermission('admin_management')) {
+          return (
+            <div className="flex flex-col items-center justify-center py-24 text-slate-400">
+              <ShieldCheck size={48} className="mb-4 opacity-30" />
+              <p className="font-black text-lg">權限不足</p>
+              <p className="text-sm mt-1">只有超級管理員才能管理管理員帳戶</p>
+            </div>
+          );
+        }
+        return (
+          <div className="space-y-8 animate-fade-in pb-20">
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-slate-500 text-sm font-bold mt-1">管理可登入後台的帳戶及其功能權限</p>
+              </div>
+              <button
+                onClick={() => setEditingAdminAccount({ isNew: true, newPhone: '', role: 'admin', permissions: { ...DEFAULT_ADMIN_PERMISSIONS } })}
+                className="flex items-center gap-2 bg-blue-600 text-white px-5 py-3 rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all"
+              >
+                <Plus size={16}/> 新增管理員
+              </button>
+            </div>
+
+            {/* Role legend */}
+            <div className="flex items-center gap-4 text-xs font-bold text-slate-500">
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-violet-500 inline-block"/><span>超級管理員 — 全部權限</span></span>
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block"/><span>管理員 — 自訂權限</span></span>
+            </div>
+
+            {/* Admin list */}
+            {adminAccounts.length === 0 ? (
+              <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm p-16 text-center text-slate-400">
+                <ShieldCheck size={40} className="mx-auto mb-3 opacity-30" />
+                <p className="font-black">尚無管理員帳戶</p>
+                <p className="text-sm mt-1">點擊「新增管理員」開始設置</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                {adminAccounts.map(acc => (
+                  <div key={acc.id} className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm p-6 space-y-4">
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-lg flex-shrink-0 ${acc.role === 'super_admin' ? 'bg-violet-600' : 'bg-blue-600'}`}>
+                          {acc.name.charAt(0)}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <p className="font-black text-slate-900">{acc.name}</p>
+                            {acc.id === adminUser?.id && <span className="text-[10px] font-black bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">本人</span>}
+                          </div>
+                          <p className="text-xs text-slate-400 font-bold">{acc.phone}</p>
+                          <span className={`inline-block mt-1 text-[10px] font-black px-2 py-0.5 rounded-full ${acc.role === 'super_admin' ? 'bg-violet-100 text-violet-700' : 'bg-blue-100 text-blue-700'}`}>
+                            {acc.role === 'super_admin' ? '超級管理員' : '管理員'}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setEditingAdminAccount({ ...acc, isNew: false })}
+                          className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all"
+                          title="編輯權限"
+                        >
+                          <Pencil size={16}/>
+                        </button>
+                        {acc.id !== adminUser?.id && (
+                          <button
+                            onClick={() => revokeAdminAccess(acc.id, acc.name)}
+                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all"
+                            title="撤銷管理員"
+                          >
+                            <Trash2 size={16}/>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Permissions grid */}
+                    <div>
+                      <p className="text-[10px] font-black text-slate-400 uppercase mb-2">功能權限</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(Object.keys(ADMIN_PERMISSION_LABELS) as (keyof AdminPermissions)[]).map(key => {
+                          const allowed = acc.role === 'super_admin' || acc.permissions[key];
+                          return (
+                            <span key={key} className={`text-[10px] font-bold px-2 py-1 rounded-lg ${allowed ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-300 line-through'}`}>
+                              {ADMIN_PERMISSION_LABELS[key]}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Edit / Add Admin Modal */}
+            {editingAdminAccount && (
+              <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+                  <div className="p-8 space-y-6">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xl font-black">{editingAdminAccount.isNew ? '新增管理員' : '編輯管理員'}</h3>
+                      <button onClick={() => setEditingAdminAccount(null)} className="p-2 text-slate-400 hover:text-slate-600 rounded-xl"><X size={20}/></button>
+                    </div>
+
+                    {/* Phone (new admin only) */}
+                    {editingAdminAccount.isNew && (
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-black text-slate-400 uppercase">會員電話號碼</label>
+                        <input
+                          type="text"
+                          value={editingAdminAccount.newPhone || ''}
+                          onChange={e => setEditingAdminAccount(prev => prev ? { ...prev, newPhone: e.target.value } : null)}
+                          placeholder="輸入已存在的會員電話"
+                          className="w-full p-4 bg-slate-50 rounded-2xl font-bold focus:ring-2 focus:ring-blue-100 focus:border-blue-200 border border-transparent transition-all"
+                        />
+                        <p className="text-[10px] text-slate-400 font-bold ml-1">此電話必須已在「會員管理」中存在</p>
+                      </div>
+                    )}
+
+                    {/* Name & phone display for existing */}
+                    {!editingAdminAccount.isNew && (
+                      <div className="bg-slate-50 rounded-2xl p-4 flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white font-black">{(editingAdminAccount.name || '?').charAt(0)}</div>
+                        <div>
+                          <p className="font-black text-slate-900">{editingAdminAccount.name}</p>
+                          <p className="text-xs text-slate-400">{editingAdminAccount.phone}</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Role selector */}
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase">管理員角色</label>
+                      <select
+                        value={editingAdminAccount.role || 'admin'}
+                        onChange={e => {
+                          const newRole = e.target.value as AdminRole;
+                          setEditingAdminAccount(prev => prev ? {
+                            ...prev,
+                            role: newRole,
+                            permissions: newRole === 'super_admin'
+                              ? { ...DEFAULT_ADMIN_PERMISSIONS, admin_management: true }
+                              : { ...DEFAULT_ADMIN_PERMISSIONS, admin_management: false }
+                          } : null);
+                        }}
+                        className="w-full p-4 bg-slate-50 rounded-2xl font-bold border border-transparent focus:ring-2 focus:ring-blue-100 transition-all"
+                      >
+                        <option value="admin">管理員（自訂權限）</option>
+                        <option value="super_admin">超級管理員（全部權限）</option>
+                      </select>
+                    </div>
+
+                    {/* Permissions toggles (only for admin role) */}
+                    {(editingAdminAccount.role || 'admin') !== 'super_admin' && (
+                      <div className="space-y-3">
+                        <label className="text-[10px] font-black text-slate-400 uppercase">功能模組權限</label>
+                        <div className="grid grid-cols-1 gap-2">
+                          {(Object.keys(ADMIN_PERMISSION_LABELS) as (keyof AdminPermissions)[])
+                            .filter(key => key !== 'admin_management')
+                            .map(key => (
+                              <label key={key} className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl cursor-pointer hover:bg-slate-100 transition-all">
+                                <span className="font-bold text-sm text-slate-700">{ADMIN_PERMISSION_LABELS[key]}</span>
+                                <input
+                                  type="checkbox"
+                                  checked={editingAdminAccount.permissions?.[key] ?? false}
+                                  onChange={e => setEditingAdminAccount(prev => prev ? {
+                                    ...prev,
+                                    permissions: { ...(prev.permissions || DEFAULT_ADMIN_PERMISSIONS), [key]: e.target.checked }
+                                  } : null)}
+                                  className="w-5 h-5 rounded-lg accent-blue-600"
+                                />
+                              </label>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {(editingAdminAccount.role || 'admin') === 'super_admin' && (
+                      <div className="bg-violet-50 rounded-2xl p-4 text-center text-sm text-violet-700 font-bold">
+                        超級管理員擁有全部功能的存取權，包括管理員管理
+                      </div>
+                    )}
+
+                    {/* Action buttons */}
+                    <div className="flex gap-3 pt-2">
+                      <button
+                        onClick={() => setEditingAdminAccount(null)}
+                        className="flex-1 py-4 bg-slate-100 text-slate-700 rounded-2xl font-black text-sm active:scale-95 transition-all"
+                      >
+                        取消
+                      </button>
+                      <button
+                        onClick={async () => {
+                          const perms = editingAdminAccount.permissions as AdminPermissions || DEFAULT_ADMIN_PERMISSIONS;
+                          const role = (editingAdminAccount.role || 'admin') as AdminRole;
+                          if (editingAdminAccount.isNew) {
+                            await grantAdminAccess(editingAdminAccount.newPhone || '', role, perms);
+                          } else if (editingAdminAccount.id) {
+                            await updateAdminAccount(editingAdminAccount.id, role, perms);
+                          }
+                        }}
+                        className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2"
+                      >
+                        <Save size={16}/> {editingAdminAccount.isNew ? '確認授權' : '儲存更改'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
       default: return null;
     }
   };
@@ -6864,15 +7246,28 @@ const App: React.FC = () => {
             <div className={`flex items-center ${isAdminSidebarOpen ? 'gap-3 w-full' : 'justify-center flex-col gap-1'}`}>
               <div className="w-10 h-10 bg-blue-600 rounded-2xl flex items-center justify-center text-white shadow-xl shadow-blue-900/40 flex-shrink-0"><Cpu size={24}/></div>
               {isAdminSidebarOpen && (
-                <div className="min-w-0"><h2 className="text-base font-black tracking-tight truncate">{t.admin.controlCenter}</h2><p className="text-[9px] text-slate-500 uppercase tracking-widest font-bold">REAR-LINK 4.2</p></div>
+                <div className="min-w-0">
+                  <h2 className="text-base font-black tracking-tight truncate">{t.admin.controlCenter}</h2>
+                  <p className="text-[9px] text-slate-500 uppercase tracking-widest font-bold">REAR-LINK 4.2</p>
+                </div>
               )}
             </div>
+            {/* Logged-in admin info */}
+            {adminUser && isAdminSidebarOpen && (
+              <div className="w-full mt-3 px-3 py-2 bg-white/5 rounded-xl flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-blue-700 flex items-center justify-center flex-shrink-0 text-xs font-black">{adminUser.name.charAt(0)}</div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-white truncate">{adminUser.name}</p>
+                  <p className="text-[10px] text-slate-400 truncate">{adminUser.role === 'super_admin' ? '超級管理員' : '管理員'}</p>
+                </div>
+              </div>
+            )}
             <button onClick={() => setIsAdminSidebarOpen(prev => !prev)} className={`w-full flex items-center ${isAdminSidebarOpen ? 'gap-2 px-3' : 'justify-center'} py-2 mt-4 bg-white/5 rounded-2xl text-xs font-black text-white/70 hover:text-white transition-all flex-shrink-0`}>
               <ChevronLeft size={16} className={isAdminSidebarOpen ? '' : 'rotate-180'} />
               {isAdminSidebarOpen && <span>{t.admin.collapseSidebar}</span>}
             </button>
             <nav className="space-y-1 flex-1 mt-4 w-full min-w-0">
-               {[
+               {([
                  { id: 'dashboard', label: t.admin.dashboard, icon: <BarChart3 size={20}/> },
                  { id: 'inventory', label: t.admin.inventory, icon: <Package size={20}/> },
                  { id: 'orders', label: t.admin.orders, icon: <Truck size={20}/> },
@@ -6883,11 +7278,21 @@ const App: React.FC = () => {
                  { id: 'ingredients', label: '原材料', icon: <Layers size={20}/> },
                  { id: 'costs', label: '成本管理', icon: <Coins size={20}/> },
                  { id: 'language', label: '語言翻譯', icon: <Globe size={20}/> },
-                 { id: 'settings', label: t.admin.settings, icon: <Settings size={20}/> }
-               ].map(item => (
+                 { id: 'settings', label: t.admin.settings, icon: <Settings size={20}/> },
+                 { id: 'admin_management', label: '管理員', icon: <ShieldCheck size={20}/> },
+               ] as { id: string; label: string; icon: React.ReactNode }[])
+                 .filter(item => {
+                   const permKey = ADMIN_MODULE_PERMISSION_MAP[item.id] as keyof AdminPermissions | undefined;
+                   if (!permKey) return true;
+                   return hasAdminPermission(permKey);
+                 })
+                 .map(item => (
                  <button
                    key={item.id}
-                   onClick={() => setAdminModule(item.id as any)}
+                   onClick={() => {
+                     setAdminModule(item.id as any);
+                     if (item.id === 'admin_management') loadAdminAccounts();
+                   }}
                    className={`w-full flex items-center ${isAdminSidebarOpen ? 'gap-3 px-4' : 'justify-center px-0'} py-3 rounded-xl font-bold text-sm transition-all flex-shrink-0 ${adminModule === item.id ? 'bg-blue-600 text-white shadow-xl' : 'text-slate-500 hover:text-slate-200 hover:bg-white/5'}`}
                  >
                    {item.icon}
@@ -6895,12 +7300,29 @@ const App: React.FC = () => {
                  </button>
                ))}
             </nav>
-            <button onClick={() => { setIsAdminAuthenticated(false); window.location.hash = ''; }} className={`w-full flex items-center ${isAdminSidebarOpen ? 'gap-3 px-4' : 'justify-center px-0'} py-3 text-slate-500 font-bold text-sm hover:text-white border-t border-white/5 pt-4 mt-auto transition-colors flex-shrink-0`}>
+            <button onClick={() => { setIsAdminAuthenticated(false); setAdminUser(null); try { localStorage.removeItem('coolfood_admin_session'); } catch { /* ignore */ } window.location.hash = ''; }} className={`w-full flex items-center ${isAdminSidebarOpen ? 'gap-3 px-4' : 'justify-center px-0'} py-3 text-slate-500 font-bold text-sm hover:text-white border-t border-white/5 pt-4 mt-auto transition-colors flex-shrink-0`}>
               <LogOut size={20}/> {isAdminSidebarOpen && <span className="truncate">{t.admin.exitAdmin}</span>}
             </button>
           </aside>
           <main className="flex-1 min-w-0 p-6 md:p-10 overflow-y-auto bg-[#f8fafc] hide-scrollbar">
-            <header className="flex justify-between items-center mb-10"><div><h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: t.admin.dashboard, inventory: t.admin.inventory, orders: t.admin.orders, members: t.admin.members, slideshow: t.admin.slideshow, pricing: '價錢設定', ingredients: '原材料管理', costs: '成本管理', language: '語言翻譯', recipes: t.recipes.recipes, settings: t.admin.settings } as Record<string, string>)[adminModule] || adminModule}</h1><p className="text-slate-400 font-bold text-sm">{t.admin.realtimeAdmin}</p></div><div className="flex items-center gap-4"><button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button><button onClick={() => showToast('帳戶功能開發中', 'error')} className="w-12 h-12 bg-slate-200 rounded-2xl border border-slate-100"></button></div></header>
+            <header className="flex justify-between items-center mb-10">
+              <div>
+                <h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: t.admin.dashboard, inventory: t.admin.inventory, orders: t.admin.orders, members: t.admin.members, slideshow: t.admin.slideshow, pricing: '價錢設定', ingredients: '原材料管理', costs: '成本管理', language: '語言翻譯', recipes: t.recipes.recipes, settings: t.admin.settings, admin_management: '管理員管理' } as Record<string, string>)[adminModule] || adminModule}</h1>
+                <p className="text-slate-400 font-bold text-sm">{t.admin.realtimeAdmin}</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button>
+                {adminUser && (
+                  <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-2xl px-3 py-2 shadow-sm">
+                    <div className="w-8 h-8 rounded-xl bg-blue-600 flex items-center justify-center text-white font-black text-sm">{adminUser.name.charAt(0)}</div>
+                    <div className="text-right">
+                      <p className="text-xs font-black text-slate-800 leading-none">{adminUser.name}</p>
+                      <p className="text-[10px] text-slate-400 leading-none mt-0.5">{adminUser.role === 'super_admin' ? '超級管理員' : '管理員'}</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </header>
             {renderAdminModuleContent()}
           </main>
         </>
