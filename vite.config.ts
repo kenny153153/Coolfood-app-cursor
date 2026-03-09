@@ -23,6 +23,8 @@ export default defineConfig(({ mode }) => {
       plugins: [tailwindcss(), react()],
       define: {
         'process.env.GOOGLE_MAPS_API_KEY': JSON.stringify(env.GOOGLE_MAPS_API_KEY ?? env.VITE_GOOGLE_MAPS_API_KEY ?? ''),
+        'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(env.VITE_SUPABASE_URL ?? env.VITE_PUBLIC_SUPABASE ?? ''),
+        'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(env.VITE_SUPABASE_ANON_KEY ?? env.VITE_PUBLIC_SUPABASE_ANON_KEY ?? ''),
       },
       build: {
         sourcemap: 'hidden',
