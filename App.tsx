@@ -687,11 +687,9 @@ const App: React.FC = () => {
   const [ingredientChannelFilter, setIngredientChannelFilter] = useState<string>('all');
   const DEFAULT_UNITS = [{ value: 'lb', label: '磅 (lb)' }, { value: 'kg', label: '公斤 (kg)' }, { value: 'pc', label: '件 (pc)' }, { value: 'box', label: '箱 (box)' }, { value: 'pack', label: '包 (pack)' }];
   const allUnits = useMemo(() => [...DEFAULT_UNITS, ...customUnits.filter(u => u.value && u.label).map(u => ({ value: u.value, label: u.label }))], [customUnits]);
-  // ingredientCategories: use the Supabase-backed list when loaded, else the
-  // hardcoded presets as a fallback (e.g. before the table is created).
-  const ingredientCategories = ingredientCategoryList.length > 0
-    ? ingredientCategoryList.map(c => c.name)
-    : INGREDIENT_CATEGORY_PRESETS;
+  // ingredientCategories: driven solely by the Supabase ingredient_categories
+  // table. Empty until the admin creates categories in the '類別管理' sub-tab.
+  const ingredientCategories = ingredientCategoryList.map(c => c.name);
   const filteredIngredients = useMemo(() => {
     return ingredients.filter(ing => {
       if (ingredientCategoryFilter !== 'all' && ing.category !== ingredientCategoryFilter) return false;
