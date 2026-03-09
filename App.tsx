@@ -3527,7 +3527,7 @@ const App: React.FC = () => {
                         result.push(current);
                         return result;
                       };
-                      const imported: typeof ingredients = [];
+                      const imported: Ingredient[] = [];
                       let skipped = 0;
                       for (let i = 1; i < lines.length; i++) {
                         const cols = parseCSVLine(lines[i]);
@@ -3538,15 +3538,24 @@ const App: React.FC = () => {
                           name,
                           nameEn: (cols[2] || '').trim() || undefined,
                           baseCostPerLb: Number(cols[3]) || 0,
-                          unit: (cols[4] || 'lb').trim(),
+                          unit: (cols[4] || 'lb').trim() || 'lb',
                           supplier: (cols[5] || '').trim() || undefined,
-                          marketBenchmark: cols[6] ? Number(cols[6]) || undefined : undefined,
+                          marketBenchmark: cols[6] && cols[6].trim() ? Number(cols[6]) : undefined,
                           notes: (cols[7] || '').trim() || undefined,
                         });
                       }
                       if (imported.length === 0) { showToast('無有效資料可匯入', 'error'); return; }
                       try {
-                        const rows = imported.map(mapIngredientToRow);
+                        const rows = imported.map(ing => ({
+                          id: ing.id,
+                          name: ing.name,
+                          name_en: ing.nameEn || null,
+                          base_cost_per_lb: ing.baseCostPerLb,
+                          supplier: ing.supplier || null,
+                          market_benchmark: ing.marketBenchmark ?? null,
+                          unit: ing.unit || 'lb',
+                          notes: ing.notes || null,
+                        }));
                         const { error } = await supabase.from('ingredients').upsert(rows);
                         if (error) throw error;
                         setIngredients(prev => {
