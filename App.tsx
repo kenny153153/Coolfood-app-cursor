@@ -672,8 +672,28 @@ const App: React.FC = () => {
   const [editingIngredient, setEditingIngredient] = useState<Ingredient | null>(null);
   const [ingredientSubTab, setIngredientSubTab] = useState<'list' | 'units'>('list');
   const [customUnits, setCustomUnits] = useState<{ id: string; label: string; value: string }[]>([]);
+  const [selectedIngredientIds, setSelectedIngredientIds] = useState<Set<string>>(new Set());
+  const [ingredientCategoryFilter, setIngredientCategoryFilter] = useState<string>('all');
+  const [ingredientChannelFilter, setIngredientChannelFilter] = useState<string>('all');
   const DEFAULT_UNITS = [{ value: 'lb', label: '磅 (lb)' }, { value: 'kg', label: '公斤 (kg)' }, { value: 'pc', label: '件 (pc)' }, { value: 'box', label: '箱 (box)' }, { value: 'pack', label: '包 (pack)' }];
   const allUnits = useMemo(() => [...DEFAULT_UNITS, ...customUnits.filter(u => u.value && u.label).map(u => ({ value: u.value, label: u.label }))], [customUnits]);
+  const INGREDIENT_CATEGORY_PRESETS = ['牛肉', '豬肉', '雞肉', '羊肉', '海鮮', '蔬菜', '調味料', '乾貨', '其他'];
+  const ingredientCategories = useMemo(() => {
+    const cats = new Set(INGREDIENT_CATEGORY_PRESETS);
+    ingredients.forEach(i => { if (i.category) cats.add(i.category); });
+    return Array.from(cats);
+  }, [ingredients]);
+  const filteredIngredients = useMemo(() => {
+    return ingredients.filter(ing => {
+      if (ingredientCategoryFilter !== 'all' && ing.category !== ingredientCategoryFilter) return false;
+      if (ingredientChannelFilter !== 'all') {
+        const ch = ing.saleChannel || 'both';
+        if (ingredientChannelFilter === 'retail') return ch === 'retail' || ch === 'both';
+        if (ingredientChannelFilter === 'wholesale') return ch === 'wholesale' || ch === 'both';
+      }
+      return true;
+    });
+  }, [ingredients, ingredientCategoryFilter, ingredientChannelFilter]);
 
   // AI State
   const [aiAnalysis, setAiAnalysis] = useState<string>('');
@@ -3837,25 +3857,25 @@ const App: React.FC = () => {
 
             {/* Ingredients List Sub-tab */}
             {ingredientSubTab === 'list' && <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-6">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-3">
                 <div className="flex items-center gap-3">
                   <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><Layers size={18}/></div>
                   <div>
                     <h4 className="font-black text-lg">原材料一覽</h4>
-                    <p className="text-[10px] text-slate-400 font-bold">管理所有原材料的買入成本、供應商及市場參考價</p>
+                    <p className="text-[10px] text-slate-400 font-bold">管理所有原材料的買入成本、供應商、類別及市場參考價</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   {/* CSV Export */}
                   <button onClick={() => {
-                    const header = 'id,舊系統ID,名稱,英文名稱,買入成本,單位,供應商,市場參考價,備註';
+                    const header = 'id,舊系統ID,名稱,英文名稱,買入成本,單位,供應商,市場參考價,類別,渠道,備註';
                     const csvEscape = (v: string) => {
                       if (!v) return '';
                       if (v.includes(',') || v.includes('"') || v.includes('\n')) return `"${v.replace(/"/g, '""')}"`;
                       return v;
                     };
                     const rows = ingredients.map(ing =>
-                      [ing.id, csvEscape(ing.legacyId || ''), csvEscape(ing.name), csvEscape(ing.nameEn || ''), ing.baseCostPerLb, ing.unit, csvEscape(ing.supplier || ''), ing.marketBenchmark ?? '', csvEscape(ing.notes || '')].join(',')
+                      [ing.id, csvEscape(ing.legacyId || ''), csvEscape(ing.name), csvEscape(ing.nameEn || ''), ing.baseCostPerLb, ing.unit, csvEscape(ing.supplier || ''), ing.marketBenchmark ?? '', csvEscape(ing.category || ''), ing.saleChannel || '', csvEscape(ing.notes || '')].join(',')
                     );
                     const csvContent = '\uFEFF' + [header, ...rows].join('\n');
                     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -3901,6 +3921,7 @@ const App: React.FC = () => {
                         const cols = parseCSVLine(lines[i]);
                         const name = (cols[2] || '').trim();
                         if (!name) { skipped++; continue; }
+                        const channelVal = (cols[9] || '').trim().toLowerCase();
                         imported.push({
                           id: (cols[0] || '').trim() || `ing-${Date.now()}-${i}`,
                           legacyId: (cols[1] || '').trim() || undefined,
@@ -3910,22 +3931,14 @@ const App: React.FC = () => {
                           unit: (cols[5] || 'lb').trim() || 'lb',
                           supplier: (cols[6] || '').trim() || undefined,
                           marketBenchmark: cols[7] && cols[7].trim() ? Number(cols[7]) : undefined,
-                          notes: (cols[8] || '').trim() || undefined,
+                          category: (cols[8] || '').trim() || undefined,
+                          saleChannel: (['retail', 'wholesale', 'both'].includes(channelVal) ? channelVal as SaleChannel : undefined),
+                          notes: (cols[10] || '').trim() || undefined,
                         });
                       }
                       if (imported.length === 0) { showToast('無有效資料可匯入', 'error'); return; }
                       try {
-                        const rows = imported.map(ing => ({
-                          id: ing.id,
-                          legacy_id: ing.legacyId || null,
-                          name: ing.name,
-                          name_en: ing.nameEn || null,
-                          base_cost_per_lb: ing.baseCostPerLb,
-                          supplier: ing.supplier || null,
-                          market_benchmark: ing.marketBenchmark ?? null,
-                          unit: ing.unit || 'lb',
-                          notes: ing.notes || null,
-                        }));
+                        const rows = imported.map(mapIngredientToRow);
                         const { error } = await supabase.from('ingredients').upsert(rows);
                         if (error) throw error;
                         setIngredients(prev => {
@@ -3941,10 +3954,10 @@ const App: React.FC = () => {
                   </label>
                   {/* Download Template */}
                   <button onClick={() => {
-                    const template = '\uFEFF' + 'id,舊系統ID,名稱,英文名稱,買入成本,單位,供應商,市場參考價,備註\n'
-                      + 'ing-001,OLD-101,美國 Prime 肋眼,US Prime Ribeye,45.5,lb,ABC Trading,52,頂級部位\n'
-                      + 'ing-002,OLD-102,澳洲 M5 和牛,AU M5 Wagyu,62,lb,XYZ Meats,70,\n'
-                      + 'ing-003,,西班牙黑毛豬,Iberico Pork,28.5,lb,,35,梅頭部位';
+                    const template = '\uFEFF' + 'id,舊系統ID,名稱,英文名稱,買入成本,單位,供應商,市場參考價,類別,渠道,備註\n'
+                      + 'ing-001,OLD-101,美國 Prime 肋眼,US Prime Ribeye,45.5,lb,ABC Trading,52,牛肉,both,頂級部位\n'
+                      + 'ing-002,OLD-102,澳洲 M5 和牛,AU M5 Wagyu,62,lb,XYZ Meats,70,牛肉,wholesale,\n'
+                      + 'ing-003,,西班牙黑毛豬,Iberico Pork,28.5,lb,,35,豬肉,retail,梅頭部位';
                     const blob = new Blob([template], { type: 'text/csv;charset=utf-8;' });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
@@ -3957,21 +3970,102 @@ const App: React.FC = () => {
                   <button onClick={() => setEditingIngredient({ id: `ing-${Date.now()}`, name: '', baseCostPerLb: 0, unit: 'lb' })} className="px-4 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Plus size={14}/> 新增原材料</button>
                 </div>
               </div>
+
+              {/* Filters */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-1.5">
+                  <Filter size={14} className="text-slate-400" />
+                  <span className="text-[10px] font-bold text-slate-400">篩選：</span>
+                </div>
+                <select value={ingredientCategoryFilter} onChange={e => { setIngredientCategoryFilter(e.target.value); setSelectedIngredientIds(new Set()); }} className="px-3 py-2 bg-slate-50 rounded-xl text-xs font-bold border border-slate-200">
+                  <option value="all">全部類別</option>
+                  {ingredientCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <select value={ingredientChannelFilter} onChange={e => { setIngredientChannelFilter(e.target.value); setSelectedIngredientIds(new Set()); }} className="px-3 py-2 bg-slate-50 rounded-xl text-xs font-bold border border-slate-200">
+                  <option value="all">全部渠道</option>
+                  <option value="retail">零售</option>
+                  <option value="wholesale">批發</option>
+                </select>
+                <span className="text-[10px] text-slate-300 font-bold ml-1">{filteredIngredients.length} / {ingredients.length} 筆</span>
+              </div>
+
+              {/* Batch action bar */}
+              {selectedIngredientIds.size > 0 && (
+                <div className="flex items-center gap-3 p-4 bg-blue-50 border border-blue-200 rounded-2xl animate-fade-in">
+                  <span className="text-xs font-black text-blue-700">已選 {selectedIngredientIds.size} 項</span>
+                  <select id="batchCategorySelect" className="px-3 py-1.5 bg-white rounded-lg text-xs font-bold border border-blue-200" defaultValue="">
+                    <option value="" disabled>設定類別...</option>
+                    {ingredientCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <button onClick={async () => {
+                    const sel = (document.getElementById('batchCategorySelect') as HTMLSelectElement)?.value;
+                    if (!sel) { showToast('請先選擇類別', 'error'); return; }
+                    const ids = Array.from(selectedIngredientIds);
+                    try {
+                      const { error } = await supabase.from('ingredients').update({ category: sel }).in('id', ids);
+                      if (error) throw error;
+                      setIngredients(prev => prev.map(ing => ids.includes(ing.id) ? { ...ing, category: sel } : ing));
+                      setSelectedIngredientIds(new Set());
+                      showToast(`已為 ${ids.length} 項設定類別「${sel}」`);
+                    } catch (err: any) { showToast(`批量更新失敗：${err.message}`, 'error'); }
+                  }} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-black active:scale-95 transition-all">套用類別</button>
+                  <select id="batchChannelSelect" className="px-3 py-1.5 bg-white rounded-lg text-xs font-bold border border-blue-200 ml-2" defaultValue="">
+                    <option value="" disabled>設定渠道...</option>
+                    <option value="retail">零售</option>
+                    <option value="wholesale">批發</option>
+                    <option value="both">零售+批發</option>
+                  </select>
+                  <button onClick={async () => {
+                    const sel = (document.getElementById('batchChannelSelect') as HTMLSelectElement)?.value;
+                    if (!sel) { showToast('請先選擇渠道', 'error'); return; }
+                    const ids = Array.from(selectedIngredientIds);
+                    try {
+                      const { error } = await supabase.from('ingredients').update({ sale_channel: sel }).in('id', ids);
+                      if (error) throw error;
+                      setIngredients(prev => prev.map(ing => ids.includes(ing.id) ? { ...ing, saleChannel: sel as SaleChannel } : ing));
+                      setSelectedIngredientIds(new Set());
+                      showToast(`已為 ${ids.length} 項設定渠道`);
+                    } catch (err: any) { showToast(`批量更新失敗：${err.message}`, 'error'); }
+                  }} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-black active:scale-95 transition-all">套用渠道</button>
+                  <button onClick={async () => {
+                    if (!confirm(`確定刪除 ${selectedIngredientIds.size} 項原材料？關聯產品將取消關聯。`)) return;
+                    const ids = Array.from(selectedIngredientIds);
+                    try {
+                      const { error } = await supabase.from('ingredients').delete().in('id', ids);
+                      if (error) throw error;
+                      setIngredients(prev => prev.filter(x => !ids.includes(x.id)));
+                      setProducts(prev => prev.map(p => p.ingredientId && ids.includes(p.ingredientId) ? { ...p, ingredientId: undefined } : p));
+                      setSelectedIngredientIds(new Set());
+                      showToast(`已刪除 ${ids.length} 項原材料`);
+                    } catch (err: any) { showToast(`批量刪除失敗：${err.message}`, 'error'); }
+                  }} className="px-3 py-1.5 bg-rose-500 text-white rounded-lg text-xs font-black active:scale-95 transition-all ml-auto flex items-center gap-1"><Trash2 size={12}/> 批量刪除</button>
+                </div>
+              )}
+
               {/* CSV format hint */}
               <div className="bg-blue-50/60 border border-blue-100 rounded-2xl p-4 flex items-start gap-3">
                 <FileText size={16} className="text-blue-400 mt-0.5 flex-shrink-0" />
                 <div className="text-[10px] text-blue-600 font-bold leading-relaxed">
                   <p className="font-black text-blue-700 mb-1">CSV 批量匯入說明</p>
                   <p>1. 點擊「下載範本」取得 CSV 格式範例 → 2. 用 Excel / Google Sheets 開啟編輯 → 3. 填入原材料資料後存成 CSV → 4. 點「匯入 CSV」上傳</p>
-                  <p className="mt-1 text-blue-400">欄位：ID, 舊系統ID, 名稱*, 英文名稱, 買入成本*, 單位(lb/kg/pc/box/pack), 供應商, 市場參考價, 備註。相同 ID 會覆蓋更新。</p>
+                  <p className="mt-1 text-blue-400">欄位：ID, 舊系統ID, 名稱*, 英文名稱, 買入成本*, 單位, 供應商, 市場參考價, 類別, 渠道(retail/wholesale/both), 備註。相同 ID 會覆蓋更新。</p>
                 </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                      <th className="text-center px-2 py-3 w-10">
+                        <button onClick={() => {
+                          if (selectedIngredientIds.size === filteredIngredients.length) setSelectedIngredientIds(new Set());
+                          else setSelectedIngredientIds(new Set(filteredIngredients.map(i => i.id)));
+                        }} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${selectedIngredientIds.size === filteredIngredients.length && filteredIngredients.length > 0 ? 'border-blue-500 bg-blue-500 text-white' : 'border-slate-200 bg-white'}`}>
+                          {selectedIngredientIds.size === filteredIngredients.length && filteredIngredients.length > 0 && <Check size={12} strokeWidth={3}/>}
+                        </button>
+                      </th>
                       <th className="text-left px-4 py-3">名稱</th>
-                      <th className="text-left px-4 py-3">舊系統ID</th>
+                      <th className="text-left px-3 py-3">類別</th>
+                      <th className="text-center px-3 py-3">渠道</th>
                       <th className="text-right px-4 py-3">買入成本</th>
                       <th className="text-center px-4 py-3">單位</th>
                       <th className="text-left px-4 py-3">供應商</th>
@@ -3981,17 +4075,28 @@ const App: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {ingredients.map(ing => {
+                    {filteredIngredients.map(ing => {
                       const linkedCount = products.filter(p => p.ingredientId === ing.id).length;
+                      const isSelected = selectedIngredientIds.has(ing.id);
                       return (
-                        <tr key={ing.id} className="hover:bg-slate-50/50 transition-colors">
+                        <tr key={ing.id} className={`hover:bg-slate-50/50 transition-colors ${isSelected ? 'bg-blue-50/40' : ''}`}>
+                          <td className="text-center px-2 py-3">
+                            <button onClick={() => setSelectedIngredientIds(prev => {
+                              const next = new Set(prev);
+                              if (next.has(ing.id)) next.delete(ing.id); else next.add(ing.id);
+                              return next;
+                            })} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${isSelected ? 'border-blue-500 bg-blue-500 text-white' : 'border-slate-200 bg-white'}`}>
+                              {isSelected && <Check size={12} strokeWidth={3}/>}
+                            </button>
+                          </td>
                           <td className="px-4 py-3">
                             <div>
                               <span className="font-bold text-slate-700">{ing.name}</span>
                               {ing.nameEn && <span className="text-slate-400 text-[10px] ml-2">{ing.nameEn}</span>}
                             </div>
                           </td>
-                          <td className="px-4 py-3 text-slate-400 text-[10px] font-mono">{ing.legacyId || '—'}</td>
+                          <td className="px-3 py-3">{ing.category ? <span className="bg-violet-50 text-violet-600 px-2.5 py-1 rounded-full text-[10px] font-black">{ing.category}</span> : <span className="text-slate-300 text-[10px]">—</span>}</td>
+                          <td className="text-center px-3 py-3">{ing.saleChannel === 'retail' ? <span className="bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-full text-[10px] font-bold">零售</span> : ing.saleChannel === 'wholesale' ? <span className="bg-orange-50 text-orange-600 px-2 py-0.5 rounded-full text-[10px] font-bold">批發</span> : <span className="text-slate-300 text-[10px]">通用</span>}</td>
                           <td className="text-right px-4 py-3 font-black text-blue-600">${ing.baseCostPerLb.toFixed(2)}</td>
                           <td className="text-center px-4 py-3 text-slate-500">{ing.unit}</td>
                           <td className="px-4 py-3 text-slate-500">{ing.supplier || '—'}</td>
@@ -4013,8 +4118,8 @@ const App: React.FC = () => {
                         </tr>
                       );
                     })}
-                    {ingredients.length === 0 && (
-                      <tr><td colSpan={8} className="px-4 py-12 text-center text-slate-300 font-bold text-sm">尚無原材料，點擊右上角「新增原材料」</td></tr>
+                    {filteredIngredients.length === 0 && (
+                      <tr><td colSpan={10} className="px-4 py-12 text-center text-slate-300 font-bold text-sm">{ingredients.length === 0 ? '尚無原材料，點擊右上角「新增原材料」' : '無符合條件的原材料'}</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -4061,6 +4166,25 @@ const App: React.FC = () => {
                       <div className="space-y-1">
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">市場參考價</label>
                         <input type="number" min="0" step="0.01" value={editingIngredient.marketBenchmark ?? ''} onChange={e => setEditingIngredient({ ...editingIngredient, marketBenchmark: e.target.value ? Number(e.target.value) : undefined })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100" placeholder="—" />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">類別</label>
+                        <div className="relative">
+                          <input list="ingredientCategoryList" value={editingIngredient.category || ''} onChange={e => setEditingIngredient({ ...editingIngredient, category: e.target.value || undefined })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100" placeholder="例：牛肉、豬肉、海鮮..." />
+                          <datalist id="ingredientCategoryList">
+                            {ingredientCategories.map(c => <option key={c} value={c} />)}
+                          </datalist>
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">渠道</label>
+                        <select value={editingIngredient.saleChannel || 'both'} onChange={e => setEditingIngredient({ ...editingIngredient, saleChannel: e.target.value as SaleChannel })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100">
+                          <option value="both">零售 + 批發</option>
+                          <option value="retail">僅零售</option>
+                          <option value="wholesale">僅批發</option>
+                        </select>
                       </div>
                     </div>
                     <div className="space-y-1">
@@ -4239,9 +4363,14 @@ const App: React.FC = () => {
                             </div>
                           </td>
                           <td className="px-3 py-3">
-                            <select value={p.ingredientId || ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, ingredientId: e.target.value || undefined } : x))} className="w-28 p-1.5 bg-slate-50 rounded-lg font-bold border border-slate-100 text-xs">
+                            <select value={p.ingredientId || ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, ingredientId: e.target.value || undefined } : x))} className="w-32 p-1.5 bg-slate-50 rounded-lg font-bold border border-slate-100 text-xs">
                               <option value="">（手動）</option>
-                              {ingredients.map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}
+                              {ingredientCategories.map(cat => {
+                                const catIngs = ingredients.filter(i => i.category === cat);
+                                if (catIngs.length === 0) return null;
+                                return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}</optgroup>;
+                              })}
+                              {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}</optgroup>}
                             </select>
                           </td>
                           <td className="px-3 py-3 text-right">
@@ -5110,7 +5239,12 @@ const App: React.FC = () => {
                       <label className="text-[9px] font-bold text-slate-500 ml-1">關聯原材料</label>
                       <select value={editingProduct.ingredientId || ''} onChange={e => setEditingProduct({ ...editingProduct, ingredientId: e.target.value || undefined })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100">
                         <option value="">無（手動輸入成本）</option>
-                        {ingredients.map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}
+                        {ingredientCategories.map(cat => {
+                          const catIngs = ingredients.filter(i => i.category === cat);
+                          if (catIngs.length === 0) return null;
+                          return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit}){ing.saleChannel === 'wholesale' ? ' [批發]' : ing.saleChannel === 'retail' ? ' [零售]' : ''}</option>)}</optgroup>;
+                        })}
+                        {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>}
                       </select>
                     </div>
                     <div className="space-y-1">

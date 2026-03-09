@@ -101,6 +101,8 @@ export interface Ingredient {
   supplier?: string;
   marketBenchmark?: number; // 市場參考價
   unit: string;             // 'lb' | 'kg' | 'pc' etc.
+  category?: string;        // 類別（如 牛肉、豬肉、海鮮）
+  saleChannel?: SaleChannel; // 渠道：retail / wholesale / both
   notes?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -116,6 +118,8 @@ export interface SupabaseIngredientRow {
   supplier?: string | null;
   market_benchmark?: number | null;
   unit: string;
+  category?: string | null;
+  sale_channel?: string | null;
   notes?: string | null;
   created_at?: string;
   updated_at?: string;

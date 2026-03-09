@@ -92,6 +92,8 @@ export const mapIngredientRowToIngredient = (row: SupabaseIngredientRow): Ingred
   supplier: row.supplier ?? undefined,
   marketBenchmark: row.market_benchmark ?? undefined,
   unit: row.unit || 'lb',
+  category: row.category ?? undefined,
+  saleChannel: (['retail', 'wholesale', 'both'].includes(row.sale_channel ?? '') ? row.sale_channel as SaleChannel : undefined),
   notes: row.notes ?? undefined,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -106,6 +108,8 @@ export const mapIngredientToRow = (ing: Ingredient): SupabaseIngredientRow => ({
   supplier: ing.supplier ?? null,
   market_benchmark: ing.marketBenchmark ?? null,
   unit: ing.unit || 'lb',
+  category: ing.category ?? null,
+  sale_channel: ing.saleChannel ?? null,
   notes: ing.notes ?? null,
 });
 
