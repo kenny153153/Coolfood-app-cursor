@@ -484,12 +484,6 @@ const SuccessView: React.FC<{
   );
 };
 
-// Fixed ingredient categories — the canonical list used across cost management,
-// product cost linking, and admin filters. NOT to be confused with product
-// storefront categories (Category[]) or recipe categories (RecipeCategory[]).
-export const INGREDIENT_CATEGORY_PRESETS = [
-  '牛肉', '豬肉', '雞肉', '羊肉', '海鮮', '蔬菜', '調味料', '乾貨', '其他',
-];
 
 // Default advertisement slideshow when Supabase has no data
 const DEFAULT_SLIDESHOW: SlideshowItem[] = [
@@ -4195,7 +4189,7 @@ const App: React.FC = () => {
                               className={`px-2.5 py-1 rounded-full text-[10px] font-black border-0 cursor-pointer focus:ring-2 focus:ring-violet-300 outline-none ${ing.category ? 'bg-violet-50 text-violet-600' : 'bg-slate-100 text-slate-400'}`}
                             >
                               <option value="">— 設定</option>
-                              {INGREDIENT_CATEGORY_PRESETS.map(c => <option key={c} value={c}>{c}</option>)}
+                              {ingredientCategories.map(c => <option key={c} value={c}>{c}</option>)}
                             </select>
                           </td>
                           <td className="text-center px-3 py-3">
@@ -4290,7 +4284,7 @@ const App: React.FC = () => {
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">類別</label>
                         <select value={editingIngredient.category || ''} onChange={e => setEditingIngredient({ ...editingIngredient, category: e.target.value || undefined })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100">
                           <option value="">（未分類）</option>
-                          {INGREDIENT_CATEGORY_PRESETS.map(c => <option key={c} value={c}>{c}</option>)}
+                          {ingredientCategories.map(c => <option key={c} value={c}>{c}</option>)}
                         </select>
                       </div>
                       <div className="space-y-1">
