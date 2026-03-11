@@ -1,10 +1,11 @@
 /**
  * AI 生成接口 — Vertex AI (Paid Tier)
- * Engine: Gemini 2.0 Flash (GA stable)
+ * Engine: Gemini 2.0 Flash (GA stable) + Imagen 3 (image generation)
  * Region: us-central1
  * Auth: GOOGLE_VERTEX_AI_CREDENTIALS service account JSON
  */
 import { VertexAI } from '@google-cloud/vertexai';
+import { GoogleAuth } from 'google-auth-library';
 
 type VercelRequest = { method?: string; body?: any };
 type VercelResponse = { status: (n: number) => { json: (o: any) => void } };
@@ -92,6 +93,46 @@ const RECIPE_SYSTEM = `你是一個幫香港家庭寫食譜的助手。你的用
 function withUserInstruction(base: string, userInstruction?: string): string {
   if (!userInstruction?.trim()) return base;
   return `【用戶額外指令 — 最高優先】\n${userInstruction.trim()}\n\n---\n\n${base}`;
+}
+
+async function callImagen(prompt: string): Promise<string> {
+  const credsJson = process.env.GOOGLE_VERTEX_AI_CREDENTIALS;
+  if (!credsJson) throw new Error('GOOGLE_VERTEX_AI_CREDENTIALS not configured');
+
+  const parsed = JSON.parse(credsJson);
+  if (parsed.private_key && typeof parsed.private_key === 'string') {
+    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+  }
+  if (!parsed.project_id) throw new Error('project_id missing in credentials');
+
+  const auth = new GoogleAuth({
+    credentials: parsed,
+    scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+  });
+  const client = await auth.getClient();
+  const tokenResponse = await (client as any).getAccessToken();
+  const token = tokenResponse?.token ?? tokenResponse;
+
+  const endpoint = `https://us-central1-aiplatform.googleapis.com/v1/projects/${parsed.project_id}/locations/us-central1/publishers/google/models/imagen-3.0-generate-001:predict`;
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      instances: [{ prompt }],
+      parameters: { sampleCount: 1, aspectRatio: '1:1' },
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error?.message || `Imagen API error: ${response.status}`);
+
+  const base64 = data.predictions?.[0]?.bytesBase64Encoded;
+  if (!base64) throw new Error('No image returned from Imagen');
+  return base64;
 }
 
 const ACTIONS: Record<string, (payload: any) => Promise<any>> = {
@@ -184,6 +225,13 @@ ${context}
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) throw new Error('AI did not return valid JSON');
     return JSON.parse(match[0]);
+  },
+
+  async 'generate-recipe-image'(payload) {
+    const { title, description } = payload;
+    const prompt = `Professional food photography of "${title}". ${description ? description + '. ' : ''}Authentic Hong Kong home-cooked dish served on a clean white ceramic plate, natural daylight, overhead shot, appetizing and vibrant colors, restaurant quality presentation.`;
+    const base64Image = await callImagen(prompt);
+    return { base64Image };
   },
 };
 

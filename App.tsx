@@ -1829,6 +1829,32 @@ const App: React.FC = () => {
     showToast(t.recipes.recipeSaved);
   };
 
+  const generateAndUploadRecipeImage = async (recipeId: string, title: string, description: string): Promise<string | null> => {
+    try {
+      const res = await fetch('/api/generate-recipe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'generate-recipe-image', payload: { title, description } }),
+      });
+      const json = await res.json();
+      if (!json.ok || !json.data?.base64Image) return null;
+
+      const binary = atob(json.data.base64Image);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: 'image/png' });
+
+      const path = `recipes/${recipeId}/ai-cover.png`;
+      const { error } = await supabase.storage.from('media').upload(path, blob, { cacheControl: '3600', upsert: true, contentType: 'image/png' });
+      if (error) return null;
+
+      const { data: urlData } = supabase.storage.from('media').getPublicUrl(path);
+      return urlData.publicUrl;
+    } catch {
+      return null;
+    }
+  };
+
   const deleteRecipe = async (recipeId: string) => {
     const { error } = await supabase.from('recipes').delete().eq('id', recipeId);
     if (error) {
@@ -4770,6 +4796,7 @@ const App: React.FC = () => {
                         let failCount = 0;
                         const catMap = recipeCategories.map(c => ({ id: c.id, name: c.name }));
                         const allTitles = recipes.map(r => r.title).filter(Boolean);
+                        const imagePromises: Promise<void>[] = [];
                         for (let i = 0; i < BATCH_COUNT; i++) {
                           setAiBatchProgress({ current: i + 1, total: BATCH_COUNT, label: `正在生成第 ${i + 1}/${BATCH_COUNT} 個食譜...` });
                           try {
@@ -4805,6 +4832,18 @@ const App: React.FC = () => {
                                 allTitles.push(recipe.title);
                                 await upsertRecipe(recipe);
                                 successCount++;
+                                // Fire off image generation in background — don't block the loop
+                                const savedRecipe = recipe;
+                                imagePromises.push(
+                                  generateAndUploadRecipeImage(savedRecipe.id, savedRecipe.title, savedRecipe.description)
+                                    .then(imageUrl => {
+                                      if (imageUrl) {
+                                        supabase.from('recipes').update({ media_url: imageUrl, media_type: 'image' }).eq('id', savedRecipe.id);
+                                        setRecipes(prev => prev.map(rec => rec.id === savedRecipe.id ? { ...rec, mediaUrl: imageUrl, mediaType: 'image' as const } : rec));
+                                      }
+                                    })
+                                    .catch(() => {})
+                                );
                               } else {
                                 failCount++;
                               }
@@ -4812,11 +4851,13 @@ const App: React.FC = () => {
                           } catch { failCount++; }
                           if (i < BATCH_COUNT - 1) await new Promise(r => setTimeout(r, COOLDOWN_MS));
                         }
+                        setAiBatchProgress({ current: BATCH_COUNT, total: BATCH_COUNT, label: `食譜已生成，AI 正在生成圖片中（${imagePromises.length} 張）...` });
+                        await Promise.allSettled(imagePromises);
                         setAiBatchProgress(null);
                         setAiRecipeLoading(false);
                         const msg = failCount > 0
                           ? `AI 完成：${successCount} 個成功，${failCount} 個失敗`
-                          : `AI 已生成 ${successCount} 個食譜`;
+                          : `AI 已生成 ${successCount} 個食譜（含 AI 圖片）`;
                         showToast(msg, failCount > 0 ? 'error' : 'success');
                       },
                     });
@@ -5438,6 +5479,24 @@ const App: React.FC = () => {
                         <option value="image">{t.recipes.image}</option>
                         <option value="video">{t.recipes.video}</option>
                       </select>
+                      <button
+                        type="button"
+                        disabled={imageUploading === `ai-recipe-${editingRecipe.id}` || !editingRecipe.title.trim()}
+                        onClick={async () => {
+                          if (!editingRecipe.title.trim()) return;
+                          setImageUploading(`ai-recipe-${editingRecipe.id}`);
+                          try {
+                            const url = await generateAndUploadRecipeImage(editingRecipe.id, editingRecipe.title, editingRecipe.description);
+                            if (url) setEditingRecipe(prev => prev ? { ...prev, mediaUrl: url, mediaType: 'image' } : prev);
+                            else showToast('AI 圖片生成失敗，請稍後重試', 'error');
+                          } finally {
+                            setImageUploading(null);
+                          }
+                        }}
+                        className="w-full py-2 bg-purple-50 text-purple-600 border border-purple-200 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 hover:bg-purple-100 transition-all disabled:opacity-50"
+                      >
+                        {imageUploading === `ai-recipe-${editingRecipe.id}` ? <><RefreshCw size={13} className="animate-spin" /> AI 生成圖片中...</> : <><Sparkles size={13} /> AI 生成封面圖片</>}
+                      </button>
                     </div>
                   </div>
                 </div>
