@@ -50,6 +50,7 @@ export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
   miscCost: row.misc_cost ?? undefined,
   legacyId: row.legacy_id ?? undefined,
   saleChannel: (['retail', 'wholesale', 'both'].includes(row.sale_channel ?? '') ? row.sale_channel as SaleChannel : 'both'),
+  purchaseLimit: row.purchase_limit ?? undefined,
 });
 
 export const mapProductToRow = (product: Product): SupabaseProductRow => ({
@@ -82,6 +83,7 @@ export const mapProductToRow = (product: Product): SupabaseProductRow => ({
   misc_cost: product.miscCost ?? 0,
   legacy_id: product.legacyId ?? null,
   sale_channel: product.saleChannel ?? 'both',
+  purchase_limit: product.purchaseLimit ?? null,
 });
 
 export const mapIngredientRowToIngredient = (row: SupabaseIngredientRow): Ingredient => ({

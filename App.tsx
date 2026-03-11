@@ -735,14 +735,25 @@ const App: React.FC = () => {
   // table. Empty until the admin creates categories in the '類別管理' sub-tab.
   const ingredientCategories = ingredientCategoryList.map(c => c.name);
   const filteredIngredients = useMemo(() => {
-    return ingredients.filter(ing => {
-      if (ingredientCategoryFilter !== 'all' && ing.category !== ingredientCategoryFilter) return false;
+    const filtered = ingredients.filter(ing => {
+      if (ingredientCategoryFilter === 'uncategorized') {
+        if (ing.category) return false;
+      } else if (ingredientCategoryFilter !== 'all' && ing.category !== ingredientCategoryFilter) {
+        return false;
+      }
       if (ingredientChannelFilter !== 'all') {
         const ch = ing.saleChannel || 'both';
         if (ingredientChannelFilter === 'retail') return ch === 'retail' || ch === 'both';
         if (ingredientChannelFilter === 'wholesale') return ch === 'wholesale' || ch === 'both';
       }
       return true;
+    });
+    return filtered.sort((a, b) => {
+      const aCat = a.category || '';
+      const bCat = b.category || '';
+      if (!aCat && bCat) return -1;
+      if (aCat && !bCat) return 1;
+      return aCat.localeCompare(bCat, 'zh-HK');
     });
   }, [ingredients, ingredientCategoryFilter, ingredientChannelFilter]);
 
@@ -1295,7 +1306,12 @@ const App: React.FC = () => {
     if (e) { e.stopPropagation(); e.preventDefault(); }
     setCart(prev => {
       const existing = prev.find(item => item.id === product.id);
-      const newQty = (existing?.qty || 0) + delta;
+      const currentQty = existing?.qty || 0;
+      const newQty = currentQty + delta;
+      if (delta > 0 && product.purchaseLimit && newQty > product.purchaseLimit) {
+        showToast(`已到限購上限（每單限買 ${product.purchaseLimit} 件）`, 'error');
+        return prev;
+      }
       if (!existing && delta > 0) return [...prev, { ...product, qty: 1 }];
       if (existing) {
         if (newQty <= 0) return prev.filter(item => item.id !== product.id);
@@ -4227,6 +4243,7 @@ const App: React.FC = () => {
                 </div>
                 <select value={ingredientCategoryFilter} onChange={e => { setIngredientCategoryFilter(e.target.value); setSelectedIngredientIds(new Set()); }} className="px-3 py-2 bg-slate-50 rounded-xl text-xs font-bold border border-slate-200">
                   <option value="all">全部類別</option>
+                  <option value="uncategorized">未分類</option>
                   {ingredientCategories.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
                 <select value={ingredientChannelFilter} onChange={e => { setIngredientChannelFilter(e.target.value); setSelectedIngredientIds(new Set()); }} className="px-3 py-2 bg-slate-50 rounded-xl text-xs font-bold border border-slate-200">
@@ -4782,7 +4799,16 @@ const App: React.FC = () => {
                               steps,
                               linkedProductIds: [],
                             };
-                            if (recipe.title) { allTitles.push(recipe.title); await upsertRecipe(recipe); successCount++; }
+                            if (recipe.title) {
+                              const isDuplicate = allTitles.some(t => t.trim().toLowerCase() === recipe.title.trim().toLowerCase());
+                              if (!isDuplicate) {
+                                allTitles.push(recipe.title);
+                                await upsertRecipe(recipe);
+                                successCount++;
+                              } else {
+                                failCount++;
+                              }
+                            }
                           } catch { failCount++; }
                           if (i < BATCH_COUNT - 1) await new Promise(r => setTimeout(r, COOLDOWN_MS));
                         }
@@ -5344,6 +5370,12 @@ const App: React.FC = () => {
                  </div>
                );
              })()}
+             {selectedProduct.purchaseLimit && (
+               <div className="flex items-center gap-2 px-4 py-2.5 bg-orange-50 border border-orange-100 rounded-2xl">
+                 <span className="text-orange-500 text-sm">⚠️</span>
+                 <p className="text-[11px] font-black text-orange-600">每單只限買 {selectedProduct.purchaseLimit} 件</p>
+               </div>
+             )}
              <div className="flex items-center justify-between p-6 bg-slate-900 text-white rounded-[2.5rem] shadow-xl">
                <div><p className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1">精選價</p><p className="text-3xl font-black">${getPrice(selectedProduct)}</p>{getPrice(selectedProduct) < selectedProduct.price && <p className="text-xs text-white/40 line-through">${selectedProduct.price}</p>}</div>
                <button onClick={() => { updateCart(selectedProduct, 1); setSelectedProduct(null); showToast('已加入購物車'); }} className={`${accentClass} text-white px-10 py-5 rounded-[1.5rem] font-black text-sm shadow-2xl active:scale-95 transition-all`}>立即選購</button>
@@ -5801,6 +5833,19 @@ const App: React.FC = () => {
                     <option value="true">是</option>
                     <option value="false">否</option>
                   </select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">限購數量</label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={editingProduct.purchaseLimit ?? ''}
+                    onChange={e => setEditingProduct({ ...editingProduct, purchaseLimit: e.target.value ? Math.max(1, parseInt(e.target.value, 10)) : undefined })}
+                    placeholder="留空 = 不限購"
+                    className="w-full p-3 bg-slate-50 rounded-2xl font-bold"
+                  />
+                  <p className="text-[9px] text-slate-400 font-bold">每位客人每單最多購買數量。留空代表不限。</p>
                 </div>
                 <div className="space-y-2 md:col-span-2">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">產品分類</label>
@@ -7094,6 +7139,7 @@ const App: React.FC = () => {
                                 <div className="flex-1 min-w-0"><h4 className="font-bold text-slate-900 text-[15px] leading-tight group-hover:text-blue-600 transition-colors flex items-center gap-2">{pName(p)}</h4>
                                   {p.tags && p.tags.length > 0 && (<div className="flex flex-wrap gap-1 mt-1.5">{p.tags.map(tag => (<span key={tag} className="px-1.5 py-0.5 bg-blue-50 text-blue-600 border border-blue-100 rounded text-[9px] font-bold uppercase tracking-tight">{tag}</span>))}</div>)}
                                   {p.bulkDiscount && (<p className="text-[10px] font-black text-rose-500 uppercase tracking-tight mt-1 animate-pulse">{p.bulkDiscount.threshold}件+ 即減 {p.bulkDiscount.value}{p.bulkDiscount.type === 'percent' ? '%' : '元'}</p>)}
+                                  {p.purchaseLimit && (<p className="text-[10px] font-black text-orange-500 mt-1">每單只限買 {p.purchaseLimit} 件</p>)}
                                 </div>
                              </div>
                              <div className="flex items-end justify-between mt-2">

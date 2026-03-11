@@ -190,6 +190,7 @@ export interface Product {
   packagingCost?: number;   // 包裝費 (Skin Pack, 真空袋, etc.)
   miscCost?: number;        // 稅費 / 其他
   saleChannel?: SaleChannel; // 銷售渠道：retail / wholesale / both
+  purchaseLimit?: number;   // 每位客人每單限購數量，null = 不限
 }
 
 export interface CartItem extends Product {
@@ -311,6 +312,7 @@ export interface SupabaseProductRow {
   misc_cost?: number | null;
   legacy_id?: string | null;
   sale_channel?: string | null;
+  purchase_limit?: number | null;
 }
 
 /** Supabase public.categories table – column names must match (snake_case). */

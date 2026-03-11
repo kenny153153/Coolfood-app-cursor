@@ -108,7 +108,7 @@ const ACTIONS: Record<string, (payload: any) => Promise<any>> = {
         : '';
 
     const exclusionHint = Array.isArray(existingTitles) && existingTitles.length > 0
-      ? `\n\n已有食譜（不要重複）：${existingTitles.join('、')}`
+      ? `\n\n⚠️ 嚴格禁止重複！以下食譜已存在，絕對不能重複或使用相近名稱：\n${existingTitles.map((t: string) => `- ${t}`).join('\n')}\n請生成一個完全不同主題的食譜。`
       : '';
 
     const basePrompt = `生成一個簡單家常食譜。回覆嚴格 JSON（不要 markdown）：
@@ -133,7 +133,7 @@ ${context}
 - 如有食譜名稱就用，否則起一個簡短的菜名
 - 以香港家常小菜為主${categoryHint}${exclusionHint}`;
 
-    const raw = await callVertex(withUserInstruction(basePrompt, userInstruction), 0.7, { topP: 0.9, systemInstruction: RECIPE_SYSTEM });
+    const raw = await callVertex(withUserInstruction(basePrompt, userInstruction), 0.85, { topP: 0.95, systemInstruction: RECIPE_SYSTEM });
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) throw new Error('Invalid JSON from AI');
     return JSON.parse(match[0]);
