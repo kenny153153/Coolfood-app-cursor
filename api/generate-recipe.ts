@@ -95,6 +95,21 @@ function withUserInstruction(base: string, userInstruction?: string): string {
   return `【用戶額外指令 — 最高優先】\n${userInstruction.trim()}\n\n---\n\n${base}`;
 }
 
+const FOOD_PHOTO_DIRECTOR_SYSTEM = `You are a professional food photography art director. 
+Your task: translate a Chinese recipe name and short description into a highly detailed English image generation prompt for Imagen 3.
+
+Rules:
+- Output ONLY the English prompt text. No explanations, no quotes, no JSON.
+- Always include: the precise English name of the dish, key ingredients visible, plating style (Chinese home-style or restaurant), lighting (natural daylight or warm studio), camera angle (overhead or 45-degree), and quality keywords.
+- End every prompt with: food photography, high resolution, appetizing, vibrant colors, professional food styling.
+- Keep it under 200 words.`;
+
+async function expandPromptWithGemini(title: string, description: string): Promise<string> {
+  const input = `Recipe name: ${title}${description ? `\nDescription: ${description}` : ''}`;
+  const expanded = await callVertex(input, 0.4, { systemInstruction: FOOD_PHOTO_DIRECTOR_SYSTEM });
+  return expanded.trim() || `Professional food photography of ${title}, served on a white ceramic plate, natural daylight, overhead shot, appetizing, high resolution`;
+}
+
 async function callImagen(prompt: string): Promise<string> {
   const credsJson = process.env.GOOGLE_VERTEX_AI_CREDENTIALS;
   if (!credsJson) throw new Error('GOOGLE_VERTEX_AI_CREDENTIALS not configured');
@@ -123,12 +138,21 @@ async function callImagen(prompt: string): Promise<string> {
     },
     body: JSON.stringify({
       instances: [{ prompt }],
-      parameters: { sampleCount: 1, aspectRatio: '1:1' },
+      parameters: {
+        sampleCount: 1,
+        aspectRatio: '1:1',
+        safetyFilterLevel: 'block_few',
+        personGeneration: 'dont_allow',
+      },
     }),
   });
 
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || `Imagen API error: ${response.status}`);
+  if (!response.ok) {
+    const errMsg = data.error?.message || `Imagen API error: ${response.status}`;
+    console.error('[callImagen] error:', errMsg, JSON.stringify(data).slice(0, 300));
+    throw new Error(errMsg);
+  }
 
   const base64 = data.predictions?.[0]?.bytesBase64Encoded;
   if (!base64) throw new Error('No image returned from Imagen');
@@ -229,9 +253,12 @@ ${context}
 
   async 'generate-recipe-image'(payload) {
     const { title, description } = payload;
-    const prompt = `Professional food photography of "${title}". ${description ? description + '. ' : ''}Authentic Hong Kong home-cooked dish served on a clean white ceramic plate, natural daylight, overhead shot, appetizing and vibrant colors, restaurant quality presentation.`;
-    const base64Image = await callImagen(prompt);
-    return { base64Image };
+    // Step 1: Gemini expands the Chinese recipe name into a rich English photography prompt
+    const expandedPrompt = await expandPromptWithGemini(title, description || '');
+    console.log(`[generate-recipe-image] title="${title}" → expanded prompt: ${expandedPrompt.slice(0, 120)}...`);
+    // Step 2: Imagen 3 generates the image from the expanded prompt
+    const base64Image = await callImagen(expandedPrompt);
+    return { base64Image, expandedPrompt };
   },
 };
 
