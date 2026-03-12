@@ -1801,7 +1801,14 @@ const App: React.FC = () => {
       }
       return false;
     }
-    setProducts(data.map(mapProductRowToProduct));
+    // Merge upserted products into existing state instead of replacing everything
+    const upsertedMap = new Map(data.map(mapProductRowToProduct).map(p => [p.id, p]));
+    setProducts(prev => {
+      const merged = prev.map(p => upsertedMap.has(p.id) ? upsertedMap.get(p.id)! : p);
+      const existingIds = new Set(prev.map(p => p.id));
+      const brandNew = Array.from(upsertedMap.values()).filter(p => !existingIds.has(p.id));
+      return [...merged, ...brandNew];
+    });
     return true;
   };
 
@@ -3140,7 +3147,7 @@ const App: React.FC = () => {
             else if (h === 'legacyId' || h === 'legacy_id') { if (val) p.legacyId = val; }
             else if (h === 'saleChannel' || h === 'sale_channel') {
               const ch = val.toLowerCase();
-              p.saleChannel = (['retail', 'wholesale', 'both'].includes(ch) ? ch as SaleChannel : 'both');
+              p.saleChannel = (['retail', 'wholesale', 'both'].includes(ch) ? ch as SaleChannel : 'retail');
             }
             else if (val) p[h] = val;
           });
@@ -3187,7 +3194,7 @@ const App: React.FC = () => {
         p.id.toLowerCase().includes(q) ||
         (p.legacyId?.toLowerCase() ?? '').includes(q);
       if (!matchSearch) return false;
-      const ch = p.saleChannel || 'both';
+      const ch = p.saleChannel || 'retail';
       if (inventoryChannelFilter === 'retail') return ch === 'retail' || ch === 'both';
       if (inventoryChannelFilter === 'wholesale') return ch === 'wholesale' || ch === 'both';
       return true;
@@ -3196,7 +3203,7 @@ const App: React.FC = () => {
 
   const filteredStoreProducts = useMemo(() => {
     const channelFiltered = products.filter(p => {
-      const ch = p.saleChannel || 'both';
+      const ch = p.saleChannel || 'retail';
       if (isWholesaleRoute) return ch === 'wholesale' || ch === 'both';
       return ch === 'retail' || ch === 'both';
     });
@@ -3338,7 +3345,7 @@ const App: React.FC = () => {
               }} className="px-6 py-3 bg-purple-600 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-sm hover:bg-purple-700 transition-all disabled:opacity-50">
                 {aiDescLoading ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />} AI 批量寫描述
               </button>
-              <button onClick={() => setEditingProduct({ id: 'P-'+Date.now(), name: '', price: 0, memberPrice: 0, stock: 0, categories: [], tags: [], image: '🥩', trackInventory: true, recipes: [], seoTitle: '', seoDescription: '', imageAlt: '', saleChannel: 'both' })} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 transition-all">
+              <button onClick={() => setEditingProduct({ id: 'P-'+Date.now(), name: '', price: 0, memberPrice: 0, stock: 0, categories: [], tags: [], image: '🥩', trackInventory: true, recipes: [], seoTitle: '', seoDescription: '', imageAlt: '', saleChannel: 'retail' })} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 transition-all">
                 <Plus size={16}/> 上架新產品
               </button>
             </div>
@@ -3369,7 +3376,9 @@ const App: React.FC = () => {
                 if (!confirm(`確定刪除 ${selectedProductIds.size} 項產品？此操作無法復原。`)) return;
                 const ids = Array.from(selectedProductIds);
                 try {
-                  for (const id of ids) await deleteProduct(id);
+                  const { error } = await supabase.from('products').delete().in('id', ids);
+                  if (error) throw error;
+                  setProducts(prev => prev.filter(p => !ids.includes(p.id)));
                   setSelectedProductIds(new Set());
                   showToast(`已刪除 ${ids.length} 項產品`);
                 } catch (err: any) { showToast(`批量刪除失敗：${err.message}`, 'error'); }
@@ -3440,7 +3449,7 @@ const App: React.FC = () => {
                       </td>
                       <td className="px-4 py-4">
                         <select
-                          value={p.saleChannel || 'both'}
+                          value={p.saleChannel || 'retail'}
                           onChange={async e => {
                             const ch = e.target.value as SaleChannel;
                             const { error } = await supabase.from('products').update({ sale_channel: ch }).eq('id', p.id);
@@ -5074,7 +5083,7 @@ const App: React.FC = () => {
         const costsWsRules: WholesalePricingRules = siteConfig.wholesalePricingRules || { targetMarginFactor: 0.88, priceTiers: [] };
         if (!costsWsRules.priceTiers) costsWsRules.priceTiers = [];
         const costsFilteredProducts = products.filter(p => {
-          const ch = p.saleChannel || 'both';
+          const ch = p.saleChannel || 'retail';
           if (costsChannelFilter === 'retail') return ch === 'retail' || ch === 'both';
           if (costsChannelFilter === 'wholesale') return ch === 'wholesale' || ch === 'both';
           return true;
