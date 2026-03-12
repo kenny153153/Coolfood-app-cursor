@@ -3055,22 +3055,49 @@ const App: React.FC = () => {
   };
 
   const downloadCSVTemplate = () => {
-    const headers = ['id', 'legacyId', 'name', 'price', 'memberPrice', 'stock', 'categories', 'tags', 'trackInventory', 'description', 'origin', 'weight', 'image', 'imageAlt', 'seoTitle', 'seoDescription'];
-    const sample1 = ['', 'OLD-101', '澳洲M5和牛肉眼', '350', '298', '10', 'beef|wagyu', '急凍|牛扒', 'true', '頂級和牛肉眼扒', '澳洲', '300g', '', '澳洲M5和牛肉眼 急凍真空包裝', '澳洲M5和牛肉眼 | 香港急凍肉網購', '新鮮急凍澳洲M5和牛肉眼扒，順豐冷鏈配送到家'];
-    const sample2 = ['', 'OLD-102', '安格斯牛扒', '120', '', '20', 'beef', '牛扒|安格斯', 'true', '優質安格斯牛扒', '美國', '250g', '', '', '', ''];
+    const headers = ['id', 'legacyId', 'name', 'price', 'memberPrice', 'stock', 'saleChannel', 'categories', 'tags', 'trackInventory', 'description', 'origin', 'weight', 'image', 'imageAlt', 'seoTitle', 'seoDescription'];
+    const sample1 = ['', 'OLD-101', '澳洲M5和牛肉眼', '350', '298', '10', 'both', 'beef|wagyu', '急凍|牛扒', 'true', '頂級和牛肉眼扒', '澳洲', '300g', '', '澳洲M5和牛肉眼 急凍真空包裝', '澳洲M5和牛肉眼 | 香港急凍肉網購', '新鮮急凍澳洲M5和牛肉眼扒，順豐冷鏈配送到家'];
+    const sample2 = ['', 'OLD-102', '安格斯牛扒', '120', '', '20', 'retail', 'beef', '牛扒|安格斯', 'true', '優質安格斯牛扒', '美國', '250g', '', '', '', ''];
+    const sample3 = ['', 'OLD-103', '急凍三文魚柳（批發）', '280', '', '50', 'wholesale', 'fish', '三文魚|批發', 'true', '整件批發三文魚柳', '挪威', '1kg', '', '', '', ''];
     const instructions = [
-      '# 使用說明：',
-      '# 1. id 留空則自動生成（推薦），填寫則用你自訂的 ID',
-      '# 2. legacyId 為舊系統 ID，選填，方便對照舊系統',
-      '# 3. categories 和 tags 用 | (直線) 分隔多個值，例如: beef|wagyu',
-      '# 3. memberPrice 留空或填 0 = 不設折扣',
-      '# 4. trackInventory 填 true 或 false',
-      '# 5. image 可填圖片 URL，留空則預設為 emoji',
-      '# 6. SEO 欄位選填，有助 Google 搜尋排名',
-      '# 7. stock 必須為整數（例如 10，不可填 10.5）',
-      '# 8. 所有成本欄位選填，留空則預設為 0',
+      '# ═══════════════════════════════════════════════',
+      '# 產品批量上傳範本 — 使用說明',
+      '# ═══════════════════════════════════════════════',
+      '#',
+      '# ★ 必填欄位：name（名稱）、price（售價）',
+      '#',
+      '# ─── 各欄位說明 ───',
+      '# id          : 留空則自動生成（推薦新產品留空）；填寫則覆蓋更新同一 ID 的產品',
+      '# legacyId    : 舊系統產品編號（選填），方便對照舊系統',
+      '# name        : 產品名稱（必填）',
+      '# price       : 售價，數字，例如 350',
+      '# memberPrice : 折扣價，留空或填 0 = 不設折扣',
+      '# stock       : 庫存數量，必須為整數（例如 10），trackInventory=false 時可留空',
+      '#',
+      '# saleChannel : 銷售渠道（重要！）',
+      '#               both     = 零售 + 批發（預設，留空即視為 both）',
+      '#               retail   = 僅零售網店顯示',
+      '#               wholesale= 僅批發網店顯示',
+      '#',
+      '# categories  : 產品分類，多個用 | 分隔，例如: beef|wagyu',
+      '#               可填分類名稱或分類 ID，系統會自動對應',
+      '# tags        : 搜尋標籤，多個用 | 分隔，例如: 牛扒|急凍',
+      '# trackInventory: 是否追蹤庫存，填 true 或 false（預設 true）',
+      '# description : 產品描述文字（選填）',
+      '# origin      : 產地，例如：澳洲、美國、挪威（選填）',
+      '# weight      : 重量規格，例如：300g、1kg（選填）',
+      '# image       : 產品圖片 URL（選填），留空則顯示預設 emoji',
+      '# imageAlt    : 圖片替代文字，有助 SEO（選填）',
+      '# seoTitle    : SEO 標題，有助 Google 搜尋排名（選填）',
+      '# seoDescription: SEO 描述（選填）',
+      '#',
+      '# ─── 注意事項 ───',
+      '# • 以 # 開頭的行為說明，匯入時會自動跳過',
+      '# • 相同 id 的產品會覆蓋更新（Upsert）',
+      '# • 用 Excel 或 Google Sheets 開啟後，請存成 CSV 格式再上傳',
+      '# ═══════════════════════════════════════════════',
     ];
-    const csvContent = [instructions.join('\n'), headers.join(','), sample1.join(','), sample2.join(',')].join('\n');
+    const csvContent = [instructions.join('\n'), headers.join(','), sample1.join(','), sample2.join(','), sample3.join(',')].join('\n');
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -3111,6 +3138,10 @@ const App: React.FC = () => {
             else if (h === 'trackInventory') p[h] = val ? val.toLowerCase() === 'true' : true;
             else if (h === 'costItemIds' || h === 'cost_item_ids') p.costItemIds = val ? val.split('|').map((v: string) => v.trim()).filter(Boolean) : [];
             else if (h === 'legacyId' || h === 'legacy_id') { if (val) p.legacyId = val; }
+            else if (h === 'saleChannel' || h === 'sale_channel') {
+              const ch = val.toLowerCase();
+              p.saleChannel = (['retail', 'wholesale', 'both'].includes(ch) ? ch as SaleChannel : 'both');
+            }
             else if (val) p[h] = val;
           });
           if (!p.id || p.id === '') {
