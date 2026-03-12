@@ -597,6 +597,7 @@ const App: React.FC = () => {
     logoIcon: '❄️',
     accentColor: 'blue',
     pricingRules: {
+      targetMarginFactor: 0.88,
       memberDiscountPercent: 0,
       walletDiscountPercent: 0,
       autoApplyMemberPrice: true,
@@ -3695,6 +3696,49 @@ const App: React.FC = () => {
 
             {pricingSubTab === 'retail' && (
               <>
+                {/* ── 零售目標利潤率 ── */}
+                {(() => {
+                  const rtFactor = siteConfig.pricingRules?.targetMarginFactor ?? 0.88;
+                  const rtExampleCost = 100;
+                  const rtSuggestedPrice = rtExampleCost / rtFactor;
+                  const rtMarginPct = Math.round((1 - rtFactor) * 100);
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                        <div className="flex items-center gap-2"><div className="p-2.5 bg-orange-50 text-orange-600 rounded-xl"><Percent size={18}/></div><h4 className="font-black text-sm">目標利潤率（零售基準）</h4></div>
+                        <p className="text-[10px] text-slate-400 font-bold">Target Margin Factor — 用來從成本反算零售建議售價</p>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number" min="0.01" max="1" step="0.01"
+                            value={rtFactor}
+                            onChange={e => setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, targetMarginFactor: Number(e.target.value) || 0.88}})}
+                            className="flex-1 p-4 bg-slate-50 rounded-2xl font-black text-xl text-center border border-slate-100 focus:ring-2 focus:ring-orange-100"
+                          />
+                        </div>
+                        <p className="text-[9px] text-slate-300 font-bold">0.88 = 12% 毛利、0.85 = 15% 毛利、0.80 = 20% 毛利</p>
+                      </div>
+                      <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                        <div className="flex items-center gap-2"><div className="p-2.5 bg-slate-100 text-slate-600 rounded-xl"><Zap size={18}/></div><h4 className="font-black text-sm">定價預覽（成本基礎）</h4></div>
+                        <p className="text-[10px] text-slate-400 font-bold">如果 成本/出成率 = $100</p>
+                        <div className="space-y-2 text-xs">
+                          <div className="flex justify-between items-center p-2.5 bg-slate-50 rounded-xl">
+                            <span className="text-slate-500 font-bold">📦 成本</span>
+                            <span className="font-black text-slate-900">${rtExampleCost}</span>
+                          </div>
+                          <div className="flex justify-between items-center p-2.5 bg-orange-50 rounded-xl">
+                            <div>
+                              <span className="text-orange-600 font-bold">建議售價</span>
+                              <span className="text-[9px] text-orange-400 ml-1">÷ {rtFactor} ({rtMarginPct}% 毛利)</span>
+                            </div>
+                            <span className="font-black text-orange-700">${rtSuggestedPrice.toFixed(1)}</span>
+                          </div>
+                        </div>
+                        <p className="text-[9px] text-slate-300 font-bold">此為定價參考，實際售價請在下方產品表手動設定</p>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* ── 零售定價規則卡片 ── */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">

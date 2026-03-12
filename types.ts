@@ -370,6 +370,7 @@ export interface SupabaseSlideshowRow {
 export type PricingTier = 'guest' | 'member' | 'wallet';
 
 export interface GlobalPricingRules {
+  targetMarginFactor?: number;    // 零售目標利潤率因子（如 0.88 = 12% 毛利）→ 建議售價 = 成本 ÷ factor
   memberDiscountPercent: number;  // 會員折扣 %（如 5 = 減 5%）
   walletDiscountPercent: number;  // 錢包折扣 %（如 5 = 再減 5%）
   autoApplyMemberPrice: boolean;
