@@ -774,8 +774,8 @@ const App: React.FC = () => {
   const [editingIngredientCategory, setEditingIngredientCategory] = useState<IngredientCategory | null>(null);
   const [customUnits, setCustomUnits] = useState<{ id: string; label: string; value: string }[]>([]);
   const [selectedIngredientIds, setSelectedIngredientIds] = useState<Set<string>>(new Set());
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
   const [ingredientCategoryFilter, setIngredientCategoryFilter] = useState<string>('all');
-  const [ingredientChannelFilter, setIngredientChannelFilter] = useState<string>('all');
   const DEFAULT_UNITS = [{ value: 'lb', label: '磅 (lb)' }, { value: 'kg', label: '公斤 (kg)' }, { value: 'pc', label: '件 (pc)' }, { value: 'box', label: '箱 (box)' }, { value: 'pack', label: '包 (pack)' }];
   const allUnits = useMemo(() => [...DEFAULT_UNITS, ...customUnits.filter(u => u.value && u.label).map(u => ({ value: u.value, label: u.label }))], [customUnits]);
   // ingredientCategories: driven solely by the Supabase ingredient_categories
@@ -787,11 +787,6 @@ const App: React.FC = () => {
         if (ing.category) return false;
       } else if (ingredientCategoryFilter !== 'all' && ing.category !== ingredientCategoryFilter) {
         return false;
-      }
-      if (ingredientChannelFilter !== 'all') {
-        const ch = ing.saleChannel || 'both';
-        if (ingredientChannelFilter === 'retail') return ch === 'retail' || ch === 'both';
-        if (ingredientChannelFilter === 'wholesale') return ch === 'wholesale' || ch === 'both';
       }
       return true;
     });
@@ -805,7 +800,7 @@ const App: React.FC = () => {
       const bOrder = ingredientCategoryList.find(c => c.name === bCat)?.sortOrder ?? 9999;
       return aOrder - bOrder;
     });
-  }, [ingredients, ingredientCategoryFilter, ingredientChannelFilter, ingredientCategoryList]);
+  }, [ingredients, ingredientCategoryFilter, ingredientCategoryList]);
 
   // AI State
   const [aiAnalysis, setAiAnalysis] = useState<string>('');
@@ -3233,7 +3228,7 @@ const App: React.FC = () => {
               { id: 'retail' as const, label: '零售' },
               { id: 'wholesale' as const, label: '批發' },
             ]).map(ch => (
-              <button key={ch.id} onClick={() => setInventoryChannelFilter(ch.id)} className={`px-5 py-2 rounded-xl text-xs font-black transition-all ${inventoryChannelFilter === ch.id ? 'bg-slate-900 text-white shadow-lg' : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-50'}`}>
+              <button key={ch.id} onClick={() => { setInventoryChannelFilter(ch.id); setSelectedProductIds(new Set()); }} className={`px-5 py-2 rounded-xl text-xs font-black transition-all ${inventoryChannelFilter === ch.id ? 'bg-slate-900 text-white shadow-lg' : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-50'}`}>
                 {ch.label}
               </button>
             ))}
@@ -3243,7 +3238,7 @@ const App: React.FC = () => {
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
               <input 
                 value={adminProductSearch}
-                onChange={e => setAdminProductSearch(e.target.value)}
+                onChange={e => { setAdminProductSearch(e.target.value); setSelectedProductIds(new Set()); }}
                 placeholder="搜索產品..." 
                 className="w-full pl-12 pr-6 py-3 bg-white border border-slate-100 rounded-2xl font-bold" 
               />
@@ -3317,13 +3312,55 @@ const App: React.FC = () => {
               </button>
             </div>
           </div>
+          {/* Product batch action bar */}
+          {selectedProductIds.size > 0 && (
+            <div className="flex items-center gap-3 p-4 bg-blue-50 border border-blue-200 rounded-2xl animate-fade-in flex-wrap">
+              <span className="text-xs font-black text-blue-700">已選 {selectedProductIds.size} 項</span>
+              <select id="batchProductChannelSelect" className="px-3 py-1.5 bg-white rounded-lg text-xs font-bold border border-blue-200" defaultValue="">
+                <option value="" disabled>設定銷售渠道...</option>
+                <option value="retail">僅零售</option>
+                <option value="wholesale">僅批發</option>
+                <option value="both">零售 + 批發</option>
+              </select>
+              <button onClick={async () => {
+                const sel = (document.getElementById('batchProductChannelSelect') as HTMLSelectElement)?.value;
+                if (!sel) { showToast('請先選擇渠道', 'error'); return; }
+                const ids = Array.from(selectedProductIds);
+                try {
+                  const { error } = await supabase.from('products').update({ sale_channel: sel }).in('id', ids);
+                  if (error) throw error;
+                  setProducts(prev => prev.map(p => ids.includes(p.id) ? { ...p, saleChannel: sel as SaleChannel } : p));
+                  setSelectedProductIds(new Set());
+                  showToast(`已為 ${ids.length} 項產品設定銷售渠道`);
+                } catch (err: any) { showToast(`批量更新失敗：${err.message}`, 'error'); }
+              }} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-black active:scale-95 transition-all">套用渠道</button>
+              <button onClick={async () => {
+                if (!confirm(`確定刪除 ${selectedProductIds.size} 項產品？此操作無法復原。`)) return;
+                const ids = Array.from(selectedProductIds);
+                try {
+                  for (const id of ids) await deleteProduct(id);
+                  setSelectedProductIds(new Set());
+                  showToast(`已刪除 ${ids.length} 項產品`);
+                } catch (err: any) { showToast(`批量刪除失敗：${err.message}`, 'error'); }
+              }} className="px-3 py-1.5 bg-rose-500 text-white rounded-lg text-xs font-black active:scale-95 transition-all ml-auto flex items-center gap-1"><Trash2 size={12}/> 批量刪除</button>
+            </div>
+          )}
           <div className="bg-white rounded-[2.5rem] border border-slate-100 overflow-hidden shadow-sm">
              <table className="w-full text-left text-sm">
                 <thead className="bg-slate-50 border-b border-slate-100">
                   <tr>
+                    <th className="text-center px-3 py-4 w-10">
+                      <button onClick={() => {
+                        if (selectedProductIds.size === filteredAdminProducts.length && filteredAdminProducts.length > 0) setSelectedProductIds(new Set());
+                        else setSelectedProductIds(new Set(filteredAdminProducts.map(p => p.id)));
+                      }} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${selectedProductIds.size === filteredAdminProducts.length && filteredAdminProducts.length > 0 ? 'border-blue-500 bg-blue-500 text-white' : 'border-slate-200 bg-white'}`}>
+                        {selectedProductIds.size === filteredAdminProducts.length && filteredAdminProducts.length > 0 && <Check size={12} strokeWidth={3}/>}
+                      </button>
+                    </th>
                     <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">產品</th>
                     <th className="px-4 py-4 font-bold text-slate-400 uppercase text-[10px]">ID (舊)</th>
                     <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">分類</th>
+                    <th className="px-4 py-4 font-bold text-slate-400 uppercase text-[10px]">銷售渠道</th>
                     <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">庫存</th>
                     <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">操作</th>
                   </tr>
@@ -3331,24 +3368,30 @@ const App: React.FC = () => {
                 <tbody className="divide-y divide-slate-50">
                   {filteredAdminProducts.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="px-6 py-10 text-center text-slate-400 font-bold">
+                      <td colSpan={7} className="px-6 py-10 text-center text-slate-400 font-bold">
                         尚未有產品
                       </td>
                     </tr>
                   )}
-                  {filteredAdminProducts.map(p => (
-                    <tr key={p.id} className="hover:bg-slate-50 transition-colors">
+                  {filteredAdminProducts.map(p => {
+                    const isSelected = selectedProductIds.has(p.id);
+                    return (
+                    <tr key={p.id} className={`hover:bg-slate-50 transition-colors ${isSelected ? 'bg-blue-50/40' : ''}`}>
+                      <td className="text-center px-3 py-4">
+                        <button onClick={() => setSelectedProductIds(prev => {
+                          const next = new Set(prev);
+                          if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
+                          return next;
+                        })} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${isSelected ? 'border-blue-500 bg-blue-500 text-white' : 'border-slate-200 bg-white'}`}>
+                          {isSelected && <Check size={12} strokeWidth={3}/>}
+                        </button>
+                      </td>
                       <td className="px-6 py-4 flex items-center gap-3">
                         <div className="w-10 h-10 rounded-lg overflow-hidden flex items-center justify-center bg-slate-50 border border-slate-100">
                           {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-xl">{p.image}</span>}
                         </div>
                         <div className="flex flex-col">
-                           <div className="flex items-center gap-1.5">
-                             <span className="font-bold text-slate-800">{p.name}</span>
-                             {(p.saleChannel === 'retail') && <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded text-[8px] font-black">零售</span>}
-                             {(p.saleChannel === 'wholesale') && <span className="px-1.5 py-0.5 bg-orange-50 text-orange-600 rounded text-[8px] font-black">批發</span>}
-                             {(!p.saleChannel || p.saleChannel === 'both') && <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-600 rounded text-[8px] font-black">零售+批發</span>}
-                           </div>
+                           <span className="font-bold text-slate-800">{p.name}</span>
                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">${p.price}{p.memberPrice > 0 && p.memberPrice < p.price ? ` / 折扣: $${p.memberPrice}` : ''}</span>
                         </div>
                       </td>
@@ -3363,6 +3406,22 @@ const App: React.FC = () => {
                             </span>
                           ))}
                         </div>
+                      </td>
+                      <td className="px-4 py-4">
+                        <select
+                          value={p.saleChannel || 'both'}
+                          onChange={async e => {
+                            const ch = e.target.value as SaleChannel;
+                            const { error } = await supabase.from('products').update({ sale_channel: ch }).eq('id', p.id);
+                            if (error) { showToast(`更新失敗：${error.message}`, 'error'); return; }
+                            setProducts(prev => prev.map(x => x.id === p.id ? { ...x, saleChannel: ch } : x));
+                          }}
+                          className={`px-2.5 py-1 rounded-full text-[10px] font-bold border-0 cursor-pointer focus:ring-2 outline-none ${p.saleChannel === 'retail' ? 'bg-blue-50 text-blue-600 focus:ring-blue-300' : p.saleChannel === 'wholesale' ? 'bg-orange-50 text-orange-600 focus:ring-orange-300' : 'bg-emerald-50 text-emerald-600 focus:ring-emerald-300'}`}
+                        >
+                          <option value="both">零售+批發</option>
+                          <option value="retail">僅零售</option>
+                          <option value="wholesale">僅批發</option>
+                        </select>
                       </td>
                       <td className="px-6 py-4">
                         {p.trackInventory ? (
@@ -3385,7 +3444,8 @@ const App: React.FC = () => {
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
              </table>
           </div>
@@ -4683,8 +4743,7 @@ const App: React.FC = () => {
                         const cols = parseCSVLine(lines[i]);
                         const name = (cols[2] || '').trim();
                         if (!name) { skipped++; continue; }
-                        const channelVal = (cols[9] || '').trim().toLowerCase();
-                        imported.push({
+                          imported.push({
                           id: (cols[0] || '').trim() || `ing-${Date.now()}-${i}`,
                           legacyId: (cols[1] || '').trim() || undefined,
                           name,
@@ -4694,8 +4753,7 @@ const App: React.FC = () => {
                           supplier: (cols[6] || '').trim() || undefined,
                           marketBenchmark: cols[7] && cols[7].trim() ? Number(cols[7]) : undefined,
                           category: (cols[8] || '').trim() || undefined,
-                          saleChannel: (['retail', 'wholesale', 'both'].includes(channelVal) ? channelVal as SaleChannel : undefined),
-                          notes: (cols[10] || '').trim() || undefined,
+                          notes: (cols[9] || '').trim() || undefined,
                         });
                       }
                       if (imported.length === 0) { showToast('無有效資料可匯入', 'error'); return; }
@@ -4716,10 +4774,10 @@ const App: React.FC = () => {
                   </label>
                   {/* Download Template */}
                   <button onClick={() => {
-                    const template = '\uFEFF' + 'id,舊系統ID,名稱,英文名稱,買入成本,單位,供應商,市場參考價,類別,渠道,備註\n'
-                      + 'ing-001,OLD-101,美國 Prime 肋眼,US Prime Ribeye,45.5,lb,ABC Trading,52,牛肉,both,頂級部位\n'
-                      + 'ing-002,OLD-102,澳洲 M5 和牛,AU M5 Wagyu,62,lb,XYZ Meats,70,牛肉,wholesale,\n'
-                      + 'ing-003,,西班牙黑毛豬,Iberico Pork,28.5,lb,,35,豬肉,retail,梅頭部位';
+                    const template = '\uFEFF' + 'id,舊系統ID,名稱,英文名稱,買入成本,單位,供應商,市場參考價,類別,備註\n'
+                      + 'ing-001,OLD-101,美國 Prime 肋眼,US Prime Ribeye,45.5,lb,ABC Trading,52,牛肉,頂級部位\n'
+                      + 'ing-002,OLD-102,澳洲 M5 和牛,AU M5 Wagyu,62,lb,XYZ Meats,70,牛肉,\n'
+                      + 'ing-003,,西班牙黑毛豬,Iberico Pork,28.5,lb,,35,豬肉,梅頭部位';
                     const blob = new Blob([template], { type: 'text/csv;charset=utf-8;' });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
@@ -4744,11 +4802,6 @@ const App: React.FC = () => {
                   <option value="uncategorized">未分類</option>
                   {ingredientCategories.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
-                <select value={ingredientChannelFilter} onChange={e => { setIngredientChannelFilter(e.target.value); setSelectedIngredientIds(new Set()); }} className="px-3 py-2 bg-slate-50 rounded-xl text-xs font-bold border border-slate-200">
-                  <option value="all">全部渠道</option>
-                  <option value="retail">零售</option>
-                  <option value="wholesale">批發</option>
-                </select>
                 <span className="text-[10px] text-slate-300 font-bold ml-1">{filteredIngredients.length} / {ingredients.length} 筆</span>
               </div>
 
@@ -4772,24 +4825,6 @@ const App: React.FC = () => {
                       showToast(`已為 ${ids.length} 項設定類別「${sel}」`);
                     } catch (err: any) { showToast(`批量更新失敗：${err.message}`, 'error'); }
                   }} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-black active:scale-95 transition-all">套用類別</button>
-                  <select id="batchChannelSelect" className="px-3 py-1.5 bg-white rounded-lg text-xs font-bold border border-blue-200 ml-2" defaultValue="">
-                    <option value="" disabled>設定渠道...</option>
-                    <option value="retail">零售</option>
-                    <option value="wholesale">批發</option>
-                    <option value="both">零售+批發</option>
-                  </select>
-                  <button onClick={async () => {
-                    const sel = (document.getElementById('batchChannelSelect') as HTMLSelectElement)?.value;
-                    if (!sel) { showToast('請先選擇渠道', 'error'); return; }
-                    const ids = Array.from(selectedIngredientIds);
-                    try {
-                      const { error } = await supabase.from('ingredients').update({ sale_channel: sel }).in('id', ids);
-                      if (error) throw error;
-                      setIngredients(prev => prev.map(ing => ids.includes(ing.id) ? { ...ing, saleChannel: sel as SaleChannel } : ing));
-                      setSelectedIngredientIds(new Set());
-                      showToast(`已為 ${ids.length} 項設定渠道`);
-                    } catch (err: any) { showToast(`批量更新失敗：${err.message}`, 'error'); }
-                  }} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-black active:scale-95 transition-all">套用渠道</button>
                   <button onClick={async () => {
                     if (!confirm(`確定刪除 ${selectedIngredientIds.size} 項原材料？關聯產品將取消關聯。`)) return;
                     const ids = Array.from(selectedIngredientIds);
@@ -4811,7 +4846,7 @@ const App: React.FC = () => {
                 <div className="text-[10px] text-blue-600 font-bold leading-relaxed">
                   <p className="font-black text-blue-700 mb-1">CSV 批量匯入說明</p>
                   <p>1. 點擊「下載範本」取得 CSV 格式範例 → 2. 用 Excel / Google Sheets 開啟編輯 → 3. 填入原材料資料後存成 CSV → 4. 點「匯入 CSV」上傳</p>
-                  <p className="mt-1 text-blue-400">欄位：ID, 舊系統ID, 名稱*, 英文名稱, 買入成本*, 單位, 供應商, 市場參考價, 類別, 渠道(retail/wholesale/both), 備註。相同 ID 會覆蓋更新。</p>
+                  <p className="mt-1 text-blue-400">欄位：ID, 舊系統ID, 名稱*, 英文名稱, 買入成本*, 單位, 供應商, 市場參考價, 類別, 備註。相同 ID 會覆蓋更新。</p>
                 </div>
               </div>
               <div className="overflow-x-auto">
@@ -4828,7 +4863,6 @@ const App: React.FC = () => {
                       </th>
                       <th className="text-left px-4 py-3">名稱</th>
                       <th className="text-left px-3 py-3">類別</th>
-                      <th className="text-center px-3 py-3">渠道</th>
                       <th className="text-right px-4 py-3">買入成本</th>
                       <th className="text-center px-4 py-3">單位</th>
                       <th className="text-left px-4 py-3">供應商</th>
@@ -4848,7 +4882,7 @@ const App: React.FC = () => {
                           const catObj = catKey ? ingredientCategoryList.find(c => c.name === catKey) : null;
                           rows.push(
                             <tr key={`__ing_cat_${catKey || 'none'}`} className="bg-violet-50/50">
-                              <td colSpan={10} className="px-4 py-2">
+                              <td colSpan={9} className="px-4 py-2">
                                 {catObj ? (
                                   <span className="text-[10px] font-black text-violet-600 uppercase tracking-widest">{catObj.emoji} {catObj.name}</span>
                                 ) : (
@@ -4892,22 +4926,6 @@ const App: React.FC = () => {
                               {ingredientCategories.map(c => <option key={c} value={c}>{c}</option>)}
                             </select>
                           </td>
-                          <td className="text-center px-3 py-3">
-                            <select
-                              value={ing.saleChannel || 'both'}
-                              onChange={async e => {
-                                const ch = e.target.value as SaleChannel;
-                                const { error } = await supabase.from('ingredients').update({ sale_channel: ch }).eq('id', ing.id);
-                                if (error) { showToast(`更新失敗：${error.message}`, 'error'); return; }
-                                setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, saleChannel: ch } : x));
-                              }}
-                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold border-0 cursor-pointer focus:ring-2 outline-none ${ing.saleChannel === 'retail' ? 'bg-emerald-50 text-emerald-600 focus:ring-emerald-300' : ing.saleChannel === 'wholesale' ? 'bg-orange-50 text-orange-600 focus:ring-orange-300' : 'bg-slate-100 text-slate-400 focus:ring-slate-300'}`}
-                            >
-                              <option value="both">通用</option>
-                              <option value="retail">零售</option>
-                              <option value="wholesale">批發</option>
-                            </select>
-                          </td>
                           <td className="text-right px-4 py-3 font-black text-blue-600">${ing.baseCostPerLb.toFixed(2)}</td>
                           <td className="text-center px-4 py-3 text-slate-500">{ing.unit}</td>
                           <td className="px-4 py-3 text-slate-500">{ing.supplier || '—'}</td>
@@ -4930,7 +4948,7 @@ const App: React.FC = () => {
                         );
                       });
                       if (filteredIngredients.length === 0) {
-                        rows.push(<tr key="empty"><td colSpan={10} className="px-4 py-12 text-center text-slate-300 font-bold text-sm">{ingredients.length === 0 ? '尚無原材料，點擊右上角「新增原材料」' : '無符合條件的原材料'}</td></tr>);
+                        rows.push(<tr key="empty"><td colSpan={9} className="px-4 py-12 text-center text-slate-300 font-bold text-sm">{ingredients.length === 0 ? '尚無原材料，點擊右上角「新增原材料」' : '無符合條件的原材料'}</td></tr>);
                       }
                       return rows;
                     })()}
@@ -4981,22 +4999,12 @@ const App: React.FC = () => {
                         <input type="number" min="0" step="0.01" value={editingIngredient.marketBenchmark ?? ''} onChange={e => setEditingIngredient({ ...editingIngredient, marketBenchmark: e.target.value ? Number(e.target.value) : undefined })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100" placeholder="—" />
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">類別</label>
-                        <select value={editingIngredient.category || ''} onChange={e => setEditingIngredient({ ...editingIngredient, category: e.target.value || undefined })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100">
-                          <option value="">（未分類）</option>
-                          {ingredientCategories.map(c => <option key={c} value={c}>{c}</option>)}
-                        </select>
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">渠道</label>
-                        <select value={editingIngredient.saleChannel || 'both'} onChange={e => setEditingIngredient({ ...editingIngredient, saleChannel: e.target.value as SaleChannel })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100">
-                          <option value="both">零售 + 批發</option>
-                          <option value="retail">僅零售</option>
-                          <option value="wholesale">僅批發</option>
-                        </select>
-                      </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">類別</label>
+                      <select value={editingIngredient.category || ''} onChange={e => setEditingIngredient({ ...editingIngredient, category: e.target.value || undefined })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100">
+                        <option value="">（未分類）</option>
+                        {ingredientCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">供應商</label>
@@ -6373,7 +6381,7 @@ const App: React.FC = () => {
                         {ingredientCategories.map(cat => {
                           const catIngs = ingredients.filter(i => i.category === cat);
                           if (catIngs.length === 0) return null;
-                          return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit}){ing.saleChannel === 'wholesale' ? ' [批發]' : ing.saleChannel === 'retail' ? ' [零售]' : ''}</option>)}</optgroup>;
+                          return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>;
                         })}
                         {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>}
                       </select>
