@@ -325,6 +325,7 @@ export interface SupabaseCategoryRow {
   id: string;
   name: string;
   icon: string;
+  sort_order?: number;
 }
 
 /** Supabase public.members table – column names must match (snake_case). Phone required, email optional. */
@@ -347,6 +348,7 @@ export interface Category {
   id: string;
   name: string;
   icon: string;
+  sortOrder?: number;
 }
 
 /** One slide in the store-front advertisement slideshow (image or video). */

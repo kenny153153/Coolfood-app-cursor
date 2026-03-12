@@ -147,13 +147,15 @@ export const computeProductCost = (
 export const mapCategoryRowToCategory = (row: SupabaseCategoryRow): Category => ({
   id: row.id,
   name: row.name,
-  icon: row.icon
+  icon: row.icon,
+  sortOrder: row.sort_order ?? 0,
 });
 
 export const mapCategoryToRow = (category: Category): SupabaseCategoryRow => ({
   id: category.id,
   name: category.name,
-  icon: category.icon
+  icon: category.icon,
+  sort_order: category.sortOrder ?? 0,
 });
 
 export const mapMemberRowToUser = (row: SupabaseMemberRow): User => ({

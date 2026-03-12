@@ -699,6 +699,16 @@ const App: React.FC = () => {
     failedNames: string[];
   } | null>(null);
 
+  // Drag-and-drop state for category reordering
+  const dragProdCatIdx = useRef<number | null>(null);
+  const dragIngCatIdx = useRef<number | null>(null);
+  const dragRecipeMethodCatIdx = useRef<number | null>(null);
+  const dragRecipeMeatCatIdx = useRef<number | null>(null);
+  const [dragOverProdCat, setDragOverProdCat] = useState<number | null>(null);
+  const [dragOverIngCat, setDragOverIngCat] = useState<number | null>(null);
+  const [dragOverRecipeMethodCat, setDragOverRecipeMethodCat] = useState<number | null>(null);
+  const [dragOverRecipeMeatCat, setDragOverRecipeMeatCat] = useState<number | null>(null);
+
   // Modals
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingMember, setEditingMember] = useState<UserType | null>(null);
@@ -790,9 +800,12 @@ const App: React.FC = () => {
       const bCat = b.category || '';
       if (!aCat && bCat) return -1;
       if (aCat && !bCat) return 1;
-      return aCat.localeCompare(bCat, 'zh-HK');
+      if (!aCat && !bCat) return 0;
+      const aOrder = ingredientCategoryList.find(c => c.name === aCat)?.sortOrder ?? 9999;
+      const bOrder = ingredientCategoryList.find(c => c.name === bCat)?.sortOrder ?? 9999;
+      return aOrder - bOrder;
     });
-  }, [ingredients, ingredientCategoryFilter, ingredientChannelFilter]);
+  }, [ingredients, ingredientCategoryFilter, ingredientChannelFilter, ingredientCategoryList]);
 
   // AI State
   const [aiAnalysis, setAiAnalysis] = useState<string>('');
@@ -1029,7 +1042,7 @@ const App: React.FC = () => {
           showToast('分類資料載入失敗', 'error');
         }
       } else if (categoriesRes.data?.length) {
-        const mapped = categoriesRes.data.map(mapCategoryRowToCategory);
+        const mapped = categoriesRes.data.map(mapCategoryRowToCategory).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
         setCategories(mapped);
         setActiveCategory(mapped[0].id);
       }
@@ -1824,11 +1837,23 @@ const App: React.FC = () => {
     const mapped = mapCategoryRowToCategory(data);
     setCategories(prev => {
       const idx = prev.findIndex(c => c.id === mapped.id);
-      if (idx === -1) return [...prev, mapped];
+      if (idx === -1) return [...prev, mapped].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
       const next = [...prev];
       next[idx] = mapped;
-      return next;
+      return next.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
     });
+  };
+
+  const reorderProductCategories = async (fromIdx: number, toIdx: number) => {
+    if (fromIdx === toIdx) return;
+    const reordered = [...categories];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+    const updated = reordered.map((c, i) => ({ ...c, sortOrder: i }));
+    setCategories(updated);
+    for (const cat of updated) {
+      await supabase.from('categories').update({ sort_order: cat.sortOrder }).eq('id', cat.id);
+    }
   };
 
   const deleteCategory = async (categoryId: string) => {
@@ -1864,6 +1889,18 @@ const App: React.FC = () => {
     if (error) { showToast(`刪除失敗：${error.message}`, 'error'); return; }
     setIngredientCategoryList(prev => prev.filter(x => x.id !== id));
     showToast(`類別「${cat?.name}」已刪除`);
+  };
+
+  const reorderIngredientCategories = async (fromIdx: number, toIdx: number) => {
+    if (fromIdx === toIdx) return;
+    const reordered = [...ingredientCategoryList];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+    const updated = reordered.map((c, i) => ({ ...c, sortOrder: i }));
+    setIngredientCategoryList(updated);
+    for (const cat of updated) {
+      await supabase.from('ingredient_categories').update({ sort_order: cat.sortOrder }).eq('id', cat.id);
+    }
   };
 
   // ── 食譜 CRUD ──
@@ -1975,6 +2012,22 @@ const App: React.FC = () => {
     if (error) { showToast(error.message || '分類刪除失敗', 'error'); return; }
     setRecipeCategories(prev => prev.filter(c => c.id !== catId));
     showToast('食譜分類已刪除');
+  };
+
+  const reorderRecipeCategories = async (type: 'method' | 'meat', fromIdx: number, toIdx: number) => {
+    if (fromIdx === toIdx) return;
+    const typeCats = recipeCategories.filter(c => c.categoryType === type);
+    const reordered = [...typeCats];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+    const updated = reordered.map((c, i) => ({ ...c, sortOrder: i }));
+    setRecipeCategories(prev => {
+      const others = prev.filter(c => c.categoryType !== type);
+      return [...others, ...updated].sort((a, b) => a.sortOrder - b.sortOrder);
+    });
+    for (const cat of updated) {
+      await supabase.from('recipe_categories').update({ sort_order: cat.sortOrder }).eq('id', cat.id);
+    }
   };
 
   const generateAiRecipe = async (recipe: StandaloneRecipe, userInstruction?: string) => {
@@ -3343,7 +3396,7 @@ const App: React.FC = () => {
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <h3 className="font-black text-slate-800">分類列表</h3>
-            <button onClick={() => setEditingCategory({ id: 'cat-'+Date.now(), name: '', icon: '🥩' })} className="px-4 py-2 bg-slate-900 text-white rounded-xl font-bold text-xs"><Plus size={14} className="inline mr-1"/> 新增</button>
+            <button onClick={() => setEditingCategory({ id: 'cat-'+Date.now(), name: '', icon: '🥩', sortOrder: categories.length })} className="px-4 py-2 bg-slate-900 text-white rounded-xl font-bold text-xs"><Plus size={14} className="inline mr-1"/> 新增</button>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {categories.length === 0 && (
@@ -3351,9 +3404,23 @@ const App: React.FC = () => {
                 尚未有分類
               </div>
             )}
-            {categories.map(c => (
-              <div key={c.id} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm flex items-center justify-between group">
-                <div className="flex items-center gap-4">
+            {categories.map((c, idx) => (
+              <div
+                key={c.id}
+                draggable
+                onDragStart={() => { dragProdCatIdx.current = idx; }}
+                onDragOver={e => { e.preventDefault(); setDragOverProdCat(idx); }}
+                onDragLeave={() => setDragOverProdCat(null)}
+                onDrop={() => {
+                  if (dragProdCatIdx.current !== null) reorderProductCategories(dragProdCatIdx.current, idx);
+                  dragProdCatIdx.current = null;
+                  setDragOverProdCat(null);
+                }}
+                onDragEnd={() => { dragProdCatIdx.current = null; setDragOverProdCat(null); }}
+                className={`bg-white p-6 rounded-3xl border shadow-sm flex items-center justify-between group transition-all cursor-grab active:cursor-grabbing ${dragOverProdCat === idx ? 'border-blue-400 bg-blue-50/30 scale-[1.02]' : 'border-slate-100'}`}
+              >
+                <div className="flex items-center gap-3">
+                  <GripVertical size={16} className="text-slate-300 flex-shrink-0" />
                   <div className="text-3xl">{c.icon}</div>
                   <div><p className="font-black text-slate-900">{c.name}</p><p className="text-[10px] text-slate-400 uppercase tracking-widest">{c.id}</p></div>
                 </div>
@@ -4433,9 +4500,23 @@ const App: React.FC = () => {
                 )}
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {ingredientCategoryList.map(cat => (
-                    <div key={cat.id} className="bg-slate-50 p-5 rounded-2xl border border-slate-100 flex items-center justify-between group hover:border-violet-200 transition-all">
-                      <div className="flex items-center gap-4">
+                  {ingredientCategoryList.map((cat, idx) => (
+                    <div
+                      key={cat.id}
+                      draggable
+                      onDragStart={() => { dragIngCatIdx.current = idx; }}
+                      onDragOver={e => { e.preventDefault(); setDragOverIngCat(idx); }}
+                      onDragLeave={() => setDragOverIngCat(null)}
+                      onDrop={() => {
+                        if (dragIngCatIdx.current !== null) reorderIngredientCategories(dragIngCatIdx.current, idx);
+                        dragIngCatIdx.current = null;
+                        setDragOverIngCat(null);
+                      }}
+                      onDragEnd={() => { dragIngCatIdx.current = null; setDragOverIngCat(null); }}
+                      className={`p-5 rounded-2xl border flex items-center justify-between group transition-all cursor-grab active:cursor-grabbing ${dragOverIngCat === idx ? 'border-violet-400 bg-violet-50/50 scale-[1.02]' : 'bg-slate-50 border-slate-100 hover:border-violet-200'}`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <GripVertical size={16} className="text-slate-300 flex-shrink-0" />
                         <span className="text-3xl">{cat.emoji}</span>
                         <div>
                           <p className="font-black text-slate-900">{cat.name}</p>
@@ -4757,10 +4838,29 @@ const App: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {filteredIngredients.map(ing => {
-                      const linkedCount = products.filter(p => p.ingredientId === ing.id).length;
-                      const isSelected = selectedIngredientIds.has(ing.id);
-                      return (
+                    {(() => {
+                      const rows: React.ReactNode[] = [];
+                      let lastCat: string | undefined = undefined;
+                      filteredIngredients.forEach(ing => {
+                        const catKey = ing.category || '';
+                        if (catKey !== lastCat) {
+                          lastCat = catKey;
+                          const catObj = catKey ? ingredientCategoryList.find(c => c.name === catKey) : null;
+                          rows.push(
+                            <tr key={`__ing_cat_${catKey || 'none'}`} className="bg-violet-50/50">
+                              <td colSpan={10} className="px-4 py-2">
+                                {catObj ? (
+                                  <span className="text-[10px] font-black text-violet-600 uppercase tracking-widest">{catObj.emoji} {catObj.name}</span>
+                                ) : (
+                                  <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest">⚠ 無類別（請盡快設定）</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        }
+                        const linkedCount = products.filter(p => p.ingredientId === ing.id).length;
+                        const isSelected = selectedIngredientIds.has(ing.id);
+                        rows.push(
                         <tr key={ing.id} className={`hover:bg-slate-50/50 transition-colors ${isSelected ? 'bg-blue-50/40' : ''}`}>
                           <td className="text-center px-2 py-3">
                             <button onClick={() => setSelectedIngredientIds(prev => {
@@ -4827,11 +4927,13 @@ const App: React.FC = () => {
                             </div>
                           </td>
                         </tr>
-                      );
-                    })}
-                    {filteredIngredients.length === 0 && (
-                      <tr><td colSpan={10} className="px-4 py-12 text-center text-slate-300 font-bold text-sm">{ingredients.length === 0 ? '尚無原材料，點擊右上角「新增原材料」' : '無符合條件的原材料'}</td></tr>
-                    )}
+                        );
+                      });
+                      if (filteredIngredients.length === 0) {
+                        rows.push(<tr key="empty"><td colSpan={10} className="px-4 py-12 text-center text-slate-300 font-bold text-sm">{ingredients.length === 0 ? '尚無原材料，點擊右上角「新增原材料」' : '無符合條件的原材料'}</td></tr>);
+                      }
+                      return rows;
+                    })()}
                   </tbody>
                 </table>
               </div>
@@ -5055,83 +5157,115 @@ const App: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {costsFilteredProducts.map(p => {
-                      const linkedIng = ingredients.find(i => i.id === p.ingredientId);
-                      const totalCost = computeProductCost(p, linkedIng, costItems);
-                      const sellPrice = (p.memberPrice > 0 && p.memberPrice < p.price) ? p.memberPrice : p.price;
-                      const profit = sellPrice - totalCost;
-                      const costP0 = totalCost > 0 ? totalCost / costsWsRules.targetMarginFactor : 0;
-                      return (
-                        <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-2">
-                              <div className="w-7 h-7 bg-slate-50 rounded-lg flex items-center justify-center text-sm overflow-hidden flex-shrink-0 border border-slate-100">
-                                {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-xs">{p.image || '📦'}</span>}
+                    {(() => {
+                      const costsColSpan = 8 + costItems.length + (costsChannelFilter === 'wholesale' ? 1 + costsWsRules.priceTiers.length : 2);
+                      const renderProductRow = (p: typeof costsFilteredProducts[number]) => {
+                        const linkedIng = ingredients.find(i => i.id === p.ingredientId);
+                        const totalCost = computeProductCost(p, linkedIng, costItems);
+                        const sellPrice = (p.memberPrice > 0 && p.memberPrice < p.price) ? p.memberPrice : p.price;
+                        const profit = sellPrice - totalCost;
+                        const costP0 = totalCost > 0 ? totalCost / costsWsRules.targetMarginFactor : 0;
+                        return (
+                          <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-2">
+                                <div className="w-7 h-7 bg-slate-50 rounded-lg flex items-center justify-center text-sm overflow-hidden flex-shrink-0 border border-slate-100">
+                                  {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-xs">{p.image || '📦'}</span>}
+                                </div>
+                                <span className="font-bold text-slate-700 truncate max-w-[120px]">{p.name}</span>
                               </div>
-                              <span className="font-bold text-slate-700 truncate max-w-[120px]">{p.name}</span>
-                            </div>
-                          </td>
-                          <td className="px-3 py-3">
-                            <select value={p.ingredientId || ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, ingredientId: e.target.value || undefined } : x))} className="w-32 p-1.5 bg-slate-50 rounded-lg font-bold border border-slate-100 text-xs">
-                              <option value="">（手動）</option>
-                              {ingredientCategories.map(cat => {
-                                const catIngs = ingredients.filter(i => i.category === cat);
-                                if (catIngs.length === 0) return null;
-                                return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}</optgroup>;
-                              })}
-                              {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}</optgroup>}
-                            </select>
-                          </td>
-                          <td className="px-3 py-3 text-right">
-                            {linkedIng ? (
-                              <span className="font-bold text-blue-600">${linkedIng.baseCostPerLb.toFixed(1)}/{linkedIng.unit}</span>
+                            </td>
+                            <td className="px-3 py-3">
+                              <select value={p.ingredientId || ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, ingredientId: e.target.value || undefined } : x))} className="w-32 p-1.5 bg-slate-50 rounded-lg font-bold border border-slate-100 text-xs">
+                                <option value="">（手動）</option>
+                                {ingredientCategories.map(cat => {
+                                  const catIngs = ingredients.filter(i => i.category === cat);
+                                  if (catIngs.length === 0) return null;
+                                  return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}</optgroup>;
+                                })}
+                                {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}</optgroup>}
+                              </select>
+                            </td>
+                            <td className="px-3 py-3 text-right">
+                              {linkedIng ? (
+                                <span className="font-bold text-blue-600">${linkedIng.baseCostPerLb.toFixed(1)}/{linkedIng.unit}</span>
+                              ) : (
+                                <input type="number" min="0" step="0.5" value={p.costPrice ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, costPrice: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-16 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
+                              )}
+                            </td>
+                            <td className="px-3 py-3 text-right">
+                              <input type="number" min="0" max="1" step="0.01" value={p.yieldRate ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, yieldRate: Number(e.target.value) || undefined } : x))} placeholder="—" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
+                            </td>
+                            <td className="px-3 py-3 text-right">
+                              <input type="number" min="0" step="0.5" value={p.processingCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, processingCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
+                            </td>
+                            <td className="px-3 py-3 text-right">
+                              <input type="number" min="0" step="0.5" value={p.packagingCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, packagingCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
+                            </td>
+                            <td className="px-3 py-3 text-right">
+                              <input type="number" min="0" step="0.5" value={p.miscCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, miscCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
+                            </td>
+                            {costItems.map(ci => {
+                              const checked = (p.costItemIds || []).includes(ci.id);
+                              return (
+                                <td key={ci.id} className="text-center px-2 py-3">
+                                  <button onClick={() => {
+                                    const ids = p.costItemIds || [];
+                                    const next = checked ? ids.filter(x => x !== ci.id) : [...ids, ci.id];
+                                    setProducts(prev => prev.map(x => x.id === p.id ? { ...x, costItemIds: next } : x));
+                                  }} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${checked ? 'border-amber-500 bg-amber-500 text-white' : 'border-slate-200 bg-white'}`}>
+                                    {checked && <Check size={12} strokeWidth={3}/>}
+                                  </button>
+                                </td>
+                              );
+                            })}
+                            <td className="text-right px-4 py-3 font-bold text-slate-900">${totalCost.toFixed(1)}</td>
+                            {costsChannelFilter === 'wholesale' ? (
+                              <>
+                                <td className="text-right px-4 py-3 font-black text-orange-600">{totalCost > 0 ? `$${costP0.toFixed(1)}` : '—'}</td>
+                                {costsWsRules.priceTiers.map(tier => (
+                                  <td key={tier.name} className="text-right px-4 py-3 font-black text-teal-600">{totalCost > 0 ? `$${(costP0 / tier.factor).toFixed(1)}` : '—'}</td>
+                                ))}
+                              </>
                             ) : (
-                              <input type="number" min="0" step="0.5" value={p.costPrice ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, costPrice: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-16 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
+                              <>
+                                <td className="text-right px-4 py-3 font-bold text-slate-700">${sellPrice}</td>
+                                <td className={`text-right px-4 py-3 font-black ${profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{profit >= 0 ? '+' : ''}${profit.toFixed(1)}</td>
+                              </>
                             )}
-                          </td>
-                          <td className="px-3 py-3 text-right">
-                            <input type="number" min="0" max="1" step="0.01" value={p.yieldRate ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, yieldRate: Number(e.target.value) || undefined } : x))} placeholder="—" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
-                          </td>
-                          <td className="px-3 py-3 text-right">
-                            <input type="number" min="0" step="0.5" value={p.processingCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, processingCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
-                          </td>
-                          <td className="px-3 py-3 text-right">
-                            <input type="number" min="0" step="0.5" value={p.packagingCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, packagingCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
-                          </td>
-                          <td className="px-3 py-3 text-right">
-                            <input type="number" min="0" step="0.5" value={p.miscCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, miscCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
-                          </td>
-                          {costItems.map(ci => {
-                            const checked = (p.costItemIds || []).includes(ci.id);
-                            return (
-                              <td key={ci.id} className="text-center px-2 py-3">
-                                <button onClick={() => {
-                                  const ids = p.costItemIds || [];
-                                  const next = checked ? ids.filter(x => x !== ci.id) : [...ids, ci.id];
-                                  setProducts(prev => prev.map(x => x.id === p.id ? { ...x, costItemIds: next } : x));
-                                }} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${checked ? 'border-amber-500 bg-amber-500 text-white' : 'border-slate-200 bg-white'}`}>
-                                  {checked && <Check size={12} strokeWidth={3}/>}
-                                </button>
-                              </td>
-                            );
-                          })}
-                          <td className="text-right px-4 py-3 font-bold text-slate-900">${totalCost.toFixed(1)}</td>
-                          {costsChannelFilter === 'wholesale' ? (
-                            <>
-                              <td className="text-right px-4 py-3 font-black text-orange-600">{totalCost > 0 ? `$${costP0.toFixed(1)}` : '—'}</td>
-                              {costsWsRules.priceTiers.map(tier => (
-                                <td key={tier.name} className="text-right px-4 py-3 font-black text-teal-600">{totalCost > 0 ? `$${(costP0 / tier.factor).toFixed(1)}` : '—'}</td>
-                              ))}
-                            </>
-                          ) : (
-                            <>
-                              <td className="text-right px-4 py-3 font-bold text-slate-700">${sellPrice}</td>
-                              <td className={`text-right px-4 py-3 font-black ${profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{profit >= 0 ? '+' : ''}${profit.toFixed(1)}</td>
-                            </>
-                          )}
-                        </tr>
-                      );
-                    })}
+                          </tr>
+                        );
+                      };
+                      const uncategorized = costsFilteredProducts.filter(p => !p.categories || p.categories.length === 0);
+                      const rows: React.ReactNode[] = [];
+                      if (uncategorized.length > 0) {
+                        rows.push(
+                          <tr key="__uncategorized_header" className="bg-slate-100/70">
+                            <td colSpan={costsColSpan} className="px-4 py-2">
+                              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">無分類</span>
+                            </td>
+                          </tr>
+                        );
+                        uncategorized.forEach(p => rows.push(renderProductRow(p)));
+                      }
+                      categories.forEach(cat => {
+                        const catProds = costsFilteredProducts.filter(p => p.categories?.includes(cat.id));
+                        if (catProds.length === 0) return;
+                        rows.push(
+                          <tr key={`__cat_header_${cat.id}`} className="bg-slate-100/70">
+                            <td colSpan={costsColSpan} className="px-4 py-2">
+                              <span className="text-base mr-2">{cat.icon}</span>
+                              <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest">{cat.name}</span>
+                            </td>
+                          </tr>
+                        );
+                        catProds.forEach(p => rows.push(renderProductRow(p)));
+                      });
+                      if (rows.length === 0) {
+                        rows.push(<tr key="empty"><td colSpan={costsColSpan} className="px-4 py-12 text-center text-slate-300 font-bold text-sm">尚無產品</td></tr>);
+                      }
+                      return rows;
+                    })()}
                   </tbody>
                 </table>
               </div>
@@ -5386,13 +5520,27 @@ const App: React.FC = () => {
                     <span className="text-[10px] text-slate-400 font-bold">({recipeCategories.filter(c => c.categoryType === 'method').length})</span>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {recipeCategories.filter(c => c.categoryType === 'method').map(cat => (
-                      <div key={cat.id} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between hover:shadow-md transition-all">
+                    {recipeCategories.filter(c => c.categoryType === 'method').map((cat, idx) => (
+                      <div
+                        key={cat.id}
+                        draggable
+                        onDragStart={() => { dragRecipeMethodCatIdx.current = idx; }}
+                        onDragOver={e => { e.preventDefault(); setDragOverRecipeMethodCat(idx); }}
+                        onDragLeave={() => setDragOverRecipeMethodCat(null)}
+                        onDrop={() => {
+                          if (dragRecipeMethodCatIdx.current !== null) reorderRecipeCategories('method', dragRecipeMethodCatIdx.current, idx);
+                          dragRecipeMethodCatIdx.current = null;
+                          setDragOverRecipeMethodCat(null);
+                        }}
+                        onDragEnd={() => { dragRecipeMethodCatIdx.current = null; setDragOverRecipeMethodCat(null); }}
+                        className={`bg-white p-5 rounded-2xl border shadow-sm flex items-center justify-between transition-all cursor-grab active:cursor-grabbing ${dragOverRecipeMethodCat === idx ? 'border-amber-400 bg-amber-50/30 scale-[1.02]' : 'border-slate-100 hover:shadow-md'}`}
+                      >
                         <div className="flex items-center gap-3">
+                          <GripVertical size={16} className="text-slate-300 flex-shrink-0" />
                           <span className="text-2xl">{cat.icon}</span>
                           <div>
                             <p className="font-black text-slate-900">{cat.name}</p>
-                            <p className="text-[10px] text-slate-400 font-bold">ID: {cat.id} · 排序: {cat.sortOrder}</p>
+                            <p className="text-[10px] text-slate-400 font-bold">{cat.id}</p>
                           </div>
                         </div>
                         <div className="flex gap-2">
@@ -5414,13 +5562,27 @@ const App: React.FC = () => {
                     <span className="text-[10px] text-slate-400 font-bold">({recipeCategories.filter(c => c.categoryType === 'meat').length})</span>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {recipeCategories.filter(c => c.categoryType === 'meat').map(cat => (
-                      <div key={cat.id} className="bg-white p-5 rounded-2xl border border-rose-50 shadow-sm flex items-center justify-between hover:shadow-md transition-all">
+                    {recipeCategories.filter(c => c.categoryType === 'meat').map((cat, idx) => (
+                      <div
+                        key={cat.id}
+                        draggable
+                        onDragStart={() => { dragRecipeMeatCatIdx.current = idx; }}
+                        onDragOver={e => { e.preventDefault(); setDragOverRecipeMeatCat(idx); }}
+                        onDragLeave={() => setDragOverRecipeMeatCat(null)}
+                        onDrop={() => {
+                          if (dragRecipeMeatCatIdx.current !== null) reorderRecipeCategories('meat', dragRecipeMeatCatIdx.current, idx);
+                          dragRecipeMeatCatIdx.current = null;
+                          setDragOverRecipeMeatCat(null);
+                        }}
+                        onDragEnd={() => { dragRecipeMeatCatIdx.current = null; setDragOverRecipeMeatCat(null); }}
+                        className={`bg-white p-5 rounded-2xl border shadow-sm flex items-center justify-between transition-all cursor-grab active:cursor-grabbing ${dragOverRecipeMeatCat === idx ? 'border-rose-400 bg-rose-50/50 scale-[1.02]' : 'border-rose-50 hover:shadow-md'}`}
+                      >
                         <div className="flex items-center gap-3">
+                          <GripVertical size={16} className="text-slate-300 flex-shrink-0" />
                           <span className="text-2xl">{cat.icon}</span>
                           <div>
                             <p className="font-black text-slate-900">{cat.name}</p>
-                            <p className="text-[10px] text-slate-400 font-bold">ID: {cat.id} · 排序: {cat.sortOrder}</p>
+                            <p className="text-[10px] text-slate-400 font-bold">{cat.id}</p>
                           </div>
                         </div>
                         <div className="flex gap-2">
@@ -5449,10 +5611,6 @@ const App: React.FC = () => {
                     <div className="space-y-1">
                       <label className="text-[9px] font-bold text-slate-400 uppercase">圖示</label>
                       <input value={editingRecipeCategory.icon} onChange={e => setEditingRecipeCategory({ ...editingRecipeCategory, icon: e.target.value })} className="w-full p-2.5 bg-slate-50 rounded-xl font-bold text-xs" placeholder="🍟" />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-slate-400 uppercase">排序</label>
-                      <input type="number" value={editingRecipeCategory.sortOrder} onChange={e => setEditingRecipeCategory({ ...editingRecipeCategory, sortOrder: Number(e.target.value) || 0 })} className="w-full p-2.5 bg-slate-50 rounded-xl font-bold text-xs" />
                     </div>
                     <div className="space-y-1 col-span-2">
                       <label className="text-[9px] font-bold text-slate-400 uppercase">分類類型</label>
@@ -6522,15 +6680,6 @@ const App: React.FC = () => {
                   onChange={e => setEditingIngredientCategory({ ...editingIngredientCategory, emoji: e.target.value })}
                   className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100"
                   placeholder="例：🐄 🐷 🦞"
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">排序（數字愈小愈前）</label>
-                <input
-                  type="number" min="0"
-                  value={editingIngredientCategory.sortOrder}
-                  onChange={e => setEditingIngredientCategory({ ...editingIngredientCategory, sortOrder: Number(e.target.value) })}
-                  className="w-full p-3 bg-slate-50 rounded-2xl font-bold text-sm border border-slate-100"
                 />
               </div>
             </div>
