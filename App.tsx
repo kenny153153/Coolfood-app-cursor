@@ -236,7 +236,7 @@ const getEffectiveUnitPrice = (
 
 /**
  * 批發定價引擎
- * P0 (直銷) = totalCost / targetMarginFactor
+ * P0 (直銷) = priceOverrides[id] ?? totalCost / targetMarginFactor
  * Pn (業務) = P0 / tierFactor
  */
 const getWholesaleUnitPrice = (
@@ -245,10 +245,11 @@ const getWholesaleUnitPrice = (
   costItems: CostItem[],
   wholesaleRules: WholesalePricingRules,
   memberPriceTier?: string,
+  priceOverrides?: Record<string, number>,
 ): number => {
   const totalCost = computeProductCost(p, linkedIngredient, costItems);
-  if (totalCost <= 0) return p.price;
-  const p0 = totalCost / wholesaleRules.targetMarginFactor;
+  const override = priceOverrides?.[p.id];
+  const p0 = override != null ? override : (totalCost > 0 ? totalCost / wholesaleRules.targetMarginFactor : p.price);
   if (!memberPriceTier || memberPriceTier === 'P0') return Math.round(p0);
   const tier = wholesaleRules.priceTiers?.find(t => t.name === memberPriceTier);
   if (tier) return Math.round(p0 / tier.factor);
@@ -748,7 +749,12 @@ const App: React.FC = () => {
   // Cost management
   const [costItems, setCostItems] = useState<CostItem[]>([]);
   const [showCostColumns, setShowCostColumns] = useState(false);
-  const [manualPriceEditIds, setManualPriceEditIds] = useState<Set<string>>(new Set());
+  // Retail price override tracking (products whose prices were manually changed)
+  const [retailOverrideIds, setRetailOverrideIds] = useState<Set<string>>(new Set());
+  // Wholesale per-product P0 overrides: productId → override price
+  const [wholesalePriceOverrides, setWholesalePriceOverrides] = useState<Record<string, number>>({});
+  // Pending apply confirmation: which tab has a queued "apply factor" action
+  const [pendingApplyTab, setPendingApplyTab] = useState<null | 'retail' | 'wholesale'>(null);
 
   // Ingredients (原材料) management
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
@@ -1114,6 +1120,12 @@ const App: React.FC = () => {
           }));
           if (Array.isArray(cfgMap.cost_items)) setCostItems(cfgMap.cost_items);
           if (Array.isArray(cfgMap.custom_units)) setCustomUnits(cfgMap.custom_units);
+          if (Array.isArray(cfgMap.pricing_rules?.retailOverrideIds)) {
+            setRetailOverrideIds(new Set(cfgMap.pricing_rules.retailOverrideIds));
+          }
+          if (cfgMap.wholesale_price_overrides && typeof cfgMap.wholesale_price_overrides === 'object') {
+            setWholesalePriceOverrides(cfgMap.wholesale_price_overrides);
+          }
         }
       } catch {
         console.warn('[site_config] Failed to load, using defaults');
@@ -1502,7 +1514,7 @@ const App: React.FC = () => {
   const getPrice = (p: Product, qty: number = 1) => {
     if (isWholesaleRoute) {
       const linkedIng = ingredients.find(i => i.id === p.ingredientId);
-      return getWholesaleUnitPrice(p, linkedIng, costItems, siteConfig.wholesalePricingRules!, user?.wholesalePriceTier);
+      return getWholesaleUnitPrice(p, linkedIng, costItems, siteConfig.wholesalePricingRules!, user?.wholesalePriceTier, wholesalePriceOverrides);
     }
     return getEffectiveUnitPrice(p, qty, pricingTier, memberPct, walletPct, pricingExcluded);
   };
@@ -1512,7 +1524,7 @@ const App: React.FC = () => {
     if (isWholesaleRoute) {
       cart.forEach(item => {
         const linkedIng = ingredients.find(i => i.id === item.ingredientId);
-        subtotal += getWholesaleUnitPrice(item, linkedIng, costItems, siteConfig.wholesalePricingRules!, user?.wholesalePriceTier) * item.qty;
+        subtotal += getWholesaleUnitPrice(item, linkedIng, costItems, siteConfig.wholesalePricingRules!, user?.wholesalePriceTier, wholesalePriceOverrides) * item.qty;
       });
       const deliveryFee = 0;
       return {
@@ -3694,50 +3706,97 @@ const App: React.FC = () => {
               ))}
             </div>
 
-            {pricingSubTab === 'retail' && (
+            {pricingSubTab === 'retail' && (() => {
+              const rtFactor = siteConfig.pricingRules?.targetMarginFactor ?? 0.88;
+              const rtExampleCost = 100;
+              const rtSuggestedPrice = rtExampleCost / rtFactor;
+              const rtMarginPct = Math.round((1 - rtFactor) * 100);
+              const mPct = siteConfig.pricingRules?.memberDiscountPercent || 0;
+              const wPct = siteConfig.pricingRules?.walletDiscountPercent || 0;
+
+              const applyRetailFactor = (applyToOverrides: boolean) => {
+                setProducts(prev => prev.map(p => {
+                  if (!applyToOverrides && retailOverrideIds.has(p.id)) return p;
+                  const linkedIng = ingredients.find(i => i.id === p.ingredientId);
+                  const totalCost = computeProductCost(p, linkedIng, costItems);
+                  if (totalCost <= 0) return p;
+                  return { ...p, price: Math.round(totalCost / rtFactor) };
+                }));
+                if (applyToOverrides) setRetailOverrideIds(new Set());
+                setPendingApplyTab(null);
+              };
+
+              return (
               <>
                 {/* ── 零售目標利潤率 ── */}
-                {(() => {
-                  const rtFactor = siteConfig.pricingRules?.targetMarginFactor ?? 0.88;
-                  const rtExampleCost = 100;
-                  const rtSuggestedPrice = rtExampleCost / rtFactor;
-                  const rtMarginPct = Math.round((1 - rtFactor) * 100);
-                  return (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
-                        <div className="flex items-center gap-2"><div className="p-2.5 bg-orange-50 text-orange-600 rounded-xl"><Percent size={18}/></div><h4 className="font-black text-sm">目標利潤率（零售基準）</h4></div>
-                        <p className="text-[10px] text-slate-400 font-bold">Target Margin Factor — 用來從成本反算零售建議售價</p>
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="number" min="0.01" max="1" step="0.01"
-                            value={rtFactor}
-                            onChange={e => setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, targetMarginFactor: Number(e.target.value) || 0.88}})}
-                            className="flex-1 p-4 bg-slate-50 rounded-2xl font-black text-xl text-center border border-slate-100 focus:ring-2 focus:ring-orange-100"
-                          />
-                        </div>
-                        <p className="text-[9px] text-slate-300 font-bold">0.88 = 12% 毛利、0.85 = 15% 毛利、0.80 = 20% 毛利</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                    <div className="flex items-center gap-2"><div className="p-2.5 bg-orange-50 text-orange-600 rounded-xl"><Percent size={18}/></div><h4 className="font-black text-sm">目標利潤率（零售基準）</h4></div>
+                    <p className="text-[10px] text-slate-400 font-bold">Target Margin Factor — 從成本反算建議售價，套用後寫入各產品售價</p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number" min="0.01" max="1" step="0.01"
+                        value={rtFactor}
+                        onChange={e => setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, targetMarginFactor: Number(e.target.value) || 0.88}})}
+                        className="flex-1 p-4 bg-slate-50 rounded-2xl font-black text-xl text-center border border-slate-100 focus:ring-2 focus:ring-orange-100"
+                      />
+                    </div>
+                    <p className="text-[9px] text-slate-300 font-bold">0.88 = 12% 毛利、0.85 = 15% 毛利、0.80 = 20% 毛利</p>
+                    <div className="flex gap-2 pt-1 flex-wrap">
+                      <button onClick={async () => {
+                        try {
+                          const rulesWithOverrides = { ...siteConfig.pricingRules!, retailOverrideIds: [...retailOverrideIds] };
+                          await supabase.from('site_config').upsert({ id: 'pricing_rules', value: rulesWithOverrides });
+                          showToast('零售設定已儲存');
+                        } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
+                      }} className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-black shadow active:scale-95 transition-all"><Save size={13}/> 儲存設定</button>
+                      <button onClick={() => {
+                        if (retailOverrideIds.size > 0) { setPendingApplyTab('retail'); }
+                        else { applyRetailFactor(true); showToast('已套用利潤率至全部產品'); }
+                      }} className="flex items-center gap-1.5 px-4 py-2 bg-orange-500 text-white rounded-xl text-xs font-black shadow active:scale-95 transition-all"><Zap size={13}/> 套用至所有產品</button>
+                    </div>
+                  </div>
+                  <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                    <div className="flex items-center gap-2"><div className="p-2.5 bg-slate-100 text-slate-600 rounded-xl"><Zap size={18}/></div><h4 className="font-black text-sm">定價預覽（成本基礎）</h4></div>
+                    <p className="text-[10px] text-slate-400 font-bold">如果 成本/出成率 = $100</p>
+                    <div className="space-y-2 text-xs">
+                      <div className="flex justify-between items-center p-2.5 bg-slate-50 rounded-xl">
+                        <span className="text-slate-500 font-bold">📦 成本</span>
+                        <span className="font-black text-slate-900">${rtExampleCost}</span>
                       </div>
-                      <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
-                        <div className="flex items-center gap-2"><div className="p-2.5 bg-slate-100 text-slate-600 rounded-xl"><Zap size={18}/></div><h4 className="font-black text-sm">定價預覽（成本基礎）</h4></div>
-                        <p className="text-[10px] text-slate-400 font-bold">如果 成本/出成率 = $100</p>
-                        <div className="space-y-2 text-xs">
-                          <div className="flex justify-between items-center p-2.5 bg-slate-50 rounded-xl">
-                            <span className="text-slate-500 font-bold">📦 成本</span>
-                            <span className="font-black text-slate-900">${rtExampleCost}</span>
-                          </div>
-                          <div className="flex justify-between items-center p-2.5 bg-orange-50 rounded-xl">
-                            <div>
-                              <span className="text-orange-600 font-bold">建議售價</span>
-                              <span className="text-[9px] text-orange-400 ml-1">÷ {rtFactor} ({rtMarginPct}% 毛利)</span>
-                            </div>
-                            <span className="font-black text-orange-700">${rtSuggestedPrice.toFixed(1)}</span>
-                          </div>
+                      <div className="flex justify-between items-center p-2.5 bg-orange-50 rounded-xl">
+                        <div>
+                          <span className="text-orange-600 font-bold">建議售價</span>
+                          <span className="text-[9px] text-orange-400 ml-1">÷ {rtFactor} ({rtMarginPct}% 毛利)</span>
                         </div>
-                        <p className="text-[9px] text-slate-300 font-bold">此為定價參考，實際售價請在下方產品表手動設定</p>
+                        <span className="font-black text-orange-700">${rtSuggestedPrice.toFixed(1)}</span>
+                      </div>
+                      <div className="flex justify-between items-center p-2.5 bg-blue-50 rounded-xl">
+                        <span className="text-blue-600 font-bold">👤 會員價</span>
+                        <span className="font-black text-blue-700">${(rtSuggestedPrice * (1 - mPct / 100)).toFixed(1)}</span>
+                      </div>
+                      <div className="flex justify-between items-center p-2.5 bg-purple-50 rounded-xl">
+                        <span className="text-purple-600 font-bold">💳 錢包價</span>
+                        <span className="font-black text-purple-700">${(rtSuggestedPrice * (1 - mPct / 100) * (1 - wPct / 100)).toFixed(1)}</span>
                       </div>
                     </div>
-                  );
-                })()}
+                  </div>
+                </div>
+
+                {/* ── 衝突提示橫幅 ── */}
+                {pendingApplyTab === 'retail' && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-[2rem] p-6 flex flex-col md:flex-row items-start md:items-center gap-4">
+                    <div className="flex-1">
+                      <p className="font-black text-amber-800 text-sm">有 {retailOverrideIds.size} 個產品已手動調整價格（橙色標示）</p>
+                      <p className="text-[11px] text-amber-600 font-bold mt-1">套用新利潤率係數時，要覆蓋這些手動調整嗎？</p>
+                    </div>
+                    <div className="flex gap-2 flex-wrap">
+                      <button onClick={() => { applyRetailFactor(true); showToast('已套用利潤率至全部產品，清除手動標記'); }} className="px-4 py-2 bg-amber-600 text-white rounded-xl text-xs font-black active:scale-95 transition-all">全部覆蓋，清除手動標記</button>
+                      <button onClick={() => { applyRetailFactor(false); showToast(`已套用利潤率，保留 ${retailOverrideIds.size} 個手動價格`); }} className="px-4 py-2 bg-white border border-amber-300 text-amber-700 rounded-xl text-xs font-black active:scale-95 transition-all">只套用未修改的產品</button>
+                      <button onClick={() => setPendingApplyTab(null)} className="px-4 py-2 bg-white border border-slate-200 text-slate-500 rounded-xl text-xs font-black active:scale-95 transition-all">取消</button>
+                    </div>
+                  </div>
+                )}
 
                 {/* ── 零售定價規則卡片 ── */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -3760,12 +3819,12 @@ const App: React.FC = () => {
                     <p className="text-[9px] text-slate-300 font-bold">疊加在會員折扣之上，填 0 = 不額外減</p>
                   </div>
                   <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
-                    <div className="flex items-center gap-2"><div className="p-2.5 bg-slate-100 text-slate-600 rounded-xl"><Zap size={18}/></div><h4 className="font-black text-sm">定價預覽</h4></div>
+                    <div className="flex items-center gap-2"><div className="p-2.5 bg-slate-100 text-slate-600 rounded-xl"><Zap size={18}/></div><h4 className="font-black text-sm">折扣預覽</h4></div>
                     <p className="text-[10px] text-slate-400 font-bold">以 $100 售價為例</p>
                     <div className="space-y-2 text-xs">
                       <div className="flex justify-between items-center p-2.5 bg-slate-50 rounded-xl"><span className="text-slate-500 font-bold">🛒 訪客</span><span className="font-black text-slate-900">$100</span></div>
-                      <div className="flex justify-between items-center p-2.5 bg-blue-50 rounded-xl"><span className="text-blue-600 font-bold">👤 會員</span><span className="font-black text-blue-700">${Math.round(100 * (1 - (siteConfig.pricingRules?.memberDiscountPercent || 0) / 100))}</span></div>
-                      <div className="flex justify-between items-center p-2.5 bg-purple-50 rounded-xl"><span className="text-purple-600 font-bold">💳 錢包</span><span className="font-black text-purple-700">${Math.round(100 * (1 - (siteConfig.pricingRules?.memberDiscountPercent || 0) / 100) * (1 - (siteConfig.pricingRules?.walletDiscountPercent || 0) / 100))}</span></div>
+                      <div className="flex justify-between items-center p-2.5 bg-blue-50 rounded-xl"><span className="text-blue-600 font-bold">👤 會員</span><span className="font-black text-blue-700">${Math.round(100 * (1 - mPct / 100))}</span></div>
+                      <div className="flex justify-between items-center p-2.5 bg-purple-50 rounded-xl"><span className="text-purple-600 font-bold">💳 錢包</span><span className="font-black text-purple-700">${Math.round(100 * (1 - mPct / 100) * (1 - wPct / 100))}</span></div>
                     </div>
                   </div>
                 </div>
@@ -3773,11 +3832,22 @@ const App: React.FC = () => {
                 {/* ── 零售全產品定價矩陣 ── */}
                 <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden">
                   <div className="p-8 pb-4 flex items-center justify-between flex-wrap gap-3">
-                    <div className="flex items-center gap-3"><div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><ClipboardList size={18}/></div><h4 className="font-black text-lg">全產品定價一覽</h4></div>
+                    <div className="flex items-center gap-3">
+                      <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><ClipboardList size={18}/></div>
+                      <h4 className="font-black text-lg">全產品定價一覽</h4>
+                      {retailOverrideIds.size > 0 && (
+                        <span className="px-2.5 py-1 bg-amber-100 text-amber-700 rounded-full text-[10px] font-black">{retailOverrideIds.size} 手改</span>
+                      )}
+                    </div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <button onClick={() => setShowCostColumns(v => !v)} className={`px-4 py-2 rounded-xl text-xs font-black transition-colors ${showCostColumns ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
                         {showCostColumns ? '隱藏成本' : '顯示成本'}
                       </button>
+                      {retailOverrideIds.size > 0 && (
+                        <button onClick={() => setRetailOverrideIds(new Set())} className="px-4 py-2 bg-amber-50 border border-amber-200 text-amber-700 rounded-xl text-xs font-black hover:bg-amber-100 transition-colors">
+                          清除手動標記
+                        </button>
+                      )}
                       <button onClick={() => {
                         const allIds = products.map(p => p.id);
                         const current = siteConfig.pricingRules?.excludedProductIds || [];
@@ -3793,14 +3863,15 @@ const App: React.FC = () => {
                       </button>
                       <button onClick={async () => {
                         try {
-                          await supabase.from('site_config').upsert({ id: 'pricing_rules', value: siteConfig.pricingRules });
+                          const rulesWithOverrides = { ...siteConfig.pricingRules!, retailOverrideIds: [...retailOverrideIds] };
+                          await supabase.from('site_config').upsert({ id: 'pricing_rules', value: rulesWithOverrides });
                           await supabase.from('site_config').upsert({ id: 'site_branding', value: { logoText: siteConfig.logoText, logoIcon: siteConfig.logoIcon, logoUrl: siteConfig.logoUrl, accentColor: siteConfig.accentColor } });
                           for (const p of products) { await supabase.from('products').update({ price: p.price, member_price: p.memberPrice }).eq('id', p.id); }
-                          showToast('零售定價規則已儲存');
+                          showToast('零售定價已儲存');
                         } catch (err: any) {
                           showToast(`儲存失敗：${err.message}`, 'error');
                         }
-                      }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Save size={14}/> 儲存</button>
+                      }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Save size={14}/> 儲存所有價格</button>
                     </div>
                   </div>
                   <div className="overflow-x-auto">
@@ -3814,8 +3885,7 @@ const App: React.FC = () => {
                           <th className="text-right px-4 py-3 text-blue-500">會員價</th>
                           <th className="text-right px-4 py-3 text-purple-500">錢包價</th>
                           {showCostColumns && <th className="text-right px-4 py-3 text-amber-500">成本</th>}
-                          {showCostColumns && <th className="text-right px-4 py-3 text-emerald-500">利潤</th>}
-                          <th className="text-center px-3 py-3 w-16">手動</th>
+                          {showCostColumns && <th className="text-right px-4 py-3 text-emerald-500">毛利%</th>}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50">
@@ -3823,17 +3893,14 @@ const App: React.FC = () => {
                           const excluded = siteConfig.pricingRules?.excludedProductIds?.includes(p.id) || false;
                           const hasDiscount = p.memberPrice > 0 && p.memberPrice < p.price;
                           const base = hasDiscount ? p.memberPrice : p.price;
-                          const mPct = siteConfig.pricingRules?.memberDiscountPercent || 0;
-                          const wPct = siteConfig.pricingRules?.walletDiscountPercent || 0;
                           const memberP = excluded ? base : Math.round(base * (1 - mPct / 100));
                           const walletP = excluded ? base : Math.round(base * (1 - mPct / 100) * (1 - wPct / 100));
                           const linkedIng = ingredients.find(i => i.id === p.ingredientId);
                           const totalCost = computeProductCost(p, linkedIng, costItems);
-                          const sellPrice = hasDiscount ? p.memberPrice : p.price;
-                          const profit = sellPrice - totalCost;
-                          const manualEdit = manualPriceEditIds.has(p.id);
+                          const marginPct = totalCost > 0 ? Math.round(((p.price - totalCost) / p.price) * 100) : null;
+                          const isOverridden = retailOverrideIds.has(p.id);
                           return (
-                            <tr key={p.id} className={`hover:bg-slate-50/50 transition-colors ${excluded ? 'opacity-50' : ''}`}>
+                            <tr key={p.id} className={`transition-colors ${excluded ? 'opacity-50' : ''} ${isOverridden ? 'bg-amber-50/60' : 'hover:bg-slate-50/50'}`}>
                               <td className="px-6 py-3">
                                 <button onClick={() => {
                                   const ids = siteConfig.pricingRules?.excludedProductIds || [];
@@ -3848,22 +3915,32 @@ const App: React.FC = () => {
                                   <div className="w-8 h-8 bg-slate-50 rounded-lg flex items-center justify-center text-base overflow-hidden flex-shrink-0 border border-slate-100">
                                     {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-sm">{p.image || '📦'}</span>}
                                   </div>
-                                  <span className="font-bold text-slate-700">{p.name}</span>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-bold text-slate-700">{p.name}</span>
+                                    {isOverridden && <span className="px-1.5 py-0.5 bg-amber-200 text-amber-800 rounded text-[9px] font-black">手改</span>}
+                                  </div>
                                 </div>
                               </td>
                               <td className="text-right px-4 py-3">
-                                {manualEdit ? (
-                                  <input type="number" min="0" value={p.price} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, price: Number(e.target.value) || 0 } : x))} className="w-20 p-1 bg-amber-50 rounded-lg font-bold text-right border border-amber-200 text-xs" />
-                                ) : (
-                                  <span className="font-bold text-slate-900">${p.price}</span>
-                                )}
+                                <input
+                                  type="number" min="0" value={p.price}
+                                  onChange={e => {
+                                    setProducts(prev => prev.map(x => x.id === p.id ? { ...x, price: Number(e.target.value) || 0 } : x));
+                                    setRetailOverrideIds(prev => new Set([...prev, p.id]));
+                                  }}
+                                  className={`w-20 p-1 rounded-lg font-bold text-right text-xs border ${isOverridden ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                                />
                               </td>
                               <td className="text-right px-4 py-3">
-                                {manualEdit ? (
-                                  <input type="number" min="0" value={p.memberPrice || ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, memberPrice: Number(e.target.value) || 0 } : x))} className="w-20 p-1 bg-amber-50 rounded-lg font-bold text-right border border-amber-200 text-xs" placeholder="—" />
-                                ) : (
-                                  hasDiscount ? <span className="font-black text-rose-500">${p.memberPrice}</span> : <span className="text-slate-300">—</span>
-                                )}
+                                <input
+                                  type="number" min="0" value={p.memberPrice || ''}
+                                  onChange={e => {
+                                    setProducts(prev => prev.map(x => x.id === p.id ? { ...x, memberPrice: Number(e.target.value) || 0 } : x));
+                                    setRetailOverrideIds(prev => new Set([...prev, p.id]));
+                                  }}
+                                  placeholder="—"
+                                  className={`w-20 p-1 rounded-lg font-bold text-right text-xs border ${isOverridden ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                                />
                               </td>
                               <td className="text-right px-4 py-3">
                                 {!excluded && mPct > 0 ? <span className="font-black text-blue-600">${memberP}</span> : <span className="text-slate-300">{excluded ? '排除' : `$${base}`}</span>}
@@ -3875,15 +3952,10 @@ const App: React.FC = () => {
                                 <td className="text-right px-4 py-3 font-bold text-amber-600">{totalCost > 0 ? `$${totalCost.toFixed(1)}` : <span className="text-slate-300">—</span>}</td>
                               )}
                               {showCostColumns && (
-                                <td className={`text-right px-4 py-3 font-black ${totalCost > 0 ? (profit >= 0 ? 'text-emerald-600' : 'text-rose-600') : 'text-slate-300'}`}>
-                                  {totalCost > 0 ? `${profit >= 0 ? '+' : ''}$${profit.toFixed(1)}` : '—'}
+                                <td className={`text-right px-4 py-3 font-black ${marginPct !== null ? (marginPct >= 0 ? 'text-emerald-600' : 'text-rose-600') : 'text-slate-300'}`}>
+                                  {marginPct !== null ? `${marginPct}%` : '—'}
                                 </td>
                               )}
-                              <td className="text-center px-3 py-3">
-                                <button onClick={() => setManualPriceEditIds(prev => { const next = new Set(prev); if (next.has(p.id)) next.delete(p.id); else next.add(p.id); return next; })} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${manualEdit ? 'border-amber-500 bg-amber-500 text-white' : 'border-slate-200 bg-white'}`}>
-                                  {manualEdit && <Edit size={10} strokeWidth={3}/>}
-                                </button>
-                              </td>
                             </tr>
                           );
                         })}
@@ -3892,15 +3964,33 @@ const App: React.FC = () => {
                   </div>
                 </div>
               </>
-            )}
+              );
+            })()}
 
-            {pricingSubTab === 'wholesale' && (
+            {pricingSubTab === 'wholesale' && (() => {
+              const wsOverrideCount = Object.keys(wholesalePriceOverrides).length;
+
+              const applyWsFactor = (applyToOverrides: boolean) => {
+                const newOverrides = { ...wholesalePriceOverrides };
+                products.forEach(p => {
+                  if (!applyToOverrides && wholesalePriceOverrides[p.id] != null) return;
+                  const linkedIng = ingredients.find(i => i.id === p.ingredientId);
+                  const totalCost = computeProductCost(p, linkedIng, costItems);
+                  if (totalCost <= 0) return;
+                  delete newOverrides[p.id];
+                });
+                if (applyToOverrides) setWholesalePriceOverrides({});
+                else setWholesalePriceOverrides(newOverrides);
+                setPendingApplyTab(null);
+              };
+
+              return (
               <>
                 {/* ── 批發定價全局參數 ── */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
                     <div className="flex items-center gap-2"><div className="p-2.5 bg-orange-50 text-orange-600 rounded-xl"><Percent size={18}/></div><h4 className="font-black text-sm">目標利潤率（P0 基準）</h4></div>
-                    <p className="text-[10px] text-slate-400 font-bold">Target Margin Factor — 用來從成本反算批發直銷價 P0</p>
+                    <p className="text-[10px] text-slate-400 font-bold">Target Margin Factor — 從成本反算批發直銷價 P0（可在下方各別覆蓋）</p>
                     <div className="flex items-center gap-2">
                       <input
                         type="number" min="0.01" max="1" step="0.01"
@@ -3910,6 +4000,19 @@ const App: React.FC = () => {
                       />
                     </div>
                     <p className="text-[9px] text-slate-300 font-bold">0.88 = 12% 毛利、0.85 = 15% 毛利、0.80 = 20% 毛利</p>
+                    <div className="flex gap-2 pt-1 flex-wrap">
+                      <button onClick={async () => {
+                        try {
+                          await supabase.from('site_config').upsert({ id: 'wholesale_pricing_rules', value: wsRules });
+                          await supabase.from('site_config').upsert({ id: 'wholesale_price_overrides', value: wholesalePriceOverrides });
+                          showToast('批發設定已儲存');
+                        } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
+                      }} className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-black shadow active:scale-95 transition-all"><Save size={13}/> 儲存設定</button>
+                      <button onClick={() => {
+                        if (wsOverrideCount > 0) { setPendingApplyTab('wholesale'); }
+                        else { applyWsFactor(true); showToast('已重設，所有產品跟隨利潤率'); }
+                      }} className="flex items-center gap-1.5 px-4 py-2 bg-orange-500 text-white rounded-xl text-xs font-black shadow active:scale-95 transition-all"><Zap size={13}/> 套用至所有產品</button>
+                    </div>
                   </div>
                   <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
                     <div className="flex items-center gap-2"><div className="p-2.5 bg-slate-100 text-slate-600 rounded-xl"><Zap size={18}/></div><h4 className="font-black text-sm">定價預覽</h4></div>
@@ -3942,6 +4045,128 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
+                {/* ── 批發衝突提示橫幅 ── */}
+                {pendingApplyTab === 'wholesale' && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-[2rem] p-6 flex flex-col md:flex-row items-start md:items-center gap-4">
+                    <div className="flex-1">
+                      <p className="font-black text-amber-800 text-sm">有 {wsOverrideCount} 個產品已手動設定 P0 價格（橙色標示）</p>
+                      <p className="text-[11px] text-amber-600 font-bold mt-1">套用新利潤率係數時，要清除這些手動覆蓋嗎？</p>
+                    </div>
+                    <div className="flex gap-2 flex-wrap">
+                      <button onClick={() => { applyWsFactor(true); showToast('已重設，全部產品跟隨利潤率'); }} className="px-4 py-2 bg-amber-600 text-white rounded-xl text-xs font-black active:scale-95 transition-all">全部覆蓋，清除手動標記</button>
+                      <button onClick={() => { applyWsFactor(false); showToast(`已套用利潤率，保留 ${wsOverrideCount} 個手動價格`); }} className="px-4 py-2 bg-white border border-amber-300 text-amber-700 rounded-xl text-xs font-black active:scale-95 transition-all">只套用未修改的產品</button>
+                      <button onClick={() => setPendingApplyTab(null)} className="px-4 py-2 bg-white border border-slate-200 text-slate-500 rounded-xl text-xs font-black active:scale-95 transition-all">取消</button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── 批發全產品定價一覽 ── */}
+                <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden">
+                  <div className="p-8 pb-4 flex items-center justify-between flex-wrap gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2.5 bg-orange-50 text-orange-600 rounded-xl"><ClipboardList size={18}/></div>
+                      <h4 className="font-black text-lg">批發全產品定價一覽</h4>
+                      {wsOverrideCount > 0 && (
+                        <span className="px-2.5 py-1 bg-amber-100 text-amber-700 rounded-full text-[10px] font-black">{wsOverrideCount} 手改</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button onClick={() => setShowCostColumns(v => !v)} className={`px-4 py-2 rounded-xl text-xs font-black transition-colors ${showCostColumns ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                        {showCostColumns ? '隱藏成本' : '顯示成本'}
+                      </button>
+                      {wsOverrideCount > 0 && (
+                        <button onClick={() => setWholesalePriceOverrides({})} className="px-4 py-2 bg-amber-50 border border-amber-200 text-amber-700 rounded-xl text-xs font-black hover:bg-amber-100 transition-colors">
+                          清除手動標記
+                        </button>
+                      )}
+                      <button onClick={async () => {
+                        try {
+                          await supabase.from('site_config').upsert({ id: 'wholesale_pricing_rules', value: wsRules });
+                          await supabase.from('site_config').upsert({ id: 'wholesale_price_overrides', value: wholesalePriceOverrides });
+                          showToast('批發定價已儲存');
+                        } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
+                      }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Save size={14}/> 儲存所有覆蓋</button>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                          <th className="text-left px-4 py-3">產品</th>
+                          {showCostColumns && <th className="text-right px-4 py-3 text-amber-500">成本</th>}
+                          <th className="text-right px-4 py-3 text-slate-400">計算P0</th>
+                          <th className="text-right px-4 py-3 text-orange-500">實際P0</th>
+                          {wsRules.priceTiers.map(tier => (
+                            <th key={tier.name} className="text-right px-4 py-3 text-teal-500">{tier.name}</th>
+                          ))}
+                          {showCostColumns && <th className="text-right px-4 py-3 text-emerald-500">毛利%</th>}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {products.map(p => {
+                          const linkedIng = ingredients.find(i => i.id === p.ingredientId);
+                          const totalCost = computeProductCost(p, linkedIng, costItems);
+                          const computedP0 = totalCost > 0 ? Math.round(totalCost / wsRules.targetMarginFactor) : null;
+                          const override = wholesalePriceOverrides[p.id];
+                          const actualP0 = override != null ? override : (computedP0 ?? 0);
+                          const isOverridden = override != null;
+                          const marginPct = totalCost > 0 && actualP0 > 0 ? Math.round(((actualP0 - totalCost) / actualP0) * 100) : null;
+                          return (
+                            <tr key={p.id} className={`transition-colors ${isOverridden ? 'bg-amber-50/60' : 'hover:bg-slate-50/50'}`}>
+                              <td className="px-4 py-3">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-8 h-8 bg-slate-50 rounded-lg flex items-center justify-center text-base overflow-hidden flex-shrink-0 border border-slate-100">
+                                    {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-sm">{p.image || '📦'}</span>}
+                                  </div>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-bold text-slate-700">{p.name}</span>
+                                    {isOverridden && <span className="px-1.5 py-0.5 bg-amber-200 text-amber-800 rounded text-[9px] font-black">手改</span>}
+                                  </div>
+                                </div>
+                              </td>
+                              {showCostColumns && (
+                                <td className="text-right px-4 py-3 font-bold text-amber-600">{totalCost > 0 ? `$${totalCost.toFixed(1)}` : <span className="text-slate-300">—</span>}</td>
+                              )}
+                              <td className="text-right px-4 py-3 text-slate-400 font-bold">
+                                {computedP0 != null ? `$${computedP0}` : <span className="text-slate-200">—</span>}
+                              </td>
+                              <td className="text-right px-4 py-3">
+                                <input
+                                  type="number" min="0"
+                                  value={actualP0 || ''}
+                                  placeholder={computedP0 != null ? `${computedP0}` : '—'}
+                                  onChange={e => {
+                                    const val = Number(e.target.value) || 0;
+                                    if (val > 0) {
+                                      setWholesalePriceOverrides(prev => ({ ...prev, [p.id]: val }));
+                                    } else {
+                                      setWholesalePriceOverrides(prev => { const n = { ...prev }; delete n[p.id]; return n; });
+                                    }
+                                  }}
+                                  className={`w-20 p-1 rounded-lg font-bold text-right text-xs border ${isOverridden ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                                />
+                              </td>
+                              {wsRules.priceTiers.map(tier => {
+                                const tierPrice = actualP0 > 0 ? Math.round(actualP0 / tier.factor) : null;
+                                return (
+                                  <td key={tier.name} className="text-right px-4 py-3 font-bold text-teal-600">
+                                    {tierPrice != null ? `$${tierPrice}` : <span className="text-slate-300">—</span>}
+                                  </td>
+                                );
+                              })}
+                              {showCostColumns && (
+                                <td className={`text-right px-4 py-3 font-black ${marginPct !== null ? (marginPct >= 0 ? 'text-emerald-600' : 'text-rose-600') : 'text-slate-300'}`}>
+                                  {marginPct !== null ? `${marginPct}%` : '—'}
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
                 {/* ── P 等級管理 ── */}
                 <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-6">
                   <div className="flex items-center justify-between">
@@ -3960,7 +4185,7 @@ const App: React.FC = () => {
                     <div className="flex justify-between items-center">
                       <div>
                         <span className="font-black text-orange-700 text-sm">P0（直銷價）</span>
-                        <span className="text-[10px] text-orange-400 ml-2 font-bold">= 成本 ÷ {wsRules.targetMarginFactor}</span>
+                        <span className="text-[10px] text-orange-400 ml-2 font-bold">= 成本 ÷ {wsRules.targetMarginFactor}（或手動覆蓋）</span>
                       </div>
                       <span className="font-black text-orange-700">基準 — 新批發會員默認</span>
                     </div>
@@ -4010,25 +4235,13 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
-                {/* ── 批發儲存按鈕 ── */}
-                <div className="flex justify-end">
-                  <button onClick={async () => {
-                    try {
-                      await supabase.from('site_config').upsert({ id: 'wholesale_pricing_rules', value: wsRules });
-                      showToast('批發定價規則已儲存');
-                    } catch (err: any) {
-                      showToast(`儲存失敗：${err.message}`, 'error');
-                    }
-                  }} className="px-6 py-3 bg-emerald-600 text-white rounded-2xl text-sm font-black shadow-lg active:scale-95 transition-all flex items-center gap-2"><Save size={16}/> 儲存批發設定</button>
-                </div>
-
                 {/* ── 批發公式說明卡片 ── */}
                 <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
                   <div className="flex items-center gap-2"><div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl"><ClipboardList size={18}/></div><h4 className="font-black text-sm">計算公式</h4></div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
                     <div className="p-4 bg-orange-50 rounded-2xl space-y-1">
                       <p className="font-black text-orange-700">P0 價（直銷價）</p>
-                      <p className="text-orange-600 font-bold">= 總成本 ÷ 目標利潤率</p>
+                      <p className="text-orange-600 font-bold">= 總成本 ÷ 目標利潤率（或手動覆蓋）</p>
                       <p className="text-[10px] text-orange-400 font-bold">新批發會員默認等級</p>
                     </div>
                     <div className="p-4 bg-teal-50 rounded-2xl space-y-1">
@@ -4039,7 +4252,8 @@ const App: React.FC = () => {
                   </div>
                 </div>
               </>
-            )}
+              );
+            })()}
           </div>
         );
       }
