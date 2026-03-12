@@ -230,6 +230,8 @@ export interface User {
   addresses?: UserAddress[];
 }
 
+export type OrderType = 'retail' | 'wholesale';
+
 export interface Order {
   id: string;
   customerName: string;
@@ -238,6 +240,7 @@ export interface Order {
   date: string;
   items: number;
   trackingNumber?: string;
+  orderType?: OrderType;
 }
 
 /** One line item stored in orders.line_items JSONB. */
@@ -279,6 +282,8 @@ export interface SupabaseOrderRow {
   sf_responses?: unknown | null;
   payment_intent_id?: string | null;
   delivery_date?: string | null;
+  order_type?: string | null;
+  payment_method?: string | null;
 }
 
 /** Supabase public.products table – column names must match (snake_case). */

@@ -209,7 +209,8 @@ export const mapOrderRowToOrder = (row: SupabaseOrderRow): Order => ({
   status: normalizeOrderStatus(row.status),
   date: row.order_date,
   items: row.items_count,
-  trackingNumber: row.waybill_no ?? row.tracking_number ?? undefined
+  trackingNumber: row.waybill_no ?? row.tracking_number ?? undefined,
+  orderType: (row.order_type === 'wholesale' ? 'wholesale' : 'retail') as 'retail' | 'wholesale',
 });
 
 export const mapSlideshowRowToItem = (row: SupabaseSlideshowRow): SlideshowItem => ({

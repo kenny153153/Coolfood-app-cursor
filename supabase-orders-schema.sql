@@ -70,6 +70,8 @@ ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS locker_code TEXT;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS waybill_no TEXT;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS sf_responses JSONB;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS tracking_number TEXT;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS order_type TEXT NOT NULL DEFAULT 'retail';
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS payment_method TEXT;
 
 -- 5) RLS and policy so app can read/insert
 ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;

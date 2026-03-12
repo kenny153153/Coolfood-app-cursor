@@ -234,6 +234,27 @@ const getEffectiveUnitPrice = (
   return Math.round(base);
 };
 
+/**
+ * 批發定價引擎
+ * P0 (直銷) = totalCost / targetMarginFactor
+ * Pn (業務) = P0 / tierFactor
+ */
+const getWholesaleUnitPrice = (
+  p: Product,
+  linkedIngredient: Ingredient | undefined,
+  costItems: CostItem[],
+  wholesaleRules: WholesalePricingRules,
+  memberPriceTier?: string,
+): number => {
+  const totalCost = computeProductCost(p, linkedIngredient, costItems);
+  if (totalCost <= 0) return p.price;
+  const p0 = totalCost / wholesaleRules.targetMarginFactor;
+  if (!memberPriceTier || memberPriceTier === 'P0') return Math.round(p0);
+  const tier = wholesaleRules.priceTiers?.find(t => t.name === memberPriceTier);
+  if (tier) return Math.round(p0 / tier.factor);
+  return Math.round(p0);
+};
+
 const getOrderStatusLabel = (status: OrderStatus | string, t?: { orderStatus: Record<string, string> }) => {
   if (t) {
     const key = String(status) as keyof typeof t.orderStatus;
@@ -548,6 +569,7 @@ const App: React.FC = () => {
   // --- Routing & Auth Logic ---
   const [isAdminRoute, setIsAdminRoute] = useState(window.location.hash === '#admin');
   const [isSetupRoute, setIsSetupRoute] = useState(window.location.hash === '#setup');
+  const [isWholesaleRoute, setIsWholesaleRoute] = useState(() => typeof window !== 'undefined' && window.location.pathname.startsWith('/wholesale'));
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [adminLoginForm, setAdminLoginForm] = useState({ username: '', password: '' });
   const [isAppLoading, setIsAppLoading] = useState(true);
@@ -565,6 +587,7 @@ const App: React.FC = () => {
   const [inventoryChannelFilter, setInventoryChannelFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
   const [costsChannelFilter, setCostsChannelFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
   const [ordersStatusFilter, setOrdersStatusFilter] = useState<'all' | OrderStatus>('all');
+  const [ordersTypeFilter, setOrdersTypeFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
   const [isAdminSidebarOpen, setIsAdminSidebarOpen] = useState(false);
 
   // --- Data State ---
@@ -610,7 +633,14 @@ const App: React.FC = () => {
     try { const saved = localStorage.getItem('coolfood_cart'); return saved ? JSON.parse(saved) : []; } catch { return []; }
   });
   const [storeSearch, setStoreSearch] = useState('');
-  const [deliveryMethod, setDeliveryMethod] = useState<'home' | 'sf_locker'>('home');
+  const [deliveryMethod, setDeliveryMethod] = useState<'home' | 'sf_locker' | 'own_van'>(() =>
+    typeof window !== 'undefined' && window.location.pathname.startsWith('/wholesale') ? 'own_van' : 'home'
+  );
+  const [paymentMethod, setPaymentMethod] = useState<'card' | 'fps' | 'cod'>(() =>
+    typeof window !== 'undefined' && window.location.pathname.startsWith('/wholesale') ? 'fps' : 'card'
+  );
+  const [wholesaleDeliveryDate, setWholesaleDeliveryDate] = useState('');
+  const [wholesaleDeliveryNote, setWholesaleDeliveryNote] = useState('');
 
   // ── 動態運費管理 ──
   const SHIPPING_FALLBACKS: Record<string, ShippingConfig> = {
@@ -776,6 +806,7 @@ const App: React.FC = () => {
       const search = window.location.search || '';
       setIsAdminRoute(hash === '#admin');
       setIsSetupRoute(hash === '#setup');
+      setIsWholesaleRoute(path.startsWith('/wholesale'));
       if (path === '/success' || hash === '#success') {
         const params = new URLSearchParams(search);
         const orderId = params.get('order');
@@ -1467,11 +1498,34 @@ const App: React.FC = () => {
   const pricingExcluded = siteConfig.pricingRules?.excludedProductIds;
 
   // 便利包裝：快速取得當前使用者看到的價格
-  const getPrice = (p: Product, qty: number = 1) =>
-    getEffectiveUnitPrice(p, qty, pricingTier, memberPct, walletPct, pricingExcluded);
+  const getPrice = (p: Product, qty: number = 1) => {
+    if (isWholesaleRoute) {
+      const linkedIng = ingredients.find(i => i.id === p.ingredientId);
+      return getWholesaleUnitPrice(p, linkedIng, costItems, siteConfig.wholesalePricingRules!, user?.wholesalePriceTier);
+    }
+    return getEffectiveUnitPrice(p, qty, pricingTier, memberPct, walletPct, pricingExcluded);
+  };
   
   const pricingData = useMemo(() => {
     let subtotal = 0;
+    if (isWholesaleRoute) {
+      cart.forEach(item => {
+        const linkedIng = ingredients.find(i => i.id === item.ingredientId);
+        subtotal += getWholesaleUnitPrice(item, linkedIng, costItems, siteConfig.wholesalePricingRules!, user?.wholesalePriceTier) * item.qty;
+      });
+      const deliveryFee = 0;
+      return {
+        subtotal,
+        deliveryFee,
+        total: subtotal + deliveryFee,
+        shippingThreshold: 0,
+        shippingFee: 0,
+        lockerThreshold: 0,
+        lockerFee: 0,
+        deliveryThreshold: 0,
+        deliveryFee_delivery: 0,
+      };
+    }
     cart.forEach(item => {
       subtotal += getEffectiveUnitPrice(item, item.qty, pricingTier, memberPct, walletPct, pricingExcluded) * item.qty;
     });
@@ -1489,16 +1543,14 @@ const App: React.FC = () => {
       subtotal, 
       deliveryFee, 
       total: subtotal + deliveryFee,
-      // 當前選擇的配送方式門檻
       shippingThreshold: sc.threshold,
       shippingFee: sc.fee,
-      // 雙門檻值
       lockerThreshold: lockerConfig.threshold,
       lockerFee: lockerConfig.fee,
       deliveryThreshold: deliveryConfig.threshold,
       deliveryFee_delivery: deliveryConfig.fee,
     };
-  }, [cart, pricingTier, memberPct, walletPct, pricingExcluded, deliveryMethod, shippingConfigs]);
+  }, [cart, pricingTier, memberPct, walletPct, pricingExcluded, deliveryMethod, shippingConfigs, isWholesaleRoute, ingredients, costItems, siteConfig.wholesalePricingRules, user?.wholesalePriceTier]);
 
   // ── 湊單推薦產品（已過濾掉購物車中的商品）──
   const upsellProducts = useMemo(() => {
@@ -1595,6 +1647,8 @@ const App: React.FC = () => {
       wallet_balance: 0,
       tier: 'Bronze',
       role: 'customer',
+      member_type: isWholesaleRoute ? 'wholesale' : 'retail',
+      wholesale_price_tier: isWholesaleRoute ? 'P0' : null,
       addresses: null
     };
     const { data, error } = await supabase.from('members').insert(newMember).select().single();
@@ -2640,6 +2694,68 @@ const App: React.FC = () => {
     });
 
     const deliveryAddress = getCheckoutDeliveryAddress();
+
+    // ── Wholesale order flow ──
+    if (isWholesaleRoute) {
+      if (!user) {
+        showToast('批發客戶請先登入', 'error');
+        return;
+      }
+      const wsContactName = user?.name ?? null;
+      const wsCustomerPhone = user?.phoneNumber ?? null;
+      const wsAddr = wholesaleDeliveryNote.trim() || null;
+      const wsStatus = paymentMethod === 'cod' ? OrderStatus.PENDING_PAYMENT : OrderStatus.PENDING_PAYMENT;
+
+      const insertRow: Record<string, unknown> = {
+        id: orderIdNum,
+        customer_name: user.name,
+        customer_phone: wsCustomerPhone,
+        total,
+        subtotal,
+        delivery_fee: deliveryFee,
+        status: wsStatus,
+        order_date: orderDate,
+        items_count: itemsCount,
+        line_items: lineItems,
+        delivery_method: 'own_van',
+        delivery_address: wsAddr,
+        contact_name: wsContactName,
+        order_type: 'wholesale',
+        payment_method: paymentMethod,
+      };
+      if (wholesaleDeliveryDate) insertRow.delivery_date = wholesaleDeliveryDate;
+      if (deliveryAddress?.district) insertRow.delivery_district = deliveryAddress.district;
+
+      const { error } = await supabase.from('orders').insert(insertRow);
+      if (error) {
+        showToast(error.message || '訂單提交失敗', 'error');
+        return;
+      }
+      for (const item of cart) {
+        const prod = products.find(p => p.id === item.id);
+        if (prod?.trackInventory && prod.stock > 0) {
+          supabase.rpc('decrement_stock', { p_id: item.id, p_qty: item.qty }).then(({ error: stockErr }) => {
+            if (stockErr) console.warn(`[stock] Failed to decrement ${item.id}:`, stockErr.message);
+          });
+        }
+      }
+      setProducts(prev => prev.map(p => {
+        const cartItem = cart.find(c => c.id === p.id);
+        if (cartItem && p.trackInventory) return { ...p, stock: Math.max(0, p.stock - cartItem.qty) };
+        return p;
+      }));
+      const newOrder: Order = { id: orderIdDisplay, customerName: user.name, total, status: wsStatus, date: orderDate, items: itemsCount, orderType: 'wholesale' };
+      setOrders(prev => [...prev, newOrder]);
+      setCart([]);
+      try { localStorage.removeItem('coolfood_cart'); } catch { /* ignore */ }
+      setWholesaleDeliveryDate('');
+      setWholesaleDeliveryNote('');
+      setView('success');
+      showToast(paymentMethod === 'cod' ? '訂單已提交，送貨時收款' : '訂單已提交，請以 FPS 轉帳');
+      return;
+    }
+
+    // ── Retail order flow ──
     if (deliveryMethod === 'home') {
       if (!deliveryAddress || !isAddressCompleteForOrder(deliveryAddress)) {
         showToast('請填寫地區、地址、樓層、單位、收件人及手機號碼', 'error');
@@ -2668,7 +2784,8 @@ const App: React.FC = () => {
       total,
       status: OrderStatus.PENDING_PAYMENT,
       date: orderDate,
-      items: itemsCount
+      items: itemsCount,
+      orderType: 'retail'
     };
 
     const insertRow: Record<string, unknown> = {
@@ -2687,6 +2804,8 @@ const App: React.FC = () => {
       contact_name: contactName
       , delivery_alt_contact_name: altContactName
       , delivery_alt_contact_phone: altContactPhone
+      , order_type: 'retail'
+      , payment_method: 'card'
     };
     if (deliveryMethod === 'home' && deliveryAddress) {
       insertRow.delivery_district = deliveryAddress.district ?? null;
@@ -2984,23 +3103,29 @@ const App: React.FC = () => {
   }, [products, adminProductSearch, inventoryChannelFilter]);
 
   const filteredStoreProducts = useMemo(() => {
-    if (!storeSearch.trim()) return products;
+    const channelFiltered = products.filter(p => {
+      const ch = p.saleChannel || 'both';
+      if (isWholesaleRoute) return ch === 'wholesale' || ch === 'both';
+      return ch === 'retail' || ch === 'both';
+    });
+    if (!storeSearch.trim()) return channelFiltered;
     const q = storeSearch.toLowerCase();
-    return products.filter(p =>
+    return channelFiltered.filter(p =>
       p.name.toLowerCase().includes(q) ||
       (p.description || '').toLowerCase().includes(q) ||
       p.tags.some(t => t.toLowerCase().includes(q)) ||
       (p.origin || '').toLowerCase().includes(q)
     );
-  }, [products, storeSearch]);
+  }, [products, storeSearch, isWholesaleRoute]);
 
   const filteredAdminOrders = useMemo(() => {
     return orders.filter(o => {
       const matchesSearch = o.id.toLowerCase().includes(adminOrderSearch.toLowerCase()) || o.customerName.toLowerCase().includes(adminOrderSearch.toLowerCase());
       const matchesStatus = ordersStatusFilter === 'all' || o.status === ordersStatusFilter;
-      return matchesSearch && matchesStatus;
+      const matchesType = ordersTypeFilter === 'all' || (o.orderType || 'retail') === ordersTypeFilter;
+      return matchesSearch && matchesStatus && matchesType;
     });
-  }, [orders, adminOrderSearch, ordersStatusFilter]);
+  }, [orders, adminOrderSearch, ordersStatusFilter, ordersTypeFilter]);
 
   const filteredAdminMembers = useMemo(() => {
     return members.filter(m => {
@@ -3367,6 +3492,11 @@ const App: React.FC = () => {
                    <input value={adminOrderSearch} onChange={e => setAdminOrderSearch(e.target.value)} placeholder="搜索訂單編號或客戶名稱..." className="w-full pl-12 pr-6 py-3 bg-white border border-slate-100 rounded-2xl font-bold" />
                 </div>
                 <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0">
+                   {(['all', 'retail', 'wholesale'] as const).map(ot => (
+                      <button key={ot} onClick={() => setOrdersTypeFilter(ot)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap ${ordersTypeFilter === ot ? 'bg-slate-900 text-white shadow-lg' : 'bg-white border border-slate-100 text-slate-400'}`}>
+                        {ot === 'all' ? '全部' : ot === 'retail' ? '零售' : '批發'}
+                      </button>
+                   ))}
                    {['all', ...Object.values(OrderStatus)].map(s => (
                       <button key={s} onClick={() => setOrdersStatusFilter(s as any)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap ${ordersStatusFilter === s ? 'bg-slate-900 text-white shadow-lg' : 'bg-white border border-slate-100 text-slate-400'}`}>
                         {s === 'all' ? t.admin.all : getOrderStatusLabel(s, t)}
@@ -3403,7 +3533,10 @@ const App: React.FC = () => {
                             <td className="px-4 py-4" onClick={e => { e.stopPropagation(); toggleSelectOrder(o.id); }}>
                               {selectedOrderIds.has(o.id) ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} className="text-slate-300" />}
                             </td>
-                            <td className="px-6 py-4 font-black text-blue-600">#{o.id}</td>
+                            <td className="px-6 py-4 font-black text-blue-600">
+                              <span>#{o.id}</span>
+                              {o.orderType === 'wholesale' && <span className="ml-1.5 px-1.5 py-0.5 bg-orange-50 text-orange-600 rounded text-[8px] font-black">批發</span>}
+                            </td>
                             <td className="px-6 py-4 font-bold text-slate-700">{o.customerName}</td>
                             <td className="px-6 py-4 font-black text-slate-900">${o.total}</td>
                             <td className="px-6 py-4"><StatusBadge status={o.status}/></td>
@@ -6787,6 +6920,122 @@ const App: React.FC = () => {
       );
     }
 
+    // ── Wholesale Checkout UI ──
+    if (isWholesaleRoute) {
+      return (
+        <div className="flex-1 bg-slate-100 min-h-screen pb-48 overflow-y-auto animate-fade-in">
+          <header className="bg-white sticky top-0 z-40 px-4 py-3.5 border-b border-slate-200/60 flex items-center justify-between">
+            <button onClick={() => setView('store')} className="p-2 -ml-1 hover:bg-slate-50 rounded-full transition-colors"><ChevronLeft size={22} className="text-slate-700" /></button>
+            <h2 className="text-base font-black text-slate-900 tracking-tight">批發結帳</h2>
+            <div className="w-10" />
+          </header>
+
+          <div className="p-4 sm:p-6 space-y-3">
+            {/* ─── Cart Items ─── */}
+            <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-5 pt-5 pb-3">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">訂單內容 ({cart.reduce((s, i) => s + i.qty, 0)} 件)</p>
+              </div>
+              <div className="px-5 pb-4 space-y-3">
+                {cart.map(item => {
+                  const price = getPrice(item, item.qty);
+                  return (
+                    <div key={item.id} className="flex items-center gap-3">
+                      {item.image && <img src={item.image} alt={item.name} className="w-12 h-12 rounded-xl object-cover bg-slate-100" />}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-slate-800 truncate">{item.name}</p>
+                        <p className="text-xs text-slate-400 font-bold">${price} × {item.qty}</p>
+                      </div>
+                      <p className="text-sm font-black text-slate-900">${price * item.qty}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+
+            {/* ─── Delivery Info (Own Van) ─── */}
+            <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-5 pt-5 pb-3">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5"><Truck size={12} /> 自家送貨</p>
+              </div>
+              <div className="px-5 pb-5 space-y-3">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 mb-1 block">送貨地址</label>
+                  <textarea
+                    value={wholesaleDeliveryNote}
+                    onChange={e => setWholesaleDeliveryNote(e.target.value)}
+                    placeholder="請輸入送貨地址（餐廳名稱、街道、樓層等）"
+                    className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100 min-h-[80px] resize-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 mb-1 block">送貨日期</label>
+                  <input
+                    type="date"
+                    value={wholesaleDeliveryDate}
+                    onChange={e => setWholesaleDeliveryDate(e.target.value)}
+                    min={new Date().toISOString().slice(0, 10)}
+                    className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100"
+                  />
+                </div>
+              </div>
+            </section>
+
+            {/* ─── Payment Method ─── */}
+            <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-5 pt-5 pb-3">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">付款方式</p>
+              </div>
+              <div className="px-5 pb-5">
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => setPaymentMethod('fps')} className={`py-3.5 px-4 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 ${paymentMethod === 'fps' ? 'bg-slate-900 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                    <DollarSign size={14} /> FPS 轉帳
+                  </button>
+                  <button onClick={() => setPaymentMethod('cod')} className={`py-3.5 px-4 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 ${paymentMethod === 'cod' ? 'bg-slate-900 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                    <Coins size={14} /> 到付 (COD)
+                  </button>
+                </div>
+                {paymentMethod === 'fps' && (
+                  <div className="mt-3 p-3 bg-blue-50 rounded-xl border border-blue-100">
+                    <p className="text-xs font-bold text-blue-700">下單後請以 FPS 轉帳至指定帳號，我們確認收款後會安排送貨。</p>
+                  </div>
+                )}
+                {paymentMethod === 'cod' && (
+                  <div className="mt-3 p-3 bg-amber-50 rounded-xl border border-amber-100">
+                    <p className="text-xs font-bold text-amber-700">送貨員到達時收款（現金），確認後訂單完成。</p>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* ─── Order Total + Submit ─── */}
+            <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-5 pt-5 pb-4 space-y-2">
+                <div className="flex justify-between text-xs font-bold text-slate-400"><span>商品小計</span><span className="text-slate-700">${subtotal}</span></div>
+                <div className="flex justify-between text-xs font-bold text-slate-400"><span>運費</span><span className="text-emerald-600 font-black">免運費</span></div>
+                <div className="pt-3 border-t border-slate-100 flex justify-between items-end">
+                  <span className="text-xs font-black text-slate-400 uppercase tracking-widest">合計</span>
+                  <span className="text-2xl font-black text-slate-900">${total}</span>
+                </div>
+              </div>
+              <div className="px-5 pb-5">
+                <button
+                  disabled={!user || cart.length === 0}
+                  onClick={handleSubmitOrder}
+                  className="w-full py-4 bg-orange-600 text-white rounded-xl font-black text-sm shadow-lg active:scale-[0.98] transition-all disabled:opacity-30 flex items-center justify-center gap-2"
+                >
+                  {paymentMethod === 'cod' ? <Coins size={16} /> : <DollarSign size={16} />}
+                  {paymentMethod === 'cod' ? `確認訂單 (到付 $${total})` : `確認訂單 (FPS $${total})`}
+                </button>
+                {!user && <p className="text-center text-xs text-red-500 font-bold mt-2">請先登入批發帳號</p>}
+              </div>
+            </section>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Retail Checkout UI ──
     if (isPaymentStep) {
       return (
         <div className="flex-1 bg-slate-50 min-h-screen flex flex-col items-center justify-center gap-4 animate-fade-in">
@@ -7007,7 +7256,7 @@ const App: React.FC = () => {
   const renderStoreView = () => (
     <div className="flex flex-col h-screen overflow-hidden bg-white animate-fade-in font-sans">
       <header className="bg-white/95 backdrop-blur-md sticky top-0 z-40 px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-        <div className="flex items-center gap-2"><div className="w-9 h-9 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-lg overflow-hidden">{isMediaUrl(siteConfig.logoUrl) ? <img src={siteConfig.logoUrl} alt={siteConfig.logoText} className="w-full h-full object-contain p-0.5" /> : <span>{siteConfig.logoIcon}</span>}</div><h1 className="font-bold text-lg text-slate-900 tracking-tight">{siteConfig.logoText}</h1></div>
+        <div className="flex items-center gap-2"><div className={`w-9 h-9 ${isWholesaleRoute ? 'bg-orange-600' : 'bg-blue-600'} rounded-lg flex items-center justify-center text-white shadow-lg overflow-hidden`}>{isMediaUrl(siteConfig.logoUrl) ? <img src={siteConfig.logoUrl} alt={siteConfig.logoText} className="w-full h-full object-contain p-0.5" /> : <span>{siteConfig.logoIcon}</span>}</div><h1 className="font-bold text-lg text-slate-900 tracking-tight">{siteConfig.logoText}</h1>{isWholesaleRoute && <span className="px-2 py-0.5 bg-orange-100 text-orange-700 rounded-full text-[10px] font-black">批發</span>}</div>
         <div className="flex items-center gap-2">
           <button onClick={handleReorderClick} className="p-2 bg-amber-50 text-amber-600 rounded-full border border-amber-100 active:scale-90 transition-transform" title="一鍵回購"><Clock size={18} /></button>
           <button onClick={() => setLang(lang === 'zh-HK' ? 'en' : 'zh-HK')} className="px-2.5 py-1.5 bg-slate-100 text-slate-600 rounded-full border border-slate-200 text-[10px] font-black uppercase tracking-wider hover:bg-slate-200 transition-colors">{lang === 'zh-HK' ? 'EN' : '中'}</button>
