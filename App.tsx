@@ -1299,6 +1299,9 @@ const App: React.FC = () => {
 
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/398b4105-f3ac-47d0-beea-cee72cee658b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:handleAdminLogin:entry',message:'handleAdminLogin called',data:{username:adminLoginForm.username,hasPassword:!!adminLoginForm.password},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
+    // #endregion
     try {
       const { data, error } = await supabase
         .from('members')
@@ -1306,8 +1309,14 @@ const App: React.FC = () => {
         .eq('phone_number', adminLoginForm.username)
         .in('role', ['admin', 'super_admin'])
         .single();
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/398b4105-f3ac-47d0-beea-cee72cee658b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:handleAdminLogin:afterQuery',message:'Supabase query result',data:{hasData:!!data,error:error?.message||null,dataRole:data?.role||null},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+      // #endregion
       if (error || !data) { showToast('帳號或密碼錯誤', 'error'); return; }
       const ok = await verifyPassword(adminLoginForm.password, data.password_hash || '');
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/398b4105-f3ac-47d0-beea-cee72cee658b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:handleAdminLogin:afterVerify',message:'Password verify result',data:{ok,hasHash:!!(data.password_hash)},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+      // #endregion
       if (!ok) { showToast('帳號或密碼錯誤', 'error'); return; }
       const permissions = buildAdminPermissions(data.role, data.admin_permissions as Record<string, boolean> | null);
       const admin: AdminAccount = {
@@ -1320,9 +1329,15 @@ const App: React.FC = () => {
       };
       setAdminUser(admin);
       setIsAdminAuthenticated(true);
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/398b4105-f3ac-47d0-beea-cee72cee658b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:handleAdminLogin:success',message:'Login succeeded',data:{adminName:admin.name,adminRole:admin.role},timestamp:Date.now(),hypothesisId:'H5'})}).catch(()=>{});
+      // #endregion
       try { localStorage.setItem('coolfood_admin_session', JSON.stringify(admin)); } catch { /* ignore */ }
       showToast(`歡迎回來，${admin.name}！`);
-    } catch {
+    } catch (err) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/398b4105-f3ac-47d0-beea-cee72cee658b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:handleAdminLogin:catch',message:'Login threw exception',data:{error:String(err)},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
+      // #endregion
       showToast('登入失敗，請稍後再試', 'error');
     }
   };
