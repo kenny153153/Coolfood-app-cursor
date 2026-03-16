@@ -15,7 +15,19 @@ import {
 } from 'lucide-react';
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
-import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, WholesalePriceTier, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel, MemberType, IngredientCategory, AdminPermissions, AdminAccount, AdminRole } from './types';
+import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, WholesalePriceTier, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel, MemberType, IngredientCategory, AdminPermissions, AdminAccount, AdminRole, Workspace, AdminModuleId } from './types';
+import { WorkspaceProvider } from './WorkspaceContext';
+import { useSite } from './SiteContext';
+import GHFoodsStorefront from './GHFoodsStorefront';
+import AdminSidebar from './AdminSidebar';
+import AdminTopbar from './AdminTopbar';
+import WholesalePricingPanel from './WholesalePricingPanel';
+import WholesaleClientsPanel from './WholesaleClientsPanel';
+import DispatchPanel from './DispatchPanel';
+import NewOrderPanel from './NewOrderPanel';
+import AccountingPanel from './AccountingPanel';
+import WarehousePanel from './WarehousePanel';
+import ProductionPanel from './ProductionPanel';
 import { useI18n, Language } from './i18n';
 import { supabase } from './supabaseClient';
 import {
@@ -564,13 +576,18 @@ const ADMIN_PERMISSION_LABELS: Record<keyof AdminPermissions, string> = {
 
 const App: React.FC = () => {
   const { lang, setLang, t } = useI18n();
+  const { site, isGHFoods } = useSite();
   const pName = useCallback((p: Product) => (lang === 'en' && p.nameEn) ? p.nameEn : p.name, [lang]);
   const pDesc = useCallback((p: Product) => (lang === 'en' && p.descriptionEn) ? p.descriptionEn : (p.description || ''), [lang]);
 
   // --- Routing & Auth Logic ---
   const [isAdminRoute, setIsAdminRoute] = useState(window.location.hash === '#admin');
   const [isSetupRoute, setIsSetupRoute] = useState(window.location.hash === '#setup');
-  const [isWholesaleRoute, setIsWholesaleRoute] = useState(() => typeof window !== 'undefined' && window.location.pathname.startsWith('/wholesale'));
+  const [isWholesaleRoute, setIsWholesaleRoute] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    if (window.location.pathname.startsWith('/wholesale')) return true;
+    return isGHFoods;
+  });
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [adminLoginForm, setAdminLoginForm] = useState({ username: '', password: '' });
   const [isAppLoading, setIsAppLoading] = useState(true);
@@ -579,14 +596,15 @@ const App: React.FC = () => {
     () => (typeof window !== 'undefined' && (window.location.pathname === '/success' || window.location.hash === '#success') ? 'success' : 'store')
   );
   const [isRedirectingToPayment, setIsRedirectingToPayment] = useState(false);
-  const [adminModule, setAdminModule] = useState<'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow' | 'pricing' | 'costs' | 'ingredients' | 'language' | 'recipes' | 'settings' | 'admin_management'>('dashboard');
+  const [adminModule, setAdminModule] = useState<AdminModuleId>('global_dashboard');
+  const [moduleWorkspace, setModuleWorkspace] = useState<Workspace | null>(null);
   const [adminUser, setAdminUser] = useState<AdminAccount | null>(null);
   const [adminAccounts, setAdminAccounts] = useState<AdminAccount[]>([]);
   const [editingAdminAccount, setEditingAdminAccount] = useState<(Partial<AdminAccount> & { isNew?: boolean; newPhone?: string }) | null>(null);
   const [inventorySubTab, setInventorySubTab] = useState<'products' | 'categories' | 'rules'>('products');
   const [pricingSubTab, setPricingSubTab] = useState<'retail' | 'wholesale'>('retail');
   const [inventoryChannelFilter, setInventoryChannelFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
-  const [costsChannelFilter, setCostsChannelFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
+  // costsChannelFilter moved to ProductionPanel
   const [ordersStatusFilter, setOrdersStatusFilter] = useState<'all' | OrderStatus>('all');
   const [ordersTypeFilter, setOrdersTypeFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
   const [isAdminSidebarOpen, setIsAdminSidebarOpen] = useState(false);
@@ -821,7 +839,7 @@ const App: React.FC = () => {
       const search = window.location.search || '';
       setIsAdminRoute(hash === '#admin');
       setIsSetupRoute(hash === '#setup');
-      setIsWholesaleRoute(path.startsWith('/wholesale'));
+      setIsWholesaleRoute(path.startsWith('/wholesale') || isGHFoods);
       if (path === '/success' || hash === '#success') {
         const params = new URLSearchParams(search);
         const orderId = params.get('order');
@@ -1257,6 +1275,26 @@ const App: React.FC = () => {
     if (!adminUser) return false;
     if (adminUser.role === 'super_admin') return true;
     return adminUser.permissions[module] ?? false;
+  };
+
+  const handleAdminModuleNav = (moduleId: AdminModuleId, workspace?: Workspace | null) => {
+    setAdminModule(moduleId);
+    setModuleWorkspace(workspace ?? null);
+    if (moduleId === 'admin_management') loadAdminAccounts();
+  };
+
+  const handleWorkspaceSwitch = (ws: Workspace | null) => {
+    if (ws) {
+      const defaultModules: Record<Workspace, AdminModuleId> = {
+        COOLFOOD_RETAIL: 'dashboard',
+        WHOLESALE: 'orders',
+      };
+      setAdminModule(defaultModules[ws]);
+      setModuleWorkspace(ws);
+    } else {
+      setAdminModule('global_dashboard');
+      setModuleWorkspace(null);
+    }
   };
 
   const handleAdminLogin = async (e: React.FormEvent) => {
@@ -3597,7 +3635,49 @@ const App: React.FC = () => {
     </div>
   );
 
+  const renderModulePlaceholder = (moduleId: string) => {
+    const placeholders: Record<string, { title: string; desc: string; emoji: string }> = {
+      global_dashboard: { title: '總儀表版', desc: '跨品牌營收、訂單與庫存總覽 — 一覽全局', emoji: '📊' },
+    };
+    const info = placeholders[moduleId] || { title: moduleId, desc: '功能開發中', emoji: '🔧' };
+    const wsLabel = moduleWorkspace ? (() => { const labels: Record<string, string> = { WHOLESALE: '批發', COOLFOOD_RETAIL: 'Coolfood 零售' }; return labels[moduleWorkspace] || ''; })() : '';
+    return (
+      <div className="flex items-center justify-center min-h-[400px] animate-fade-in">
+        <div className="text-center space-y-5 max-w-md">
+          <div className="w-24 h-24 bg-slate-100 rounded-[2rem] flex items-center justify-center mx-auto text-4xl shadow-inner">
+            {info.emoji}
+          </div>
+          <h3 className="text-2xl font-black text-slate-900">{info.title}</h3>
+          {wsLabel && <p className="text-sm font-black text-slate-400">{wsLabel}</p>}
+          <p className="text-slate-500 font-bold text-sm">{info.desc}</p>
+          <div className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-50 text-blue-600 rounded-2xl text-sm font-black">
+            <Sparkles size={16}/> 即將推出
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderAdminModuleContent = () => {
+    // Functional panels — shared modules
+    if (adminModule === 'dispatch') return <DispatchPanel showToast={showToast} />;
+    if (adminModule === 'new_order') return <NewOrderPanel showToast={showToast} />;
+    if (adminModule === 'accounting') return <AccountingPanel showToast={showToast} />;
+    if (adminModule === 'warehouse_ops') return <WarehousePanel showToast={showToast} />;
+    if (adminModule === 'production') return <ProductionPanel showToast={showToast} products={products} setProducts={setProducts} ingredients={ingredients} ingredientCategories={ingredientCategories} categories={categories} costItems={costItems} setCostItems={setCostItems} siteConfig={siteConfig} isMediaUrl={isMediaUrl} />;
+
+    // Functional panels — wholesale
+    if (adminModule === 'wholesale_clients') return <WholesaleClientsPanel showToast={showToast} />;
+    if (moduleWorkspace === 'WHOLESALE' && adminModule === 'pricing') return <WholesalePricingPanel showToast={showToast} />;
+
+    // Remaining placeholder modules
+    const placeholderModules = ['global_dashboard'];
+    if (placeholderModules.includes(adminModule)) {
+      return renderModulePlaceholder(adminModule);
+    }
+    if (moduleWorkspace && moduleWorkspace !== 'COOLFOOD_RETAIL') {
+      return renderModulePlaceholder(adminModule);
+    }
     switch (adminModule) {
       case 'dashboard': {
         const todayStr = new Date().toISOString().slice(0, 10);
@@ -5079,248 +5159,9 @@ const App: React.FC = () => {
             )}
           </div>
         );
-      case 'costs': {
-        const costsWsRules: WholesalePricingRules = siteConfig.wholesalePricingRules || { targetMarginFactor: 0.88, priceTiers: [] };
-        if (!costsWsRules.priceTiers) costsWsRules.priceTiers = [];
-        const costsFilteredProducts = products.filter(p => {
-          const ch = p.saleChannel || 'retail';
-          if (costsChannelFilter === 'retail') return ch === 'retail' || ch === 'both';
-          if (costsChannelFilter === 'wholesale') return ch === 'wholesale' || ch === 'both';
-          return true;
-        });
-        return (
-          <div className="space-y-8 animate-fade-in pb-20">
-            {/* Channel filter tabs */}
-            <div className="flex gap-2">
-              {([
-                { id: 'all' as const, label: '全部' },
-                { id: 'retail' as const, label: '零售' },
-                { id: 'wholesale' as const, label: '批發' },
-              ]).map(ch => (
-                <button key={ch.id} onClick={() => setCostsChannelFilter(ch.id)} className={`px-5 py-2 rounded-xl text-xs font-black transition-all ${costsChannelFilter === ch.id ? 'bg-slate-900 text-white shadow-lg' : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-50'}`}>
-                  {ch.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Cost Items Configuration */}
-            <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-6">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl"><Coins size={18}/></div>
-                  <div>
-                    <h4 className="font-black text-lg">成本項目</h4>
-                    <p className="text-[10px] text-slate-400 font-bold">定義包裝、配件等附加成本（不含肉品成本，肉品成本在各產品設定）</p>
-                  </div>
-                </div>
-                <button onClick={async () => {
-                  try {
-                    await supabase.from('site_config').upsert({ id: 'cost_items', value: costItems });
-                    showToast('成本項目已儲存');
-                  } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
-                }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Save size={14}/> 儲存</button>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                      <th className="text-left px-4 py-3">名稱</th>
-                      <th className="text-right px-4 py-3">單價 ($)</th>
-                      <th className="text-right px-4 py-3 w-20">操作</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {costItems.map((ci) => (
-                      <tr key={ci.id} className="hover:bg-slate-50/50 transition-colors">
-                        <td className="px-4 py-3">
-                          <input value={ci.name} onChange={e => setCostItems(prev => prev.map(x => x.id === ci.id ? { ...x, name: e.target.value } : x))} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100 focus:ring-2 focus:ring-amber-100" />
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <input type="number" min="0" step="0.1" value={ci.defaultPrice} onChange={e => setCostItems(prev => prev.map(x => x.id === ci.id ? { ...x, defaultPrice: Number(e.target.value) || 0 } : x))} className="w-24 p-2 bg-slate-50 rounded-lg font-bold text-xs text-right border border-slate-100 focus:ring-2 focus:ring-amber-100" />
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <button onClick={() => setCostItems(prev => prev.filter(x => x.id !== ci.id))} className="p-1.5 text-rose-400 hover:bg-rose-50 rounded-lg transition-colors"><Trash2 size={14}/></button>
-                        </td>
-                      </tr>
-                    ))}
-                    {costItems.length === 0 && (
-                      <tr><td colSpan={3} className="px-4 py-8 text-center text-slate-300 font-bold text-xs">尚無成本項目，點擊下方新增</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              <button onClick={() => setCostItems(prev => [...prev, { id: `ci-${Date.now()}`, name: '', defaultPrice: 0 }])} className="px-4 py-2.5 border-2 border-dashed border-slate-200 rounded-xl text-xs font-black text-slate-400 hover:border-amber-400 hover:text-amber-600 transition-all flex items-center gap-1.5"><Plus size={14}/> 新增成本項目</button>
-            </div>
-
-            {/* Per-Product Cost Overview */}
-            <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden">
-              <div className="p-8 pb-4 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><ClipboardList size={18}/></div>
-                  <h4 className="font-black text-lg">產品成本一覽{costsChannelFilter === 'wholesale' ? '（批發）' : costsChannelFilter === 'retail' ? '（零售）' : ''}</h4>
-                </div>
-                <button onClick={async () => {
-                  try {
-                    for (const p of costsFilteredProducts) {
-                      await supabase.from('products').update({
-                        cost_price: p.costPrice ?? null,
-                        cost_item_ids: p.costItemIds ?? null,
-                        ingredient_id: p.ingredientId ?? null,
-                        yield_rate: p.yieldRate ?? null,
-                        processing_cost: p.processingCost ?? null,
-                        packaging_cost: p.packagingCost ?? null,
-                        misc_cost: p.miscCost ?? null,
-                      }).eq('id', p.id);
-                    }
-                    showToast('所有產品成本已儲存');
-                  } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
-                }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Save size={14}/> 全部儲存</button>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                      <th className="text-left px-4 py-3">產品</th>
-                      <th className="text-left px-3 py-3">原材料</th>
-                      <th className="text-right px-3 py-3">原料成本</th>
-                      <th className="text-right px-3 py-3">出成率</th>
-                      <th className="text-right px-3 py-3">加工費</th>
-                      <th className="text-right px-3 py-3">包裝費</th>
-                      <th className="text-right px-3 py-3">其他</th>
-                      {costItems.map(ci => <th key={ci.id} className="text-center px-2 py-3">{ci.name}<br/><span className="text-slate-300">${ci.defaultPrice}</span></th>)}
-                      <th className="text-right px-4 py-3">總成本</th>
-                      {costsChannelFilter === 'wholesale' ? (
-                        <>
-                          <th className="text-right px-4 py-3 text-orange-500">P0 直銷</th>
-                          {costsWsRules.priceTiers.map(tier => (
-                            <th key={tier.name} className="text-right px-4 py-3 text-teal-500">{tier.name}</th>
-                          ))}
-                        </>
-                      ) : (
-                        <>
-                          <th className="text-right px-4 py-3">售價</th>
-                          <th className="text-right px-4 py-3">利潤</th>
-                        </>
-                      )}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {(() => {
-                      const costsColSpan = 8 + costItems.length + (costsChannelFilter === 'wholesale' ? 1 + costsWsRules.priceTiers.length : 2);
-                      const renderProductRow = (p: typeof costsFilteredProducts[number]) => {
-                        const linkedIng = ingredients.find(i => i.id === p.ingredientId);
-                        const totalCost = computeProductCost(p, linkedIng, costItems);
-                        const sellPrice = (p.memberPrice > 0 && p.memberPrice < p.price) ? p.memberPrice : p.price;
-                        const profit = sellPrice - totalCost;
-                        const costP0 = totalCost > 0 ? totalCost / costsWsRules.targetMarginFactor : 0;
-                        return (
-                          <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
-                            <td className="px-4 py-3">
-                              <div className="flex items-center gap-2">
-                                <div className="w-7 h-7 bg-slate-50 rounded-lg flex items-center justify-center text-sm overflow-hidden flex-shrink-0 border border-slate-100">
-                                  {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-xs">{p.image || '📦'}</span>}
-                                </div>
-                                <span className="font-bold text-slate-700 truncate max-w-[120px]">{p.name}</span>
-                              </div>
-                            </td>
-                            <td className="px-3 py-3">
-                              <select value={p.ingredientId || ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, ingredientId: e.target.value || undefined } : x))} className="w-32 p-1.5 bg-slate-50 rounded-lg font-bold border border-slate-100 text-xs">
-                                <option value="">（手動）</option>
-                                {ingredientCategories.map(cat => {
-                                  const catIngs = ingredients.filter(i => i.category === cat);
-                                  if (catIngs.length === 0) return null;
-                                  return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}</optgroup>;
-                                })}
-                                {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}</optgroup>}
-                              </select>
-                            </td>
-                            <td className="px-3 py-3 text-right">
-                              {linkedIng ? (
-                                <span className="font-bold text-blue-600">${linkedIng.baseCostPerLb.toFixed(1)}/{linkedIng.unit}</span>
-                              ) : (
-                                <input type="number" min="0" step="0.5" value={p.costPrice ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, costPrice: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-16 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
-                              )}
-                            </td>
-                            <td className="px-3 py-3 text-right">
-                              <input type="number" min="0" max="1" step="0.01" value={p.yieldRate ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, yieldRate: Number(e.target.value) || undefined } : x))} placeholder="—" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
-                            </td>
-                            <td className="px-3 py-3 text-right">
-                              <input type="number" min="0" step="0.5" value={p.processingCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, processingCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
-                            </td>
-                            <td className="px-3 py-3 text-right">
-                              <input type="number" min="0" step="0.5" value={p.packagingCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, packagingCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
-                            </td>
-                            <td className="px-3 py-3 text-right">
-                              <input type="number" min="0" step="0.5" value={p.miscCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, miscCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
-                            </td>
-                            {costItems.map(ci => {
-                              const checked = (p.costItemIds || []).includes(ci.id);
-                              return (
-                                <td key={ci.id} className="text-center px-2 py-3">
-                                  <button onClick={() => {
-                                    const ids = p.costItemIds || [];
-                                    const next = checked ? ids.filter(x => x !== ci.id) : [...ids, ci.id];
-                                    setProducts(prev => prev.map(x => x.id === p.id ? { ...x, costItemIds: next } : x));
-                                  }} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${checked ? 'border-amber-500 bg-amber-500 text-white' : 'border-slate-200 bg-white'}`}>
-                                    {checked && <Check size={12} strokeWidth={3}/>}
-                                  </button>
-                                </td>
-                              );
-                            })}
-                            <td className="text-right px-4 py-3 font-bold text-slate-900">${totalCost.toFixed(1)}</td>
-                            {costsChannelFilter === 'wholesale' ? (
-                              <>
-                                <td className="text-right px-4 py-3 font-black text-orange-600">{totalCost > 0 ? `$${costP0.toFixed(1)}` : '—'}</td>
-                                {costsWsRules.priceTiers.map(tier => (
-                                  <td key={tier.name} className="text-right px-4 py-3 font-black text-teal-600">{totalCost > 0 ? `$${(costP0 / tier.factor).toFixed(1)}` : '—'}</td>
-                                ))}
-                              </>
-                            ) : (
-                              <>
-                                <td className="text-right px-4 py-3 font-bold text-slate-700">${sellPrice}</td>
-                                <td className={`text-right px-4 py-3 font-black ${profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{profit >= 0 ? '+' : ''}${profit.toFixed(1)}</td>
-                              </>
-                            )}
-                          </tr>
-                        );
-                      };
-                      const uncategorized = costsFilteredProducts.filter(p => !p.categories || p.categories.length === 0);
-                      const rows: React.ReactNode[] = [];
-                      if (uncategorized.length > 0) {
-                        rows.push(
-                          <tr key="__uncategorized_header" className="bg-slate-100/70">
-                            <td colSpan={costsColSpan} className="px-4 py-2">
-                              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">無分類</span>
-                            </td>
-                          </tr>
-                        );
-                        uncategorized.forEach(p => rows.push(renderProductRow(p)));
-                      }
-                      categories.forEach(cat => {
-                        const catProds = costsFilteredProducts.filter(p => p.categories?.includes(cat.id));
-                        if (catProds.length === 0) return;
-                        rows.push(
-                          <tr key={`__cat_header_${cat.id}`} className="bg-slate-100/70">
-                            <td colSpan={costsColSpan} className="px-4 py-2">
-                              <span className="text-base mr-2">{cat.icon}</span>
-                              <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest">{cat.name}</span>
-                            </td>
-                          </tr>
-                        );
-                        catProds.forEach(p => rows.push(renderProductRow(p)));
-                      });
-                      if (rows.length === 0) {
-                        rows.push(<tr key="empty"><td colSpan={costsColSpan} className="px-4 py-12 text-center text-slate-300 font-bold text-sm">尚無產品</td></tr>);
-                      }
-                      return rows;
-                    })()}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        );
-      }
+      case 'costs':
+        // Costs module moved to ProductionPanel (shared module "工場")
+        return <ProductionPanel showToast={showToast} products={products} setProducts={setProducts} ingredients={ingredients} ingredientCategories={ingredientCategories} categories={categories} costItems={costItems} setCostItems={setCostItems} siteConfig={siteConfig} isMediaUrl={isMediaUrl} />;
       case 'language':
         return (
           <div className="space-y-8 animate-fade-in pb-20">
@@ -6477,7 +6318,7 @@ const App: React.FC = () => {
                       </div>
                     </div>
                   )}
-                  {costItems.length === 0 && <p className="text-[8px] text-slate-400 font-bold">到「成本管理」新增包裝、碟、袋等成本項目</p>}
+                  {costItems.length === 0 && <p className="text-[8px] text-slate-400 font-bold">到「工場 → 產品成本一覽」新增包裝、碟、袋等成本項目</p>}
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">庫存</label>
@@ -8001,6 +7842,49 @@ const App: React.FC = () => {
 
   if (isAdminRoute && !isAdminAuthenticated) return renderAdminLogin();
 
+  // ── GH Foods domain: render dedicated wholesale storefront ──
+  if (isGHFoods && !isAdminRoute) {
+    return (
+      <GHFoodsStorefront
+        products={products}
+        categories={categories}
+        cart={cart}
+        setCart={setCart}
+        user={user}
+        orders={orders.filter(o => (o.orderType || 'retail') === 'wholesale')}
+        ingredients={ingredients}
+        costItems={costItems}
+        wholesaleRules={siteConfig.wholesalePricingRules!}
+        wholesalePriceOverrides={wholesalePriceOverrides}
+        getPrice={(p, qty) => {
+          const linkedIng = ingredients.find(i => i.id === p.ingredientId);
+          return getWholesaleUnitPrice(p, linkedIng, costItems, siteConfig.wholesalePricingRules!, user?.wholesalePriceTier, wholesalePriceOverrides);
+        }}
+        onLogin={async (form) => {
+          const input = form.email.trim();
+          if (!input || !form.password) { showToast('請輸入電話及密碼', 'error'); return; }
+          const isEmail = input.includes('@');
+          const { data, error } = isEmail
+            ? await supabase.from('members').select('*').eq('email', input.toLowerCase()).maybeSingle()
+            : await supabase.from('members').select('*').eq('phone_number', input).maybeSingle();
+          if (error) { showToast(error.message || '登入失敗', 'error'); return; }
+          if (!data) { showToast('找不到此帳戶', 'error'); return; }
+          const row = data as SupabaseMemberRow;
+          const ok = await verifyPassword(form.password, row.password_hash);
+          if (!ok) { showToast('密碼錯誤', 'error'); return; }
+          const u = mapMemberRowToUser(row);
+          setUser(u);
+          try { localStorage.setItem('coolfood_member_id', u.id); } catch { /* ignore */ }
+          showToast('歡迎回來！');
+        }}
+        onSubmitOrder={handleSubmitOrder}
+        logoUrl={siteConfig.logoUrl}
+        logoIcon={site.logoIcon}
+        logoText={site.brandName}
+      />
+    );
+  }
+
   return (
     <div className={isAdminRoute ? "h-screen bg-slate-50 flex flex-row overflow-hidden font-sans" : "max-w-md mx-auto min-h-screen relative shadow-2xl overflow-hidden flex flex-col md:max-w-none bg-white font-sans"}>
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
@@ -8050,91 +7934,30 @@ const App: React.FC = () => {
       )}
       
       {isAdminRoute ? (
-        <>
-          <aside className={`bg-slate-900 text-white flex-shrink-0 flex flex-col items-center py-4 overflow-y-auto hide-scrollbar border-r border-slate-800 transition-[width] duration-200 ${isAdminSidebarOpen ? 'w-56 px-4' : 'w-16 px-2'}`}>
-            <div className={`flex items-center ${isAdminSidebarOpen ? 'gap-3 w-full' : 'justify-center flex-col gap-1'}`}>
-              <div className="w-10 h-10 bg-blue-600 rounded-2xl flex items-center justify-center text-white shadow-xl shadow-blue-900/40 flex-shrink-0"><Cpu size={24}/></div>
-              {isAdminSidebarOpen && (
-                <div className="min-w-0">
-                  <h2 className="text-base font-black tracking-tight truncate">{t.admin.controlCenter}</h2>
-                  <p className="text-[9px] text-slate-500 uppercase tracking-widest font-bold">REAR-LINK 4.2</p>
-                </div>
-              )}
-            </div>
-            {/* Logged-in admin info */}
-            {adminUser && isAdminSidebarOpen && (
-              <div className="w-full mt-3 px-3 py-2 bg-white/5 rounded-xl flex items-center gap-2">
-                <div className="w-7 h-7 rounded-lg bg-blue-700 flex items-center justify-center flex-shrink-0 text-xs font-black">{adminUser.name.charAt(0)}</div>
-                <div className="min-w-0">
-                  <p className="text-xs font-bold text-white truncate">{adminUser.name}</p>
-                  <p className="text-[10px] text-slate-400 truncate">{adminUser.role === 'super_admin' ? '超級管理員' : '管理員'}</p>
-                </div>
-              </div>
-            )}
-            <button onClick={() => setIsAdminSidebarOpen(prev => !prev)} className={`w-full flex items-center ${isAdminSidebarOpen ? 'gap-2 px-3' : 'justify-center'} py-2 mt-4 bg-white/5 rounded-2xl text-xs font-black text-white/70 hover:text-white transition-all flex-shrink-0`}>
-              <ChevronLeft size={16} className={isAdminSidebarOpen ? '' : 'rotate-180'} />
-              {isAdminSidebarOpen && <span>{t.admin.collapseSidebar}</span>}
-            </button>
-            <nav className="space-y-1 flex-1 mt-4 w-full min-w-0">
-               {([
-                 { id: 'dashboard', label: t.admin.dashboard, icon: <BarChart3 size={20}/> },
-                 { id: 'inventory', label: t.admin.inventory, icon: <Package size={20}/> },
-                 { id: 'orders', label: t.admin.orders, icon: <Truck size={20}/> },
-                 { id: 'members', label: t.admin.members, icon: <Users size={20}/> },
-                 { id: 'slideshow', label: t.admin.slideshow, icon: <ImageIcon size={20}/> },
-                 { id: 'pricing', label: '價錢設定', icon: <DollarSign size={20}/> },
-                 { id: 'recipes', label: t.recipes.recipes, icon: <BookOpen size={20}/> },
-                 { id: 'ingredients', label: '原材料', icon: <Layers size={20}/> },
-                 { id: 'costs', label: '成本管理', icon: <Coins size={20}/> },
-                 { id: 'language', label: '語言翻譯', icon: <Globe size={20}/> },
-                 { id: 'settings', label: t.admin.settings, icon: <Settings size={20}/> },
-                 { id: 'admin_management', label: '管理員', icon: <ShieldCheck size={20}/> },
-               ] as { id: string; label: string; icon: React.ReactNode }[])
-                 .filter(item => {
-                   const permKey = ADMIN_MODULE_PERMISSION_MAP[item.id] as keyof AdminPermissions | undefined;
-                   if (!permKey) return true;
-                   return hasAdminPermission(permKey);
-                 })
-                 .map(item => (
-                 <button
-                   key={item.id}
-                   onClick={() => {
-                     setAdminModule(item.id as any);
-                     if (item.id === 'admin_management') loadAdminAccounts();
-                   }}
-                   className={`w-full flex items-center ${isAdminSidebarOpen ? 'gap-3 px-4' : 'justify-center px-0'} py-3 rounded-xl font-bold text-sm transition-all flex-shrink-0 ${adminModule === item.id ? 'bg-blue-600 text-white shadow-xl' : 'text-slate-500 hover:text-slate-200 hover:bg-white/5'}`}
-                 >
-                   {item.icon}
-                   {isAdminSidebarOpen && <span className="truncate">{item.label}</span>}
-                 </button>
-               ))}
-            </nav>
-            <button onClick={() => { setIsAdminAuthenticated(false); setAdminUser(null); try { localStorage.removeItem('coolfood_admin_session'); } catch { /* ignore */ } window.location.hash = ''; }} className={`w-full flex items-center ${isAdminSidebarOpen ? 'gap-3 px-4' : 'justify-center px-0'} py-3 text-slate-500 font-bold text-sm hover:text-white border-t border-white/5 pt-4 mt-auto transition-colors flex-shrink-0`}>
-              <LogOut size={20}/> {isAdminSidebarOpen && <span className="truncate">{t.admin.exitAdmin}</span>}
-            </button>
-          </aside>
+        <WorkspaceProvider staffRole={(adminUser?.role as any) || 'super_admin'}>
+          <AdminSidebar
+            adminModule={adminModule}
+            moduleWorkspace={moduleWorkspace}
+            onNavigate={handleAdminModuleNav}
+            adminUser={adminUser}
+            isOpen={isAdminSidebarOpen}
+            setIsOpen={setIsAdminSidebarOpen}
+            hasAdminPermission={hasAdminPermission}
+            onLogout={() => { setIsAdminAuthenticated(false); setAdminUser(null); try { localStorage.removeItem('coolfood_admin_session'); } catch { /* ignore */ } window.location.hash = ''; }}
+            t={t}
+          />
           <main className="flex-1 min-w-0 p-6 md:p-10 overflow-y-auto bg-[#f8fafc] hide-scrollbar">
-            <header className="flex justify-between items-center mb-10">
-              <div>
-                <h1 className="text-3xl font-black text-slate-900 tracking-tighter">{({ dashboard: t.admin.dashboard, inventory: t.admin.inventory, orders: t.admin.orders, members: t.admin.members, slideshow: t.admin.slideshow, pricing: '價錢設定', ingredients: '原材料管理', costs: '成本管理', language: '語言翻譯', recipes: t.recipes.recipes, settings: t.admin.settings, admin_management: '管理員管理' } as Record<string, string>)[adminModule] || adminModule}</h1>
-                <p className="text-slate-400 font-bold text-sm">{t.admin.realtimeAdmin}</p>
-              </div>
-              <div className="flex items-center gap-3">
-                <button onClick={() => showToast('通知功能開發中', 'error')} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-400 shadow-sm"><Bell size={20}/></button>
-                {adminUser && (
-                  <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-2xl px-3 py-2 shadow-sm">
-                    <div className="w-8 h-8 rounded-xl bg-blue-600 flex items-center justify-center text-white font-black text-sm">{adminUser.name.charAt(0)}</div>
-                    <div className="text-right">
-                      <p className="text-xs font-black text-slate-800 leading-none">{adminUser.name}</p>
-                      <p className="text-[10px] text-slate-400 leading-none mt-0.5">{adminUser.role === 'super_admin' ? '超級管理員' : '管理員'}</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </header>
+            <AdminTopbar
+              adminModule={adminModule}
+              moduleWorkspace={moduleWorkspace}
+              adminUser={adminUser}
+              onWorkspaceSwitch={handleWorkspaceSwitch}
+              showToast={showToast}
+              t={t}
+            />
             {renderAdminModuleContent()}
           </main>
-        </>
+        </WorkspaceProvider>
       ) : (
         <>
           {view === 'store' && renderStoreView()}

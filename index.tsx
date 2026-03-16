@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import { I18nProvider } from './i18n';
+import { SiteProvider } from './SiteContext';
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -46,10 +47,12 @@ if (!rootElement) {
 const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <I18nProvider>
-      <ErrorBoundary>
-        <App />
-      </ErrorBoundary>
-    </I18nProvider>
+    <SiteProvider>
+      <I18nProvider>
+        <ErrorBoundary>
+          <App />
+        </ErrorBoundary>
+      </I18nProvider>
+    </SiteProvider>
   </React.StrictMode>
 );

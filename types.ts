@@ -106,6 +106,25 @@ export interface AdminAccount {
   lastLoginAt?: string;
 }
 
+// ─── Multi-brand workspace types ────────────────────────────────
+
+export type Workspace = 'WHOLESALE' | 'COOLFOOD_RETAIL';
+
+export type WholesaleBrand = 'GHFOODS' | 'COOLFOOD';
+
+export type StaffRole =
+  | 'super_admin' | 'admin'
+  | 'ghfoods_staff' | 'coolfood_staff'
+  | 'accountant' | 'buyer' | 'warehouse';
+
+export type AdminModuleId =
+  | 'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow'
+  | 'pricing' | 'costs' | 'ingredients' | 'language' | 'recipes'
+  | 'settings' | 'admin_management'
+  | 'global_dashboard' | 'new_order'
+  | 'dispatch' | 'warehouse_ops' | 'accounting' | 'production'
+  | 'whatsapp_orders' | 'tricolor_print' | 'wholesale_clients';
+
 export interface BulkDiscount {
   threshold: number;
   type: 'fixed' | 'percent'; // 'fixed' means new unit price, 'percent' means % off unit price
@@ -427,4 +446,189 @@ export interface SiteConfig {
   pricingRules?: GlobalPricingRules;
   wholesalePricingRules?: WholesalePricingRules;
   deliveryRules?: DeliveryRules;
+}
+
+// ─── Wholesale operations types ─────────────────────────────────
+
+export interface DeliveryRoute {
+  id: string;
+  name: string;
+  description?: string;
+  color: string;
+  sortOrder: number;
+  isActive: boolean;
+}
+
+export interface WholesaleClient {
+  id: string;
+  companyName: string;
+  contactName: string;
+  phone: string;
+  address?: string;
+  district?: string;
+  brand: WholesaleBrand;
+  priceTier: string;
+  routeId?: string | null;
+  routeName?: string;
+  creditLimit: number;
+  notes?: string;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface WholesaleBrandPricing {
+  brand: WholesaleBrand;
+  targetMarginFactor: number;
+  priceTiers: WholesalePriceTier[];
+}
+
+// ─── Accounting types ────────────────────────────────────────────
+
+export interface Supplier {
+  id: string;
+  name: string;
+  contactName?: string;
+  phone?: string;
+  address?: string;
+  paymentTerms?: string;
+  notes?: string;
+  isActive: boolean;
+  createdAt?: string;
+}
+
+export type APStatus = 'unpaid' | 'partial' | 'paid' | 'overdue';
+
+export interface AccountPayable {
+  id: string;
+  supplierId?: string;
+  supplierName: string;
+  invoiceNumber?: string;
+  invoiceDate: string;
+  description: string;
+  amount: number;
+  dueDate?: string;
+  status: APStatus;
+  paidAmount: number;
+  paymentMethod?: string;
+  paymentDate?: string;
+  notes?: string;
+  createdAt?: string;
+}
+
+export type ARStatus = 'pending' | 'partial' | 'received' | 'overdue';
+
+export interface AccountReceivable {
+  id: string;
+  clientId?: string;
+  clientName: string;
+  brand?: WholesaleBrand;
+  orderId?: string;
+  invoiceDate: string;
+  amount: number;
+  paidAmount: number;
+  status: ARStatus;
+  creditTerms?: string;
+  paymentMethod?: string;
+  receivedDate?: string;
+  notes?: string;
+  createdAt?: string;
+}
+
+export type ExpenseCategory =
+  | 'salary' | 'rent' | 'vehicle' | 'packaging'
+  | 'equipment' | 'license' | 'utilities' | 'insurance' | 'misc';
+
+export interface ExpenseRecord {
+  id: string;
+  category: ExpenseCategory;
+  description: string;
+  amount: number;
+  type: 'expense' | 'income';
+  date: string;
+  isRecurring: boolean;
+  recurringPeriod?: 'monthly' | 'quarterly' | 'yearly';
+  notes?: string;
+  createdAt?: string;
+}
+
+// ─── Order line item (wholesale new order) ───────────────────────
+
+export interface WholesaleOrderLine {
+  productId?: string;
+  productName: string;
+  qty: number;
+  unit: string;
+  unitPrice: number;
+  discount: number;
+  lineTotal: number;
+}
+
+// ─── Production / Factory types ─────────────────────────────────
+
+export interface PackagingMaterial {
+  id: string;
+  name: string;
+  nameEn?: string;
+  unit: string;
+  costPerUnit: number;
+  stockQuantity: number;
+  minStockAlert: number;
+  notes?: string;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type ProductionOrderStatus = 'draft' | 'pending_review' | 'approved' | 'rejected';
+
+export interface ProductionOrder {
+  id: string;
+  orderNumber: string;
+  status: ProductionOrderStatus;
+  productionDate: string;
+  createdBy?: string;
+  submittedAt?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  reviewNotes?: string;
+  totalInputWeightKg: number;
+  totalOutputWeightKg: number;
+  yieldRate: number;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  inputs?: ProductionOrderInput[];
+  outputs?: ProductionOrderOutput[];
+}
+
+export interface ProductionOrderInput {
+  id: string;
+  productionOrderId: string;
+  ingredientId?: string;
+  ingredientName: string;
+  quantity: number;
+  unit: string;
+  weightPerUnitKg: number;
+  totalWeightKg: number;
+  unitCost: number;
+  totalCost: number;
+  notes?: string;
+}
+
+export interface ProductionOrderOutput {
+  id: string;
+  productionOrderId: string;
+  productName: string;
+  productId?: string;
+  saleChannel: SaleChannel;
+  quantity: number;
+  unitWeightKg: number;
+  totalWeightKg: number;
+  packagingType?: string;
+  packagingMaterialId?: string;
+  packagingQuantity: number;
+  packagingCostTotal: number;
+  estimatedUnitCost: number;
+  notes?: string;
 }
