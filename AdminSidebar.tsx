@@ -21,6 +21,7 @@ interface SidebarItem {
 const WHOLESALE_ITEMS: SidebarItem[] = [
   { id: 'orders', label: '訂單列表', icon: <ClipboardList size={18}/> },
   { id: 'wholesale_clients', label: '批發客資料庫', icon: <Users size={18}/> },
+  { id: 'sales_reps', label: '銷售員', icon: <Users size={18}/> },
   { id: 'inventory', label: '產品/分類', icon: <Package size={18}/> },
   { id: 'pricing', label: '價錢設定', icon: <DollarSign size={18}/> },
 ];
@@ -43,7 +44,7 @@ const WORKSPACE_SECTIONS: { workspace: Workspace; items: SidebarItem[] }[] = [
 
 const SHARED_ITEMS: SidebarItem[] = [
   { id: 'dispatch', label: '派車表', icon: <Truck size={18}/> },
-  { id: 'warehouse_ops', label: '倉務', icon: <Package size={18}/> },
+  { id: 'warehouse_ops', label: '材料與倉務', icon: <Package size={18}/> },
   { id: 'production', label: '工場', icon: <Factory size={18}/> },
   { id: 'accounting', label: '會計', icon: <Wallet size={18}/> },
   { id: 'settings', label: '系統設定', icon: <Settings size={18}/> },

@@ -23,6 +23,7 @@ import AdminSidebar from './AdminSidebar';
 import AdminTopbar from './AdminTopbar';
 import WholesalePricingPanel from './WholesalePricingPanel';
 import WholesaleClientsPanel from './WholesaleClientsPanel';
+import SalesRepPanel from './SalesRepPanel';
 import DispatchPanel from './DispatchPanel';
 import NewOrderPanel from './NewOrderPanel';
 import AccountingPanel from './AccountingPanel';
@@ -1300,7 +1301,7 @@ const App: React.FC = () => {
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/398b4105-f3ac-47d0-beea-cee72cee658b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:handleAdminLogin:entry',message:'handleAdminLogin called',data:{username:adminLoginForm.username,hasPassword:!!adminLoginForm.password},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
+    console.log(`[DEBUG-H4] handleAdminLogin CALLED | username="${adminLoginForm.username}" hasPassword=${!!adminLoginForm.password}`);
     // #endregion
     try {
       const { data, error } = await supabase
@@ -1310,12 +1311,12 @@ const App: React.FC = () => {
         .in('role', ['admin', 'super_admin'])
         .single();
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/398b4105-f3ac-47d0-beea-cee72cee658b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:handleAdminLogin:afterQuery',message:'Supabase query result',data:{hasData:!!data,error:error?.message||null,dataRole:data?.role||null},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+      console.log(`[DEBUG-H1] Supabase query | hasData=${!!data} error=${error?.message || 'none'} role=${data?.role || 'n/a'} hasHash=${!!(data as any)?.password_hash}`);
       // #endregion
       if (error || !data) { showToast('帳號或密碼錯誤', 'error'); return; }
       const ok = await verifyPassword(adminLoginForm.password, data.password_hash || '');
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/398b4105-f3ac-47d0-beea-cee72cee658b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:handleAdminLogin:afterVerify',message:'Password verify result',data:{ok,hasHash:!!(data.password_hash)},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+      console.log(`[DEBUG-H2] Password verify | ok=${ok} hasHash=${!!(data.password_hash)} hashPrefix=${(data.password_hash||'').slice(0,10)}`);
       // #endregion
       if (!ok) { showToast('帳號或密碼錯誤', 'error'); return; }
       const permissions = buildAdminPermissions(data.role, data.admin_permissions as Record<string, boolean> | null);
@@ -1330,13 +1331,13 @@ const App: React.FC = () => {
       setAdminUser(admin);
       setIsAdminAuthenticated(true);
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/398b4105-f3ac-47d0-beea-cee72cee658b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:handleAdminLogin:success',message:'Login succeeded',data:{adminName:admin.name,adminRole:admin.role},timestamp:Date.now(),hypothesisId:'H5'})}).catch(()=>{});
+      console.log('[DEBUG-H5] Login SUCCESS', { adminName: admin.name, adminRole: admin.role });
       // #endregion
       try { localStorage.setItem('coolfood_admin_session', JSON.stringify(admin)); } catch { /* ignore */ }
       showToast(`歡迎回來，${admin.name}！`);
     } catch (err) {
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/398b4105-f3ac-47d0-beea-cee72cee658b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:handleAdminLogin:catch',message:'Login threw exception',data:{error:String(err)},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
+      console.log('[DEBUG-H3] Login EXCEPTION', { error: String(err) });
       // #endregion
       showToast('登入失敗，請稍後再試', 'error');
     }
@@ -3240,6 +3241,8 @@ const App: React.FC = () => {
     showToast('價格規則已套用');
   };
 
+  const effectiveInventoryChannel: 'all' | 'retail' | 'wholesale' = moduleWorkspace === 'COOLFOOD_RETAIL' ? 'retail' : moduleWorkspace === 'WHOLESALE' ? 'wholesale' : inventoryChannelFilter;
+
   const filteredAdminProducts = useMemo(() => {
     return products.filter(p => {
       const q = adminProductSearch.toLowerCase();
@@ -3248,11 +3251,11 @@ const App: React.FC = () => {
         (p.legacyId?.toLowerCase() ?? '').includes(q);
       if (!matchSearch) return false;
       const ch = p.saleChannel || 'retail';
-      if (inventoryChannelFilter === 'retail') return ch === 'retail' || ch === 'both';
-      if (inventoryChannelFilter === 'wholesale') return ch === 'wholesale' || ch === 'both';
+      if (effectiveInventoryChannel === 'retail') return ch === 'retail' || ch === 'both';
+      if (effectiveInventoryChannel === 'wholesale') return ch === 'wholesale' || ch === 'both';
       return true;
     });
-  }, [products, adminProductSearch, inventoryChannelFilter]);
+  }, [products, adminProductSearch, effectiveInventoryChannel]);
 
   const filteredStoreProducts = useMemo(() => {
     const channelFiltered = products.filter(p => {
@@ -3270,24 +3273,28 @@ const App: React.FC = () => {
     );
   }, [products, storeSearch, isWholesaleRoute]);
 
+  const effectiveOrdersType: 'all' | 'retail' | 'wholesale' = moduleWorkspace === 'COOLFOOD_RETAIL' ? 'retail' : moduleWorkspace === 'WHOLESALE' ? 'wholesale' : ordersTypeFilter;
+
   const filteredAdminOrders = useMemo(() => {
     return orders.filter(o => {
       const matchesSearch = o.id.toLowerCase().includes(adminOrderSearch.toLowerCase()) || o.customerName.toLowerCase().includes(adminOrderSearch.toLowerCase());
       const matchesStatus = ordersStatusFilter === 'all' || o.status === ordersStatusFilter;
-      const matchesType = ordersTypeFilter === 'all' || (o.orderType || 'retail') === ordersTypeFilter;
+      const matchesType = effectiveOrdersType === 'all' || (o.orderType || 'retail') === effectiveOrdersType;
       return matchesSearch && matchesStatus && matchesType;
     });
-  }, [orders, adminOrderSearch, ordersStatusFilter, ordersTypeFilter]);
+  }, [orders, adminOrderSearch, ordersStatusFilter, effectiveOrdersType]);
+
+  const effectiveMemberType: 'all' | 'retail' | 'wholesale' = moduleWorkspace === 'COOLFOOD_RETAIL' ? 'retail' : moduleWorkspace === 'WHOLESALE' ? 'wholesale' : adminMemberTypeFilter;
 
   const filteredAdminMembers = useMemo(() => {
     return members.filter(m => {
       const matchesSearch = m.name.toLowerCase().includes(adminMemberSearch.toLowerCase()) || 
         (m.email?.toLowerCase() ?? '').includes(adminMemberSearch.toLowerCase()) ||
         (m.phoneNumber && m.phoneNumber.includes(adminMemberSearch));
-      const matchesType = adminMemberTypeFilter === 'all' || (m.memberType || 'retail') === adminMemberTypeFilter;
+      const matchesType = effectiveMemberType === 'all' || (m.memberType || 'retail') === effectiveMemberType;
       return matchesSearch && matchesType;
     });
-  }, [members, adminMemberSearch, adminMemberTypeFilter]);
+  }, [members, adminMemberSearch, effectiveMemberType]);
 
   // --- UI Module Handlers ---
 
@@ -3312,7 +3319,8 @@ const App: React.FC = () => {
 
       {inventorySubTab === 'products' && (
         <>
-          {/* Channel filter tabs */}
+          {/* Channel filter tabs — only shown when no workspace is pinned */}
+          {!moduleWorkspace && (
           <div className="flex gap-2">
             {([
               { id: 'all' as const, label: '全部' },
@@ -3324,6 +3332,7 @@ const App: React.FC = () => {
               </button>
             ))}
           </div>
+          )}
           <div className="flex flex-col md:flex-row gap-4 justify-between">
             <div className="relative flex-1 max-w-md">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
@@ -3610,6 +3619,7 @@ const App: React.FC = () => {
 
   const renderAdminLogin = () => (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
       <form onSubmit={handleAdminLogin} className="w-full max-w-sm bg-white border border-slate-100 rounded-[2.5rem] shadow-xl p-8 space-y-6">
         <div className="text-center space-y-2">
           <div className="w-14 h-14 rounded-2xl bg-blue-600 text-white flex items-center justify-center mx-auto shadow-lg">
@@ -3683,6 +3693,7 @@ const App: React.FC = () => {
 
     // Functional panels — wholesale
     if (adminModule === 'wholesale_clients') return <WholesaleClientsPanel showToast={showToast} />;
+    if (adminModule === 'sales_reps') return <SalesRepPanel showToast={showToast} />;
     if (moduleWorkspace === 'WHOLESALE' && adminModule === 'pricing') return <WholesalePricingPanel showToast={showToast} />;
 
     // Remaining placeholder modules
@@ -3690,7 +3701,7 @@ const App: React.FC = () => {
     if (placeholderModules.includes(adminModule)) {
       return renderModulePlaceholder(adminModule);
     }
-    if (moduleWorkspace && moduleWorkspace !== 'COOLFOOD_RETAIL') {
+    if (moduleWorkspace && moduleWorkspace !== 'COOLFOOD_RETAIL' && moduleWorkspace !== 'WHOLESALE') {
       return renderModulePlaceholder(adminModule);
     }
     switch (adminModule) {
@@ -3767,7 +3778,7 @@ const App: React.FC = () => {
                    <input value={adminOrderSearch} onChange={e => setAdminOrderSearch(e.target.value)} placeholder="搜索訂單編號或客戶名稱..." className="w-full pl-12 pr-6 py-3 bg-white border border-slate-100 rounded-2xl font-bold" />
                 </div>
                 <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0">
-                   {(['all', 'retail', 'wholesale'] as const).map(ot => (
+                   {!moduleWorkspace && (['all', 'retail', 'wholesale'] as const).map(ot => (
                       <button key={ot} onClick={() => setOrdersTypeFilter(ot)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap ${ordersTypeFilter === ot ? 'bg-slate-900 text-white shadow-lg' : 'bg-white border border-slate-100 text-slate-400'}`}>
                         {ot === 'all' ? '全部' : ot === 'retail' ? '零售' : '批發'}
                       </button>
@@ -3902,11 +3913,13 @@ const App: React.FC = () => {
                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
                      <input value={adminMemberSearch} onChange={e => setAdminMemberSearch(e.target.value)} placeholder="搜索姓名、電郵或電話..." className="w-full pl-12 pr-6 py-3 bg-white border border-slate-100 rounded-2xl font-bold" />
                   </div>
+                  {!moduleWorkspace && (
                   <div className="flex gap-1">
                     {([{ id: 'all' as const, label: '全部' }, { id: 'retail' as const, label: '零售' }, { id: 'wholesale' as const, label: '批發' }]).map(f => (
                       <button key={f.id} onClick={() => setAdminMemberTypeFilter(f.id)} className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all ${adminMemberTypeFilter === f.id ? 'bg-slate-900 text-white shadow-lg' : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-50'}`}>{f.label}</button>
                     ))}
                   </div>
+                  )}
                 </div>
                 <button onClick={() => { setEditingMember({ id: `u-${Date.now()}`, name: '', email: '', phoneNumber: '', points: 0, walletBalance: 0, tier: 'Bronze', role: 'customer', memberType: 'retail', addresses: [] }); setEditingMemberPassword(''); }} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl"><Plus size={16}/> 新增會員</button>
              </div>
@@ -3951,7 +3964,8 @@ const App: React.FC = () => {
         const wsP0 = wsExampleCost / wsRules.targetMarginFactor;
         return (
           <div className="space-y-8 animate-fade-in pb-20">
-            {/* ── Tab 切換 ── */}
+            {/* ── Tab 切換 — only show when not pinned to a workspace ── */}
+            {!moduleWorkspace && (
             <div className="flex gap-2">
               {([
                 { id: 'retail' as const, label: '零售定價設定', icon: <ShoppingBag size={16}/> },
@@ -3967,6 +3981,7 @@ const App: React.FC = () => {
                 </button>
               ))}
             </div>
+            )}
 
             {pricingSubTab === 'retail' && (() => {
               const rtFactor = siteConfig.pricingRules?.targetMarginFactor ?? 0.88;
@@ -4229,7 +4244,7 @@ const App: React.FC = () => {
               );
             })()}
 
-            {pricingSubTab === 'wholesale' && (() => {
+            {pricingSubTab === 'wholesale' && moduleWorkspace !== 'COOLFOOD_RETAIL' && (() => {
               const wsOverrideCount = Object.keys(wholesalePriceOverrides).length;
 
               const applyWsFactor = (applyToOverrides: boolean) => {

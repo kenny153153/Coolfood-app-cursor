@@ -22,7 +22,7 @@ const MODULE_TITLES: Record<string, string> = {
   settings: '系統設定',
   admin_management: '管理員管理',
   dispatch: '派車表',
-  warehouse_ops: '倉務管理',
+  warehouse_ops: '材料與倉務',
   production: '工場',
   accounting: '會計',
   wholesale_clients: '批發客資料庫',

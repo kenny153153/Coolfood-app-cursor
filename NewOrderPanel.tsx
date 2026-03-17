@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   MessageCircle, Search, Plus, Trash2, Save, Printer,
   RefreshCw, ChevronDown, Sparkles, User, Phone, MapPin,
@@ -28,8 +28,12 @@ interface ClientOption {
 interface ProductOption {
   id: string;
   name: string;
+  nameEn?: string;
   price: number;
   unit: string;
+  weight?: string;
+  categories?: string[];
+  saleChannel?: string;
 }
 
 interface ParsedLine {
@@ -37,6 +41,7 @@ interface ParsedLine {
   qty: number;
   unit: string;
   matched?: ProductOption;
+  note?: string;
 }
 
 const EMPTY_LINE: WholesaleOrderLine = {
@@ -49,7 +54,7 @@ const EMPTY_LINE: WholesaleOrderLine = {
   lineTotal: 0,
 };
 
-const UNITS = ['磅', '斤', '件', '包', '盒', '箱', 'kg', 'pc'];
+const BASE_UNITS = ['磅', '斤', '件', '包', '盒', '箱', '碟', '隻', '條', '塊', '盤', '份', '打', 'kg', 'pc'];
 
 const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
   const { wholesaleBrand, availableWholesaleBrands, setWholesaleBrand } = useWorkspace();
@@ -84,11 +89,27 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
   const [activeProductRow, setActiveProductRow] = useState<number | null>(null);
   const [productSearch, setProductSearch] = useState('');
 
+  // Correction memory
+  const [corrections, setCorrections] = useState<any[]>([]);
+  const parsedSnapshotRef = useRef<WholesaleOrderLine[]>([]);
+
+  // Dynamic units (base + custom from site_config)
+  const [customUnitLabels, setCustomUnitLabels] = useState<string[]>([]);
+  const allUnits = useMemo(() => {
+    const merged = [...BASE_UNITS];
+    for (const u of customUnitLabels) {
+      if (u && !merged.includes(u)) merged.push(u);
+    }
+    return merged;
+  }, [customUnitLabels]);
+
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [clientsRes, productsRes] = await Promise.all([
+    const [clientsRes, productsRes, correctionsRes, unitsRes] = await Promise.all([
       supabase.from('wholesale_clients').select('id, company_name, contact_name, phone, address, brand, price_tier, route_id').eq('is_active', true),
-      supabase.from('products').select('id, name, price').order('name'),
+      supabase.from('products').select('id, name, name_en, price, weight, categories, sale_channel').order('name'),
+      supabase.from('parsing_corrections').select('original_text, corrected_product_name, corrected_qty, corrected_unit').order('created_at', { ascending: false }).limit(40),
+      supabase.from('site_config').select('value').eq('id', 'custom_units').single(),
     ]);
     if (clientsRes.data) {
       setClients(clientsRes.data.map((c: any) => ({
@@ -98,9 +119,33 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
       })));
     }
     if (productsRes.data) {
-      setProducts(productsRes.data.map((p: any) => ({
-        id: p.id, name: p.name, price: p.price, unit: '磅',
-      })));
+      setProducts(productsRes.data
+        .filter((p: any) => {
+          const ch = p.sale_channel || 'retail';
+          return ch === 'wholesale' || ch === 'both';
+        })
+        .map((p: any) => ({
+          id: p.id, name: p.name, nameEn: p.name_en || undefined,
+          price: p.price, unit: '磅',
+          weight: p.weight || undefined,
+          categories: p.categories || [],
+          saleChannel: p.sale_channel || 'retail',
+        }))
+      );
+    }
+    if (correctionsRes.data) {
+      // Deduplicate by original_text, keep latest
+      const seen = new Set<string>();
+      const deduped = correctionsRes.data.filter((c: any) => {
+        const key = c.original_text.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      setCorrections(deduped.slice(0, 30));
+    }
+    if (unitsRes.data?.value && Array.isArray(unitsRes.data.value)) {
+      setCustomUnitLabels(unitsRes.data.value.map((u: any) => u.label).filter(Boolean));
     }
     setLoading(false);
   }, []);
@@ -117,55 +162,19 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  // ── WhatsApp parsing (local regex) ────────────────────────────
+  // ── WhatsApp parsing (AI-powered + regex fallback) ────────────
 
-  const parseWhatsAppMessage = () => {
+  const parseWhatsAppMessage = async () => {
     if (!waMessage.trim()) return;
     setIsParsing(true);
 
-    const lines = waMessage.split('\n').filter(l => l.trim());
-    const parsed: ParsedLine[] = [];
+    let parsed: ParsedLine[] = [];
 
-    const qtyPattern = /(\d+(?:\.\d+)?)\s*(磅|斤|件|包|盒|箱|kg|pc|lb)/i;
-    const nameQtyPattern = /^(.+?)\s*[xX×]\s*(\d+(?:\.\d+)?)\s*(磅|斤|件|包|盒|箱|kg|pc|lb)?/;
-    const qtyNamePattern = /^(\d+(?:\.\d+)?)\s*(磅|斤|件|包|盒|箱|kg|pc|lb)?\s*(.+)/;
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || /^(你好|hi|hello|ok|好|thanks|謝|thx|收到|明天|後天|\d{1,2}[月/]\d{1,2})/i.test(trimmed)) continue;
-
-      let productName = '';
-      let qty = 0;
-      let unit = '磅';
-
-      const m1 = trimmed.match(nameQtyPattern);
-      const m2 = trimmed.match(qtyNamePattern);
-      const m3 = trimmed.match(qtyPattern);
-
-      if (m1) {
-        productName = m1[1].trim();
-        qty = parseFloat(m1[2]);
-        unit = m1[3] || '磅';
-      } else if (m2 && m2[3]) {
-        productName = m2[3].trim();
-        qty = parseFloat(m2[1]);
-        unit = m2[2] || '磅';
-      } else if (m3) {
-        qty = parseFloat(m3[1]);
-        unit = m3[2];
-        productName = trimmed.replace(m3[0], '').trim();
-      } else {
-        productName = trimmed;
-        qty = 1;
-      }
-
-      if (productName) {
-        const matched = products.find(p =>
-          p.name.toLowerCase().includes(productName.toLowerCase()) ||
-          productName.toLowerCase().includes(p.name.toLowerCase())
-        );
-        parsed.push({ productName, qty, unit, matched: matched || undefined });
-      }
+    try {
+      parsed = await parseWithAI();
+    } catch (err) {
+      console.warn('[WhatsApp Parse] AI failed, falling back to regex:', err);
+      parsed = parseWithRegex();
     }
 
     setParsedLines(parsed);
@@ -181,6 +190,12 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
         lineTotal: p.qty * (p.matched?.price || 0),
       }));
       setOrderLines(newLines);
+      parsedSnapshotRef.current = newLines.map(l => ({ ...l }));
+
+      const notes = parsed.filter(p => p.note).map(p => `${p.matched?.name || p.productName}: ${p.note}`);
+      if (notes.length > 0) {
+        setOrderNotes(prev => prev ? `${prev}\n${notes.join('\n')}` : notes.join('\n'));
+      }
     }
 
     // Try to auto-detect client from message
@@ -195,6 +210,156 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
 
     setIsParsing(false);
     showToast(`已解析 ${parsed.length} 項產品`);
+  };
+
+  const parseWithAI = async (): Promise<ParsedLine[]> => {
+    const productPayload = products.map(p => ({
+      id: p.id, name: p.name, nameEn: p.nameEn || undefined,
+      price: p.price, weight: p.weight || undefined,
+    }));
+
+    const clientNames = clients
+      .filter(c => c.brand === wholesaleBrand)
+      .flatMap(c => [c.companyName, c.contactName].filter(Boolean));
+
+    const extraUnits = allUnits.filter(u => !BASE_UNITS.includes(u));
+
+    const resp = await fetch('/api/parse-whatsapp-order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: waMessage,
+        products: productPayload,
+        clientNames,
+        corrections: corrections.length > 0 ? corrections : undefined,
+        extraUnits: extraUnits.length > 0 ? extraUnits : undefined,
+      }),
+    });
+
+    if (!resp.ok) {
+      const errBody = await resp.json().catch(() => ({}));
+      throw new Error(errBody.error || `API ${resp.status}`);
+    }
+
+    const { data } = await resp.json();
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error('AI returned empty result');
+    }
+
+    return data.map((item: any) => {
+      const matchedProduct = item.productId
+        ? products.find(p => p.id === item.productId)
+        : undefined;
+      return {
+        productName: item.originalText || item.productName,
+        qty: Number(item.qty) || 1,
+        unit: item.unit || '磅',
+        matched: matchedProduct
+          ? { id: matchedProduct.id, name: matchedProduct.name, price: matchedProduct.price, unit: matchedProduct.unit }
+          : undefined,
+        note: item.note || undefined,
+      };
+    });
+  };
+
+  const parseWithRegex = (): ParsedLine[] => {
+    const cnNumMap: Record<string, string> = {
+      '一': '1', '二': '2', '兩': '2', '三': '3', '四': '4', '五': '5',
+      '六': '6', '七': '7', '八': '8', '九': '9', '十': '10', '半': '0.5',
+    };
+    const replaceCnNum = (s: string) =>
+      s.replace(/[一二兩三四五六七八九十半]/g, m => cnNumMap[m] ?? m);
+
+    const rawLines = waMessage.split('\n').filter(l => l.trim());
+    const lines: string[] = [];
+    for (const raw of rawLines) {
+      lines.push(...raw.split(/[，,、]+/).map(s => s.trim()).filter(Boolean));
+    }
+
+    const parsed: ParsedLine[] = [];
+    const unitRe = '磅|斤|件|包|盒|箱|碟|隻|條|塊|盤|份|打|kg|pc|lb';
+    const nameQtyPattern = new RegExp(`^(.+?)\\s*[xX×]\\s*(\\d+(?:\\.\\d+)?)\\s*(${unitRe})?`, 'i');
+    const nameNumUnitPattern = new RegExp(`^(.+?)(\\d+(?:\\.\\d+)?)\\s*(${unitRe})`, 'i');
+    const qtyNamePattern = new RegExp(`^(\\d+(?:\\.\\d+)?)\\s*(${unitRe})?\\s*(.+)`, 'i');
+
+    for (const line of lines) {
+      const trimmed = replaceCnNum(line.trim());
+      if (!trimmed || /^(你好|hi|hello|ok|好|thanks|謝|thx|收到|明天|後天|唔該|盡量|\d{1,2}[月/]\d{1,2})/i.test(trimmed)) continue;
+
+      let productName = '';
+      let qty = 0;
+      let unit = '磅';
+
+      const m1 = trimmed.match(nameQtyPattern);
+      const m4 = trimmed.match(nameNumUnitPattern);
+      const m2 = trimmed.match(qtyNamePattern);
+
+      if (m1) {
+        productName = m1[1].trim();
+        qty = parseFloat(m1[2]);
+        unit = m1[3] || '磅';
+      } else if (m4) {
+        productName = m4[1].trim();
+        qty = parseFloat(m4[2]);
+        unit = m4[3] || '磅';
+      } else if (m2 && m2[3]) {
+        productName = m2[3].trim();
+        qty = parseFloat(m2[1]);
+        unit = m2[2] || '磅';
+      } else {
+        productName = trimmed;
+        qty = 1;
+      }
+
+      if (productName) {
+        const scored = products
+          .map(p => ({ product: p, score: fuzzyScore(productName, p.name) }))
+          .filter(s => s.score > 0.3)
+          .sort((a, b) => b.score - a.score);
+
+        const matched = scored[0]?.product;
+        parsed.push({ productName, qty, unit, matched: matched || undefined });
+      }
+    }
+
+    return parsed;
+  };
+
+  const fuzzyScore = (input: string, target: string): number => {
+    const a = input.toLowerCase().replace(/[（(）)]/g, '');
+    const b = target.toLowerCase().replace(/[（(）)]/g, '');
+    if (a === b) return 1;
+    if (b.includes(a)) return 0.85;
+    if (a.includes(b)) return 0.8;
+    const aChars = new Set(a);
+    let hits = 0;
+    for (const c of b) { if (aChars.has(c)) hits++; }
+    return hits / Math.max(a.length, b.length);
+  };
+
+  const saveCorrection = async (
+    originalText: string,
+    correctedProductId: string | undefined,
+    correctedProductName: string,
+    correctedQty: number,
+    correctedUnit: string,
+  ) => {
+    try {
+      await supabase.from('parsing_corrections').insert({
+        original_text: originalText,
+        corrected_product_id: correctedProductId || null,
+        corrected_product_name: correctedProductName,
+        corrected_qty: correctedQty,
+        corrected_unit: correctedUnit,
+        brand: wholesaleBrand,
+      });
+      setCorrections(prev => {
+        const next = [{ original_text: originalText, corrected_product_name: correctedProductName, corrected_qty: correctedQty, corrected_unit: correctedUnit }, ...prev];
+        return next.slice(0, 30);
+      });
+    } catch (e) {
+      console.warn('[Correction] Failed to save:', e);
+    }
   };
 
   const applyParsedLines = () => {
@@ -213,6 +378,8 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
 
   // ── Line item operations ──────────────────────────────────────
 
+  const correctionTimeoutRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+
   const updateLine = (idx: number, field: keyof WholesaleOrderLine, value: any) => {
     setOrderLines(prev => {
       const next = [...prev];
@@ -221,11 +388,29 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
         line.lineTotal = line.qty * line.unitPrice * (1 - line.discount / 100);
       }
       next[idx] = line;
+
+      // Auto-save correction when user changes qty/unit on an AI-parsed line (debounced)
+      const snapshot = parsedSnapshotRef.current[idx];
+      if (snapshot?.productName && (field === 'qty' || field === 'unit')) {
+        if (correctionTimeoutRef.current[idx]) clearTimeout(correctionTimeoutRef.current[idx]);
+        correctionTimeoutRef.current[idx] = setTimeout(() => {
+          const original = parsedLines[idx]?.productName || snapshot.productName;
+          const finalLine = { ...line };
+          if (finalLine.qty !== snapshot.qty || finalLine.unit !== snapshot.unit) {
+            saveCorrection(original, finalLine.productId, finalLine.productName, finalLine.qty, finalLine.unit);
+          }
+        }, 1500);
+      }
+
       return next;
     });
   };
 
   const selectProduct = (idx: number, product: ProductOption) => {
+    const snapshot = parsedSnapshotRef.current[idx];
+    const wasAIParsed = snapshot && snapshot.productName;
+    const isDifferentProduct = wasAIParsed && snapshot.productName !== product.name;
+
     setOrderLines(prev => {
       const next = [...prev];
       next[idx] = {
@@ -239,6 +424,11 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
     });
     setActiveProductRow(null);
     setProductSearch('');
+
+    if (isDifferentProduct) {
+      const original = parsedLines[idx]?.productName || snapshot.productName;
+      saveCorrection(original, product.id, product.name, snapshot.qty, snapshot.unit);
+    }
   };
 
   const addLine = () => setOrderLines(prev => [...prev, { ...EMPTY_LINE }]);
@@ -504,8 +694,8 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
                 disabled={!waMessage.trim() || isParsing}
                 className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-emerald-600 text-white rounded-xl text-sm font-black hover:bg-emerald-700 disabled:opacity-50 transition-all"
               >
-                {isParsing ? <RefreshCw size={14} className="animate-spin" /> : <Zap size={14} />}
-                智能解析
+                {isParsing ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                {isParsing ? 'AI 解析中...' : 'AI 智能解析'}
               </button>
               <button
                 onClick={() => { setWaMessage(''); setParsedLines([]); }}
@@ -521,7 +711,7 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
                   解析結果 · {parsedLines.length} 項
                 </p>
-                <div className="space-y-1 max-h-40 overflow-y-auto">
+                <div className="space-y-1 max-h-48 overflow-y-auto">
                   {parsedLines.map((p, i) => (
                     <div key={i} className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-50 text-xs font-bold">
                       {p.matched ? (
@@ -529,7 +719,10 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
                       ) : (
                         <AlertTriangle size={12} className="text-amber-500 flex-shrink-0" />
                       )}
-                      <span className="truncate flex-1">{p.productName}</span>
+                      <span className="truncate flex-1">
+                        {p.productName}
+                        {p.note && <span className="text-slate-400 font-normal ml-1">({p.note})</span>}
+                      </span>
                       <span className="text-slate-400">{p.qty} {p.unit}</span>
                       {p.matched && <span className="text-emerald-500 text-[10px]">→ {p.matched.name}</span>}
                     </div>
@@ -694,7 +887,7 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
                           onChange={e => updateLine(idx, 'unit', e.target.value)}
                           className="w-full px-1 py-2 bg-slate-50 border border-slate-100 rounded-lg text-xs font-bold text-center outline-none"
                         >
-                          {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                          {allUnits.map(u => <option key={u} value={u}>{u}</option>)}
                         </select>
                       </td>
                       <td className="px-3 py-2">

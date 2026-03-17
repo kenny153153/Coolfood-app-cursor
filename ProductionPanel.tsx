@@ -3,7 +3,7 @@ import {
   Package, Layers, ClipboardList, Plus, Edit, Trash2,
   Save, X, RefreshCw, Check, Eye, Send,
   CheckCircle, XCircle, BarChart3, Coins,
-  AlertTriangle, TrendingUp,
+  AlertTriangle, TrendingUp, BookOpen,
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import { computeProductCost } from './supabaseMappers';
@@ -12,6 +12,7 @@ import type {
   SaleChannel, SiteConfig, WholesalePricingRules,
   PackagingMaterial, ProductionOrder, ProductionOrderStatus,
   ProductionOrderInput, ProductionOrderOutput,
+  ProductBomEntry,
 } from './types';
 
 // ─── Props ──────────────────────────────────────────────────────
@@ -29,7 +30,7 @@ interface Props {
   isMediaUrl: (url: string) => boolean;
 }
 
-type SubTab = 'orders' | 'packaging' | 'costs' | 'yield_report';
+type SubTab = 'orders' | 'bom' | 'packaging' | 'costs' | 'yield_report';
 
 const STATUS_META: Record<ProductionOrderStatus, { label: string; color: string; bg: string }> = {
   draft: { label: '草稿', color: 'text-slate-500', bg: 'bg-slate-100' },
@@ -58,6 +59,14 @@ const ProductionPanel: React.FC<Props> = ({
   const [pkgLoading, setPkgLoading] = useState(true);
   const [editingPkg, setEditingPkg] = useState<(Partial<PackagingMaterial> & { isNew?: boolean }) | null>(null);
   const [pkgSaving, setPkgSaving] = useState(false);
+
+  // ── BOM (配方表) state ──
+  const [bomEntries, setBomEntries] = useState<ProductBomEntry[]>([]);
+  const [bomLoading, setBomLoading] = useState(true);
+  const [editingBomProductId, setEditingBomProductId] = useState<string | null>(null);
+  const [editingBomEntries, setEditingBomEntries] = useState<ProductBomEntry[]>([]);
+  const [bomSaving, setBomSaving] = useState(false);
+  const [bomSearch, setBomSearch] = useState('');
 
   // ── Cost overview state ──
   const [costsChannelFilter, setCostsChannelFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
@@ -153,7 +162,25 @@ const ProductionPanel: React.FC<Props> = ({
     setPkgLoading(false);
   }, []);
 
-  useEffect(() => { loadOrders(); loadPackagingMaterials(); }, [loadOrders, loadPackagingMaterials]);
+  const loadBom = useCallback(async () => {
+    setBomLoading(true);
+    const { data, error } = await supabase.from('product_bom').select('*');
+    if (error) { console.warn('Failed to load BOM', error); setBomLoading(false); return; }
+    setBomEntries((data || []).map((r: any) => ({
+      id: r.id,
+      productId: r.product_id,
+      ingredientId: r.ingredient_id,
+      quantityPerUnit: Number(r.quantity_per_unit) || 0,
+      unit: r.unit || 'kg',
+      isPrimary: r.is_primary || false,
+      expectedYieldRate: r.expected_yield_rate ? Number(r.expected_yield_rate) : undefined,
+      notes: r.notes,
+      createdAt: r.created_at,
+    })));
+    setBomLoading(false);
+  }, []);
+
+  useEffect(() => { loadOrders(); loadPackagingMaterials(); loadBom(); }, [loadOrders, loadPackagingMaterials, loadBom]);
 
   // ─── Generate order number ────────────────────────────────────
 
@@ -403,6 +430,79 @@ const ProductionPanel: React.FC<Props> = ({
 
   const filteredOrders = orderStatusFilter === 'all' ? orders : orders.filter(o => o.status === orderStatusFilter);
 
+  // ─── BOM-derived data ──────────────────────────────────────────
+
+  const productsWithBom = useMemo(() => {
+    const ids = new Set(bomEntries.map(b => b.productId));
+    return products.filter(p => ids.has(p.id));
+  }, [bomEntries, products]);
+
+  const allowedIngredients = useMemo(() => {
+    const selectedProductIds = (editingOrder?.outputs || [])
+      .map(o => o.productId)
+      .filter(Boolean) as string[];
+    if (selectedProductIds.length === 0) return [];
+    const allowedIds = new Set(
+      bomEntries
+        .filter(b => selectedProductIds.includes(b.productId))
+        .map(b => b.ingredientId)
+    );
+    return ingredients.filter(i => allowedIds.has(i.id));
+  }, [editingOrder?.outputs, bomEntries, ingredients]);
+
+  // ─── BOM CRUD ──────────────────────────────────────────────────
+
+  const openBomEditor = (productId: string) => {
+    const entries = bomEntries.filter(b => b.productId === productId);
+    setEditingBomEntries(entries.length > 0 ? entries.map(e => ({ ...e })) : []);
+    setEditingBomProductId(productId);
+  };
+
+  const addBomEntry = () => {
+    setEditingBomEntries(prev => [...prev, {
+      id: `bom-${Date.now()}`, productId: editingBomProductId || '',
+      ingredientId: '', quantityPerUnit: 0, unit: 'kg', isPrimary: prev.length === 0,
+    }]);
+  };
+
+  const updateBomEntry = (idx: number, partial: Partial<ProductBomEntry>) => {
+    setEditingBomEntries(prev => prev.map((e, i) => i === idx ? { ...e, ...partial } : e));
+  };
+
+  const removeBomEntry = (idx: number) => {
+    setEditingBomEntries(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleSaveBom = async () => {
+    if (!editingBomProductId) return;
+    const validEntries = editingBomEntries.filter(e => e.ingredientId);
+    setBomSaving(true);
+    await supabase.from('product_bom').delete().eq('product_id', editingBomProductId);
+    if (validEntries.length > 0) {
+      const rows = validEntries.map(e => ({
+        product_id: editingBomProductId,
+        ingredient_id: e.ingredientId,
+        quantity_per_unit: e.quantityPerUnit,
+        unit: e.unit,
+        is_primary: e.isPrimary,
+        expected_yield_rate: e.expectedYieldRate || null,
+        notes: e.notes || null,
+      }));
+      const { error } = await supabase.from('product_bom').insert(rows);
+      if (error) { showToast(`儲存失敗：${error.message}`, 'error'); setBomSaving(false); return; }
+    }
+    showToast('配方已儲存');
+    setEditingBomProductId(null);
+    setBomSaving(false);
+    loadBom();
+  };
+
+  const bomFilteredProducts = useMemo(() => {
+    if (!bomSearch) return products;
+    const q = bomSearch.toLowerCase();
+    return products.filter(p => p.name.toLowerCase().includes(q) || (p.nameEn || '').toLowerCase().includes(q));
+  }, [products, bomSearch]);
+
   // ─── Helper: update editing order input ───────────────────────
 
   const updateInput = (idx: number, partial: Partial<ProductionOrderInput>) => {
@@ -473,6 +573,7 @@ const ProductionPanel: React.FC<Props> = ({
       <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1 w-fit">
         {([
           { id: 'orders' as SubTab, label: '生產工單', icon: <ClipboardList size={14} /> },
+          { id: 'bom' as SubTab, label: '配方管理', icon: <BookOpen size={14} /> },
           { id: 'packaging' as SubTab, label: '包裝材料', icon: <Package size={14} /> },
           { id: 'costs' as SubTab, label: '產品成本一覽', icon: <Coins size={14} /> },
           { id: 'yield_report' as SubTab, label: '出成率報告', icon: <TrendingUp size={14} /> },
@@ -573,7 +674,83 @@ const ProductionPanel: React.FC<Props> = ({
       )}
 
       {/* ════════════════════════════════════════════════════════════ */}
-      {/* TAB 2: Packaging Materials 包裝材料                        */}
+      {/* TAB 2: BOM 配方管理                                        */}
+      {/* ════════════════════════════════════════════════════════════ */}
+      {subTab === 'bom' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <input value={bomSearch} onChange={e => setBomSearch(e.target.value)}
+                  placeholder="搜尋產品..." className="pl-4 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-blue-300 w-52" />
+              </div>
+              <p className="text-xs text-slate-400 font-bold">定義每個成品所需的原材料配方，工場生產時只能使用已定義的原材料</p>
+            </div>
+          </div>
+
+          {bomLoading ? (
+            <div className="flex items-center justify-center py-20"><RefreshCw size={24} className="animate-spin text-slate-300" /></div>
+          ) : (
+            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                    <th className="px-5 py-3 text-left">產品</th>
+                    <th className="px-4 py-3 text-center">渠道</th>
+                    <th className="px-4 py-3 text-center">配方原材料</th>
+                    <th className="px-4 py-3 w-24"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bomFilteredProducts.length === 0 ? (
+                    <tr><td colSpan={4} className="px-4 py-12 text-center text-slate-300 font-bold text-sm">尚無產品</td></tr>
+                  ) : bomFilteredProducts.map(p => {
+                    const entries = bomEntries.filter(b => b.productId === p.id);
+                    const ingNames = entries.map(e => ingredients.find(i => i.id === e.ingredientId)?.name || '?').join('、');
+                    return (
+                      <tr key={p.id} className="border-t border-slate-50 hover:bg-slate-50/50 group">
+                        <td className="px-5 py-3">
+                          <p className="font-black text-slate-800">{p.name}</p>
+                          {p.nameEn && <p className="text-[10px] text-slate-400">{p.nameEn}</p>}
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-black ${
+                            p.saleChannel === 'retail' ? 'bg-blue-50 text-blue-600' :
+                            p.saleChannel === 'wholesale' ? 'bg-amber-50 text-amber-600' :
+                            'bg-slate-100 text-slate-500'
+                          }`}>
+                            {p.saleChannel === 'retail' ? '零售' : p.saleChannel === 'wholesale' ? '批發' : '全部'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          {entries.length > 0 ? (
+                            <span className="text-xs font-bold text-emerald-600">{ingNames}</span>
+                          ) : (
+                            <span className="text-xs font-bold text-slate-300">未設定</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <button onClick={() => openBomEditor(p.id)}
+                            className="flex items-center gap-1 px-3 py-1.5 text-xs font-black text-blue-600 hover:bg-blue-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100">
+                            <Edit size={12} /> 編輯配方
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div className="px-5 py-3 border-t border-slate-100 flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-400">共 {bomFilteredProducts.length} 個產品</span>
+                <span className="text-[10px] font-bold text-emerald-500">{productsWithBom.length} 個已設定配方</span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════ */}
+      {/* TAB 3: Packaging Materials 包裝材料                        */}
       {/* ════════════════════════════════════════════════════════════ */}
       {subTab === 'packaging' && (
         <div className="space-y-4">
@@ -952,74 +1129,23 @@ const ProductionPanel: React.FC<Props> = ({
                 </div>
               </div>
 
-              {/* ── Inputs (原材料投入) ── */}
+              {/* ── Outputs (成品產出) — 先選擇成品，決定可用原材料 ── */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <h4 className="font-black text-sm text-slate-700 flex items-center gap-2">
-                    <Layers size={16} className="text-blue-500" /> 原材料投入
-                  </h4>
-                  <button onClick={addInput} className="flex items-center gap-1 px-3 py-1.5 text-xs font-black text-blue-600 hover:bg-blue-50 rounded-lg transition-colors">
-                    <Plus size={12} /> 添加
-                  </button>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                        <th className="text-left px-2 py-2">原材料</th>
-                        <th className="text-right px-2 py-2 w-20">數量</th>
-                        <th className="text-center px-2 py-2 w-16">單位</th>
-                        <th className="text-right px-2 py-2 w-24">每單位重量(kg)</th>
-                        <th className="text-right px-2 py-2 w-20">總重量(kg)</th>
-                        <th className="text-right px-2 py-2 w-20">單位成本</th>
-                        <th className="text-right px-2 py-2 w-20">總成本</th>
-                        <th className="w-8"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(editingOrder.inputs || []).map((inp, idx) => (
-                        <tr key={inp.id} className="border-t border-slate-100">
-                          <td className="px-2 py-2">
-                            <select value={inp.ingredientId || ''} onChange={e => {
-                              const ing = ingredients.find(i => i.id === e.target.value);
-                              updateInput(idx, { ingredientId: e.target.value || undefined, ingredientName: ing?.name || '' });
-                            }} className="w-full p-2 bg-slate-50 rounded-lg font-bold border border-slate-100">
-                              <option value="">選擇原材料</option>
-                              {ingredients.map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}
-                            </select>
-                          </td>
-                          <td className="px-2 py-2"><input type="number" min="0" step="1" value={inp.quantity || ''} onChange={e => updateInput(idx, { quantity: Number(e.target.value) || 0 })} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-right border border-slate-100" /></td>
-                          <td className="px-2 py-2">
-                            <select value={inp.unit} onChange={e => updateInput(idx, { unit: e.target.value })} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-center border border-slate-100">
-                              <option value="box">箱</option><option value="kg">kg</option><option value="lb">lb</option><option value="pc">件</option>
-                            </select>
-                          </td>
-                          <td className="px-2 py-2"><input type="number" min="0" step="0.1" value={inp.weightPerUnitKg || ''} onChange={e => updateInput(idx, { weightPerUnitKg: Number(e.target.value) || 0 })} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-right border border-slate-100" /></td>
-                          <td className="px-2 py-2 text-right font-black text-slate-700">{(inp.quantity * inp.weightPerUnitKg).toFixed(1)}</td>
-                          <td className="px-2 py-2"><input type="number" min="0" step="0.5" value={inp.unitCost || ''} onChange={e => updateInput(idx, { unitCost: Number(e.target.value) || 0 })} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-right border border-slate-100" /></td>
-                          <td className="px-2 py-2 text-right font-black text-slate-700">${(inp.quantity * inp.unitCost).toFixed(0)}</td>
-                          <td className="px-2 py-2"><button onClick={() => removeInput(idx)} className="p-1 text-rose-400 hover:bg-rose-50 rounded"><X size={12} /></button></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="flex justify-end gap-6 text-xs font-black text-slate-500 px-2">
-                  <span>總重量：<span className="text-slate-800">{editingOrder.totalInputWeightKg.toFixed(1)} kg</span></span>
-                  <span>總成本：<span className="text-slate-800">${(editingOrder.inputs || []).reduce((s, i) => s + i.quantity * i.unitCost, 0).toFixed(0)}</span></span>
-                </div>
-              </div>
-
-              {/* ── Outputs (成品產出) ── */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="font-black text-sm text-slate-700 flex items-center gap-2">
-                    <Package size={16} className="text-emerald-500" /> 成品產出
+                    <Package size={16} className="text-emerald-500" /> ① 成品產出
+                    <span className="text-[10px] font-normal text-slate-400 ml-1">先選擇要生產的成品</span>
                   </h4>
                   <button onClick={addOutput} className="flex items-center gap-1 px-3 py-1.5 text-xs font-black text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors">
                     <Plus size={12} /> 添加
                   </button>
                 </div>
+                {productsWithBom.length === 0 && (
+                  <div className="bg-amber-50 rounded-xl p-3 flex items-center gap-2">
+                    <AlertTriangle size={14} className="text-amber-500 flex-shrink-0" />
+                    <p className="text-xs text-amber-700 font-bold">尚無已設定配方的產品，請先到「配方管理」設定產品配方</p>
+                  </div>
+                )}
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs">
                     <thead>
@@ -1038,7 +1164,19 @@ const ProductionPanel: React.FC<Props> = ({
                     <tbody>
                       {(editingOrder.outputs || []).map((out, idx) => (
                         <tr key={out.id} className="border-t border-slate-100">
-                          <td className="px-2 py-2"><input value={out.productName} onChange={e => updateOutput(idx, { productName: e.target.value })} placeholder="例：牛柳扒 200g" className="w-full p-2 bg-slate-50 rounded-lg font-bold border border-slate-100" /></td>
+                          <td className="px-2 py-2">
+                            <select value={out.productId || ''} onChange={e => {
+                              const prod = productsWithBom.find(p => p.id === e.target.value);
+                              if (prod) {
+                                updateOutput(idx, { productId: prod.id, productName: prod.name, saleChannel: (prod.saleChannel === 'wholesale' ? 'wholesale' : 'retail') as SaleChannel });
+                              } else {
+                                updateOutput(idx, { productId: undefined, productName: '' });
+                              }
+                            }} className="w-full p-2 bg-slate-50 rounded-lg font-bold border border-slate-100">
+                              <option value="">選擇產品</option>
+                              {productsWithBom.map(p => <option key={p.id} value={p.id}>{p.name} ({p.saleChannel === 'retail' ? '零售' : p.saleChannel === 'wholesale' ? '批發' : '全部'})</option>)}
+                            </select>
+                          </td>
                           <td className="px-2 py-2">
                             <select value={out.saleChannel} onChange={e => updateOutput(idx, { saleChannel: e.target.value as SaleChannel })} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-center border border-slate-100">
                               <option value="retail">零售</option><option value="wholesale">批發</option>
@@ -1063,6 +1201,72 @@ const ProductionPanel: React.FC<Props> = ({
                 </div>
                 <div className="flex justify-end gap-6 text-xs font-black text-slate-500 px-2">
                   <span>總重量：<span className="text-slate-800">{editingOrder.totalOutputWeightKg.toFixed(1)} kg</span></span>
+                </div>
+              </div>
+
+              {/* ── Inputs (原材料投入) — 根據成品配方自動過濾 ── */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-black text-sm text-slate-700 flex items-center gap-2">
+                    <Layers size={16} className="text-blue-500" /> ② 原材料投入
+                    <span className="text-[10px] font-normal text-slate-400 ml-1">根據成品配方自動過濾</span>
+                  </h4>
+                  <button onClick={addInput} disabled={allowedIngredients.length === 0}
+                    className="flex items-center gap-1 px-3 py-1.5 text-xs font-black text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+                    <Plus size={12} /> 添加
+                  </button>
+                </div>
+                {allowedIngredients.length === 0 && (editingOrder.outputs || []).some(o => o.productId) === false && (
+                  <div className="bg-blue-50 rounded-xl p-3 flex items-center gap-2">
+                    <Layers size={14} className="text-blue-400 flex-shrink-0" />
+                    <p className="text-xs text-blue-600 font-bold">請先在上方選擇要生產的成品，原材料將自動根據配方過濾</p>
+                  </div>
+                )}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                        <th className="text-left px-2 py-2">原材料</th>
+                        <th className="text-right px-2 py-2 w-20">數量</th>
+                        <th className="text-center px-2 py-2 w-16">單位</th>
+                        <th className="text-right px-2 py-2 w-24">每單位重量(kg)</th>
+                        <th className="text-right px-2 py-2 w-20">總重量(kg)</th>
+                        <th className="text-right px-2 py-2 w-20">單位成本</th>
+                        <th className="text-right px-2 py-2 w-20">總成本</th>
+                        <th className="w-8"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(editingOrder.inputs || []).map((inp, idx) => (
+                        <tr key={inp.id} className="border-t border-slate-100">
+                          <td className="px-2 py-2">
+                            <select value={inp.ingredientId || ''} onChange={e => {
+                              const ing = ingredients.find(i => i.id === e.target.value);
+                              updateInput(idx, { ingredientId: e.target.value || undefined, ingredientName: ing?.name || '' });
+                            }} className="w-full p-2 bg-slate-50 rounded-lg font-bold border border-slate-100" disabled={allowedIngredients.length === 0}>
+                              <option value="">{allowedIngredients.length === 0 ? '請先選擇成品' : '選擇原材料'}</option>
+                              {allowedIngredients.map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}
+                            </select>
+                          </td>
+                          <td className="px-2 py-2"><input type="number" min="0" step="1" value={inp.quantity || ''} onChange={e => updateInput(idx, { quantity: Number(e.target.value) || 0 })} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-right border border-slate-100" /></td>
+                          <td className="px-2 py-2">
+                            <select value={inp.unit} onChange={e => updateInput(idx, { unit: e.target.value })} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-center border border-slate-100">
+                              <option value="box">箱</option><option value="kg">kg</option><option value="lb">lb</option><option value="pc">件</option>
+                            </select>
+                          </td>
+                          <td className="px-2 py-2"><input type="number" min="0" step="0.1" value={inp.weightPerUnitKg || ''} onChange={e => updateInput(idx, { weightPerUnitKg: Number(e.target.value) || 0 })} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-right border border-slate-100" /></td>
+                          <td className="px-2 py-2 text-right font-black text-slate-700">{(inp.quantity * inp.weightPerUnitKg).toFixed(1)}</td>
+                          <td className="px-2 py-2"><input type="number" min="0" step="0.5" value={inp.unitCost || ''} onChange={e => updateInput(idx, { unitCost: Number(e.target.value) || 0 })} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-right border border-slate-100" /></td>
+                          <td className="px-2 py-2 text-right font-black text-slate-700">${(inp.quantity * inp.unitCost).toFixed(0)}</td>
+                          <td className="px-2 py-2"><button onClick={() => removeInput(idx)} className="p-1 text-rose-400 hover:bg-rose-50 rounded"><X size={12} /></button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex justify-end gap-6 text-xs font-black text-slate-500 px-2">
+                  <span>總重量：<span className="text-slate-800">{editingOrder.totalInputWeightKg.toFixed(1)} kg</span></span>
+                  <span>總成本：<span className="text-slate-800">${(editingOrder.inputs || []).reduce((s, i) => s + i.quantity * i.unitCost, 0).toFixed(0)}</span></span>
                 </div>
               </div>
 
@@ -1257,6 +1461,96 @@ const ProductionPanel: React.FC<Props> = ({
           </div>
         </div>
       )}
+
+      {/* ════════════════════════════════════════════════════════════ */}
+      {/* MODAL: Edit Product BOM (配方)                             */}
+      {/* ════════════════════════════════════════════════════════════ */}
+      {editingBomProductId && (() => {
+        const prod = products.find(p => p.id === editingBomProductId);
+        return (
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[9000] flex items-start justify-center p-4 overflow-y-auto" onClick={() => setEditingBomProductId(null)}>
+            <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-2xl my-8" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between p-6 border-b border-slate-100">
+                <div>
+                  <h3 className="text-lg font-black text-slate-900">編輯配方</h3>
+                  <p className="text-xs text-slate-400 font-bold">{prod?.name || '未知產品'}</p>
+                </div>
+                <button onClick={() => setEditingBomProductId(null)} className="p-2 hover:bg-slate-100 rounded-xl"><X size={18} /></button>
+              </div>
+              <div className="p-6 space-y-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-slate-500 font-bold">定義此產品生產所需的原材料</p>
+                  <button onClick={addBomEntry} className="flex items-center gap-1 px-3 py-1.5 text-xs font-black text-blue-600 hover:bg-blue-50 rounded-lg transition-colors">
+                    <Plus size={12} /> 添加原材料
+                  </button>
+                </div>
+                {editingBomEntries.length === 0 ? (
+                  <div className="bg-slate-50 rounded-xl p-8 text-center">
+                    <BookOpen size={24} className="text-slate-200 mx-auto mb-2" />
+                    <p className="text-xs text-slate-400 font-bold">尚無配方，點擊「添加原材料」開始設定</p>
+                  </div>
+                ) : (
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                        <th className="text-left px-2 py-2">原材料</th>
+                        <th className="text-right px-2 py-2 w-24">每單位用量</th>
+                        <th className="text-center px-2 py-2 w-16">單位</th>
+                        <th className="text-right px-2 py-2 w-24">預期出成率</th>
+                        <th className="text-center px-2 py-2 w-14">主要</th>
+                        <th className="w-8"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {editingBomEntries.map((entry, idx) => (
+                        <tr key={entry.id} className="border-t border-slate-100">
+                          <td className="px-2 py-2">
+                            <select value={entry.ingredientId} onChange={e => updateBomEntry(idx, { ingredientId: e.target.value })}
+                              className="w-full p-2 bg-slate-50 rounded-lg font-bold border border-slate-100">
+                              <option value="">選擇原材料</option>
+                              {ingredients.map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}
+                            </select>
+                          </td>
+                          <td className="px-2 py-2">
+                            <input type="number" min="0" step="0.01" value={entry.quantityPerUnit || ''} onChange={e => updateBomEntry(idx, { quantityPerUnit: Number(e.target.value) || 0 })}
+                              placeholder="0" className="w-full p-2 bg-slate-50 rounded-lg font-bold text-right border border-slate-100" />
+                          </td>
+                          <td className="px-2 py-2">
+                            <select value={entry.unit} onChange={e => updateBomEntry(idx, { unit: e.target.value })}
+                              className="w-full p-2 bg-slate-50 rounded-lg font-bold text-center border border-slate-100">
+                              <option value="kg">kg</option><option value="lb">lb</option><option value="pc">件</option><option value="g">g</option>
+                            </select>
+                          </td>
+                          <td className="px-2 py-2">
+                            <input type="number" min="0" max="1" step="0.01" value={entry.expectedYieldRate ?? ''} onChange={e => updateBomEntry(idx, { expectedYieldRate: Number(e.target.value) || undefined })}
+                              placeholder="—" className="w-full p-2 bg-slate-50 rounded-lg font-bold text-right border border-slate-100" />
+                          </td>
+                          <td className="px-2 py-2 text-center">
+                            <button onClick={() => updateBomEntry(idx, { isPrimary: !entry.isPrimary })}
+                              className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${entry.isPrimary ? 'border-blue-500 bg-blue-500 text-white' : 'border-slate-200 bg-white'}`}>
+                              {entry.isPrimary && <Check size={12} strokeWidth={3} />}
+                            </button>
+                          </td>
+                          <td className="px-2 py-2">
+                            <button onClick={() => removeBomEntry(idx)} className="p-1 text-rose-400 hover:bg-rose-50 rounded"><X size={12} /></button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+              <div className="flex justify-end gap-3 p-6 border-t border-slate-100">
+                <button onClick={() => setEditingBomProductId(null)} className="px-6 py-2.5 border border-slate-200 rounded-xl text-sm font-black text-slate-500 hover:bg-slate-50">取消</button>
+                <button onClick={handleSaveBom} disabled={bomSaving}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-black hover:bg-blue-700 disabled:opacity-50">
+                  {bomSaving ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />} 儲存配方
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ════════════════════════════════════════════════════════════ */}
       {/* MODAL: Edit Packaging Material                             */}

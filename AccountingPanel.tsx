@@ -1,23 +1,30 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Wallet, TrendingDown, TrendingUp, FileText, Settings,
+  Wallet, TrendingDown, TrendingUp, FileText,
   Plus, Edit, Trash2, Save, X, RefreshCw, Search,
   ChevronDown, Check, Calendar, DollarSign, AlertTriangle,
-  Users, Download, Filter,
+  Users, Download, Filter, UserCircle,
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import { WHOLESALE_BRAND_META } from './WorkspaceContext';
 import type {
-  Supplier, AccountPayable, AccountReceivable, ExpenseRecord,
-  APStatus, ARStatus, ExpenseCategory, WholesaleBrand,
+  AccountPayable, AccountReceivable, ExpenseRecord,
+  APStatus, ARStatus, ExpenseCategory, WholesaleBrand, Supplier,
+  SalesCommission, CommissionStatus,
 } from './types';
 
 interface Props {
   showToast: (msg: string, type?: 'success' | 'error') => void;
 }
 
-type SubTab = 'payable' | 'receivable' | 'expenses' | 'reports' | 'settings';
+type SubTab = 'payable' | 'receivable' | 'expenses' | 'commissions' | 'reports';
+
+const COMMISSION_STATUS_MAP: Record<CommissionStatus, { label: string; color: string }> = {
+  pending: { label: '待批', color: 'bg-amber-50 text-amber-600' },
+  approved: { label: '已批', color: 'bg-blue-50 text-blue-600' },
+  paid: { label: '已付', color: 'bg-emerald-50 text-emerald-600' },
+};
 
 const EXPENSE_CATEGORIES: { value: ExpenseCategory; label: string; emoji: string }[] = [
   { value: 'salary', label: '人工', emoji: '👷' },
@@ -54,17 +61,18 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
   const [receivables, setReceivables] = useState<AccountReceivable[]>([]);
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [commissions, setCommissions] = useState<SalesCommission[]>([]);
 
   // Filters
   const [apFilter, setApFilter] = useState<APStatus | 'all'>('all');
   const [arFilter, setArFilter] = useState<ARStatus | 'all'>('all');
+  const [commFilter, setCommFilter] = useState<CommissionStatus | 'all'>('all');
   const [searchTerm, setSearchTerm] = useState('');
 
   // Edit modals
   const [editingAP, setEditingAP] = useState<(Partial<AccountPayable> & { isNew?: boolean }) | null>(null);
   const [editingAR, setEditingAR] = useState<(Partial<AccountReceivable> & { isNew?: boolean }) | null>(null);
   const [editingExpense, setEditingExpense] = useState<(Partial<ExpenseRecord> & { isNew?: boolean }) | null>(null);
-  const [editingSupplier, setEditingSupplier] = useState<(Partial<Supplier> & { isNew?: boolean }) | null>(null);
   const [saving, setSaving] = useState(false);
 
   // ── Data loading ──────────────────────────────────────────────
@@ -89,11 +97,16 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
     if (data) setSuppliers(data.map(mapSupplier));
   }, []);
 
+  const loadCommissions = useCallback(async () => {
+    const { data } = await supabase.from('sales_commissions').select('*').order('order_date', { ascending: false });
+    if (data) setCommissions(data.map(mapCommission));
+  }, []);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
-    await Promise.all([loadPayables(), loadReceivables(), loadExpenses(), loadSuppliers()]);
+    await Promise.all([loadPayables(), loadReceivables(), loadExpenses(), loadSuppliers(), loadCommissions()]);
     setLoading(false);
-  }, [loadPayables, loadReceivables, loadExpenses, loadSuppliers]);
+  }, [loadPayables, loadReceivables, loadExpenses, loadSuppliers, loadCommissions]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
@@ -127,6 +140,37 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
     phone: r.phone, address: r.address, paymentTerms: r.payment_terms,
     notes: r.notes, isActive: r.is_active, createdAt: r.created_at,
   });
+
+  const mapCommission = (r: any): SalesCommission => ({
+    id: r.id, salespersonId: r.salesperson_id, salespersonName: r.salesperson_name,
+    clientId: r.client_id, clientName: r.client_name, brand: r.brand,
+    orderId: r.order_id, orderDate: r.order_date, orderAmount: r.order_amount,
+    priceTier: r.price_tier, commissionRate: r.commission_rate,
+    commissionAmount: r.commission_amount, status: r.status,
+    approvedBy: r.approved_by, approvedAt: r.approved_at,
+    paidDate: r.paid_date, paymentMethod: r.payment_method,
+    notes: r.notes, createdAt: r.created_at,
+  });
+
+  // ── Commission handlers ─────────────────────────────────────────
+
+  const handleApproveCommission = async (comm: SalesCommission) => {
+    const { error } = await supabase.from('sales_commissions')
+      .update({ status: 'approved', approved_at: new Date().toISOString() })
+      .eq('id', comm.id);
+    if (error) showToast(`批核失敗：${error.message}`, 'error');
+    else { showToast('佣金已批核'); loadCommissions(); }
+  };
+
+  const handlePayCommission = async (comm: SalesCommission) => {
+    const method = prompt('付款方式（FPS / 現金 / 轉帳）：', 'FPS');
+    if (!method) return;
+    const { error } = await supabase.from('sales_commissions')
+      .update({ status: 'paid', paid_date: new Date().toISOString().slice(0, 10), payment_method: method })
+      .eq('id', comm.id);
+    if (error) showToast(`付款失敗：${error.message}`, 'error');
+    else { showToast('佣金已標記為已付'); loadCommissions(); }
+  };
 
   // ── CRUD handlers ─────────────────────────────────────────────
 
@@ -209,35 +253,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
     showToast('已刪除'); loadExpenses();
   };
 
-  const handleSaveSupplier = async () => {
-    if (!editingSupplier || !editingSupplier.name?.trim()) { showToast('請輸入供應商名稱', 'error'); return; }
-    setSaving(true);
-    const payload = {
-      name: editingSupplier.name.trim(),
-      contact_name: editingSupplier.contactName || null,
-      phone: editingSupplier.phone || null,
-      address: editingSupplier.address || null,
-      payment_terms: editingSupplier.paymentTerms || 'cod',
-      notes: editingSupplier.notes || null,
-      is_active: editingSupplier.isActive ?? true,
-    };
-    if (editingSupplier.isNew) {
-      const { error } = await supabase.from('suppliers').insert(payload);
-      if (error) { showToast(`失敗：${error.message}`, 'error'); setSaving(false); return; }
-      showToast('供應商已新增');
-    } else {
-      const { error } = await supabase.from('suppliers').update(payload).eq('id', editingSupplier.id);
-      if (error) { showToast(`失敗：${error.message}`, 'error'); setSaving(false); return; }
-      showToast('供應商已更新');
-    }
-    setEditingSupplier(null); setSaving(false); loadSuppliers();
-  };
-
-  const handleDeleteSupplier = async (id: string) => {
-    if (!confirm('確定刪除此供應商？')) return;
-    await supabase.from('suppliers').delete().eq('id', id);
-    showToast('已刪除'); loadSuppliers();
-  };
+  // Supplier CRUD moved to WarehousePanel
 
   // ── Computed ──────────────────────────────────────────────────
 
@@ -246,9 +262,12 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
   const expenseMonthTotal = expenses.filter(e => e.type === 'expense' && e.date.startsWith(new Date().toISOString().slice(0, 7))).reduce((s, e) => s + e.amount, 0);
   const incomeMonthTotal = expenses.filter(e => e.type === 'income' && e.date.startsWith(new Date().toISOString().slice(0, 7))).reduce((s, e) => s + e.amount, 0);
 
+  const commPendingTotal = commissions.filter(c => c.status !== 'paid').reduce((s, c) => s + c.commissionAmount, 0);
+
   const filteredAP = payables.filter(p => apFilter === 'all' || p.status === apFilter).filter(p => !searchTerm || p.supplierName.toLowerCase().includes(searchTerm.toLowerCase()));
   const filteredAR = receivables.filter(r => arFilter === 'all' || r.status === arFilter).filter(r => !searchTerm || r.clientName.toLowerCase().includes(searchTerm.toLowerCase()));
   const filteredExpenses = expenses.filter(e => !searchTerm || e.description.toLowerCase().includes(searchTerm.toLowerCase()));
+  const filteredCommissions = commissions.filter(c => commFilter === 'all' || c.status === commFilter).filter(c => !searchTerm || c.salespersonName.toLowerCase().includes(searchTerm.toLowerCase()) || c.clientName.toLowerCase().includes(searchTerm.toLowerCase()));
 
   // ── Render ────────────────────────────────────────────────────
 
@@ -260,8 +279,8 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
           { id: 'payable' as SubTab, label: '應付賬款', icon: <TrendingDown size={14} /> },
           { id: 'receivable' as SubTab, label: '應收賬款', icon: <TrendingUp size={14} /> },
           { id: 'expenses' as SubTab, label: '收支記錄', icon: <DollarSign size={14} /> },
+          { id: 'commissions' as SubTab, label: '佣金', icon: <UserCircle size={14} /> },
           { id: 'reports' as SubTab, label: '報表', icon: <FileText size={14} /> },
-          { id: 'settings' as SubTab, label: '設定', icon: <Settings size={14} /> },
         ]).map(tab => (
           <button
             key={tab.id}
@@ -488,6 +507,92 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
             </div>
           )}
 
+          {/* ═══ COMMISSIONS ═══ */}
+          {subTab === 'commissions' && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-2">
+                  <SearchInput value={searchTerm} onChange={setSearchTerm} placeholder="搜尋銷售員/客戶..." />
+                  <StatusFilter<CommissionStatus | 'all'>
+                    value={commFilter}
+                    onChange={v => setCommFilter(v)}
+                    options={[
+                      { value: 'all', label: '全部' },
+                      ...Object.entries(COMMISSION_STATUS_MAP).map(([k, v]) => ({ value: k as CommissionStatus, label: v.label })),
+                    ]}
+                  />
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="text-xs font-black text-slate-400">
+                    待付佣金: <span className="text-amber-600">${commPendingTotal.toLocaleString()}</span>
+                  </div>
+                </div>
+              </div>
+
+              {filteredCommissions.length === 0 ? (
+                <EmptyState message="尚無佣金記錄" />
+              ) : (
+                <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-slate-50/50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                        <th className="text-left px-5 py-3">銷售員</th>
+                        <th className="text-left px-3 py-3">客戶</th>
+                        <th className="text-left px-3 py-3">訂單日期</th>
+                        <th className="text-left px-3 py-3">P 等級</th>
+                        <th className="text-right px-3 py-3">訂單金額</th>
+                        <th className="text-right px-3 py-3">佣金率</th>
+                        <th className="text-right px-3 py-3">佣金</th>
+                        <th className="text-center px-3 py-3">狀態</th>
+                        <th className="text-right px-5 py-3">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredCommissions.map(comm => (
+                        <tr key={comm.id} className="border-t border-slate-50 hover:bg-slate-50/50">
+                          <td className="px-5 py-3 font-black text-slate-800">{comm.salespersonName}</td>
+                          <td className="px-3 py-3 font-bold text-slate-600">{comm.clientName}</td>
+                          <td className="px-3 py-3 text-slate-500">{comm.orderDate || '—'}</td>
+                          <td className="px-3 py-3">
+                            <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded text-[10px] font-black">{comm.priceTier}</span>
+                          </td>
+                          <td className="px-3 py-3 text-right font-bold text-slate-600">${comm.orderAmount.toLocaleString()}</td>
+                          <td className="px-3 py-3 text-right font-bold text-slate-500">{comm.commissionRate}%</td>
+                          <td className="px-3 py-3 text-right font-black text-slate-800">${comm.commissionAmount.toLocaleString()}</td>
+                          <td className="px-3 py-3 text-center">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-black ${COMMISSION_STATUS_MAP[comm.status]?.color || ''}`}>
+                              {COMMISSION_STATUS_MAP[comm.status]?.label || comm.status}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3 text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              {comm.status === 'pending' && (
+                                <button
+                                  onClick={() => handleApproveCommission(comm)}
+                                  className="px-2 py-1 bg-blue-50 text-blue-600 rounded-md text-[10px] font-black hover:bg-blue-100"
+                                >
+                                  批核
+                                </button>
+                              )}
+                              {comm.status === 'approved' && (
+                                <button
+                                  onClick={() => handlePayCommission(comm)}
+                                  className="px-2 py-1 bg-emerald-50 text-emerald-600 rounded-md text-[10px] font-black hover:bg-emerald-100"
+                                >
+                                  付款
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ═══ REPORTS ═══ */}
           {subTab === 'reports' && (
             <div className="space-y-6">
@@ -556,48 +661,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
             </div>
           )}
 
-          {/* ═══ SETTINGS ═══ */}
-          {subTab === 'settings' && (
-            <div className="space-y-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 className="font-black text-lg text-slate-900">供應商管理</h4>
-                  <p className="text-xs text-slate-400 font-bold">管理貨源供應商資料，方便入賬時快速選擇</p>
-                </div>
-                <button
-                  onClick={() => setEditingSupplier({ isNew: true, isActive: true })}
-                  className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-black hover:bg-slate-800"
-                >
-                  <Plus size={14} /> 新增供應商
-                </button>
-              </div>
-
-              {suppliers.length === 0 ? (
-                <EmptyState message="尚未建立供應商" />
-              ) : (
-                <div className="space-y-3">
-                  {suppliers.map(s => (
-                    <div key={s.id} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4 group hover:shadow-md transition-shadow">
-                      <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-blue-600 font-black text-sm flex-shrink-0">
-                        {s.name.charAt(0)}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="font-black text-sm text-slate-900">{s.name}</p>
-                          {!s.isActive && <span className="px-2 py-0.5 bg-slate-100 text-slate-400 rounded text-[10px] font-black">停用</span>}
-                        </div>
-                        <p className="text-[10px] text-slate-400 font-bold">{s.contactName || '—'} · {s.phone || '—'}</p>
-                      </div>
-                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => setEditingSupplier({ ...s, isNew: false })} className="p-2 rounded-lg hover:bg-slate-100 text-slate-400"><Edit size={14} /></button>
-                        <button onClick={() => handleDeleteSupplier(s.id)} className="p-2 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-500"><Trash2 size={14} /></button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          {/* Settings tab removed — supplier management moved to 材料與倉務 */}
         </>
       )}
 
@@ -708,32 +772,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
         </Modal>
       )}
 
-      {/* Supplier Edit Modal */}
-      {editingSupplier && (
-        <Modal title={editingSupplier.isNew ? '新增供應商' : '編輯供應商'} onClose={() => setEditingSupplier(null)} onSave={handleSaveSupplier} saving={saving}>
-          <div className="grid grid-cols-2 gap-4">
-            <FieldInput label="名稱 *" value={editingSupplier.name || ''} onChange={v => setEditingSupplier({ ...editingSupplier, name: v })} />
-            <FieldInput label="聯絡人" value={editingSupplier.contactName || ''} onChange={v => setEditingSupplier({ ...editingSupplier, contactName: v })} />
-            <FieldInput label="電話" value={editingSupplier.phone || ''} onChange={v => setEditingSupplier({ ...editingSupplier, phone: v })} />
-            <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">付款條件</label>
-              <select value={editingSupplier.paymentTerms || 'cod'} onChange={e => setEditingSupplier({ ...editingSupplier, paymentTerms: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm">
-                <option value="cod">到付</option>
-                <option value="7days">7天數期</option>
-                <option value="14days">14天數期</option>
-                <option value="30days">30天數期</option>
-                <option value="60days">60天數期</option>
-              </select>
-            </div>
-            <div className="col-span-2">
-              <FieldInput label="地址" value={editingSupplier.address || ''} onChange={v => setEditingSupplier({ ...editingSupplier, address: v })} />
-            </div>
-            <div className="col-span-2">
-              <FieldInput label="備註" value={editingSupplier.notes || ''} onChange={v => setEditingSupplier({ ...editingSupplier, notes: v })} />
-            </div>
-          </div>
-        </Modal>
-      )}
+      {/* Supplier modal removed — now managed in WarehousePanel */}
     </div>
   );
 };

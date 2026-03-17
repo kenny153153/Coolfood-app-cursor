@@ -123,7 +123,8 @@ export type AdminModuleId =
   | 'settings' | 'admin_management'
   | 'global_dashboard' | 'new_order'
   | 'dispatch' | 'warehouse_ops' | 'accounting' | 'production'
-  | 'whatsapp_orders' | 'tricolor_print' | 'wholesale_clients';
+  | 'whatsapp_orders' | 'tricolor_print' | 'wholesale_clients'
+  | 'sales_reps';
 
 export interface BulkDiscount {
   threshold: number;
@@ -459,11 +460,16 @@ export interface DeliveryRoute {
   isActive: boolean;
 }
 
+export type PaymentTermsType = 'cod' | 'weekly' | 'biweekly' | 'monthly';
+
 export interface WholesaleClient {
   id: string;
+  clientCode?: string;
   companyName: string;
   contactName: string;
   phone: string;
+  fax?: string;
+  email?: string;
   address?: string;
   district?: string;
   brand: WholesaleBrand;
@@ -471,6 +477,13 @@ export interface WholesaleClient {
   routeId?: string | null;
   routeName?: string;
   creditLimit: number;
+  parentClientId?: string | null;
+  parentClientName?: string;
+  salespersonId?: string | null;
+  salespersonName?: string;
+  paymentTermsDays: number;
+  paymentTermsType: PaymentTermsType;
+  discountPercent: number;
   notes?: string;
   isActive: boolean;
   createdAt?: string;
@@ -483,18 +496,183 @@ export interface WholesaleBrandPricing {
   priceTiers: WholesalePriceTier[];
 }
 
+// ─── Sales Representative types ──────────────────────────────────
+
+export interface SalesRepresentative {
+  id: string;
+  name: string;
+  phone?: string;
+  email?: string;
+  brand: WholesaleBrand;
+  notes?: string;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type CommissionStatus = 'pending' | 'approved' | 'paid';
+
+export interface SalesCommission {
+  id: string;
+  salespersonId?: string;
+  salespersonName: string;
+  clientId?: string;
+  clientName: string;
+  brand?: WholesaleBrand;
+  orderId?: string;
+  orderDate?: string;
+  orderAmount: number;
+  priceTier: string;
+  commissionRate: number;
+  commissionAmount: number;
+  status: CommissionStatus;
+  approvedBy?: string;
+  approvedAt?: string;
+  paidDate?: string;
+  paymentMethod?: string;
+  notes?: string;
+  createdAt?: string;
+}
+
 // ─── Accounting types ────────────────────────────────────────────
 
 export interface Supplier {
   id: string;
+  legacyCode?: string;
   name: string;
+  nameEn?: string;
   contactName?: string;
   phone?: string;
+  whatsapp?: string;
+  fax?: string;
+  email?: string;
   address?: string;
   paymentTerms?: string;
+  paymentTermsDays?: number;
+  creditLimit?: number;
+  defaultCurrency?: string;
+  warehouseLocations?: string[];
+  lastQuoteDate?: string;
+  rating?: number;
   notes?: string;
   isActive: boolean;
   createdAt?: string;
+  updatedAt?: string;
+}
+
+// ─── Procurement Comparison types ────────────────────────────────
+
+export interface RawMaterialCatalog {
+  id: string;
+  canonicalName: string;
+  nameEn?: string;
+  category?: string;
+  subCategory?: string;
+  defaultUnit: string;
+  specs?: Record<string, any>;
+  notes?: string;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface MaterialAlias {
+  id: string;
+  catalogId: string;
+  supplierId?: string;
+  aliasName: string;
+  brand?: string;
+  confidence: number;
+  confirmedBy?: string;
+  confirmedAt?: string;
+  createdAt?: string;
+}
+
+export interface SupplierQuote {
+  id: string;
+  supplierId?: string;
+  supplierName: string;
+  quoteDate: string;
+  validUntil?: string;
+  sourceType: 'pdf' | 'whatsapp' | 'manual';
+  sourceFileUrl?: string;
+  originalText?: string;
+  parsedAt?: string;
+  status: 'draft' | 'parsed' | 'confirmed';
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  lineItems?: QuoteLineItem[];
+}
+
+export interface QuoteLineItem {
+  id: string;
+  quoteId: string;
+  catalogId?: string;
+  originalName: string;
+  brand?: string;
+  origin?: string;
+  storageLocation?: string;
+  unitPrice: number;
+  currency: string;
+  unit: string;
+  pricePerLb?: number;
+  weightPerCase?: string;
+  minOrderQty?: number;
+  productCode?: string;
+  specs?: Record<string, any>;
+  matchConfidence: number;
+  isConfirmed: boolean;
+  notes?: string;
+  createdAt?: string;
+  // Joined fields for display
+  catalogName?: string;
+  supplierName?: string;
+}
+
+export type JustificationCategory =
+  | 'quality' | 'delivery_speed' | 'min_order'
+  | 'payment_terms' | 'stock_availability' | 'other';
+
+export interface PurchaseDecision {
+  id: string;
+  catalogId?: string;
+  brand?: string;
+  selectedQuoteItemId?: string;
+  selectedSupplierId?: string;
+  selectedSupplierName: string;
+  selectedPrice: number;
+  selectedUnit: string;
+  lowestQuoteItemId?: string;
+  lowestSupplierName?: string;
+  lowestPrice: number;
+  isLowest: boolean;
+  justification?: string;
+  justificationCategory?: JustificationCategory;
+  decidedBy: string;
+  decidedAt?: string;
+  purchaseOrderId?: number;
+  approvedBy?: string;
+  approvedAt?: string;
+}
+
+/** Aggregated comparison row for the comparison table UI */
+export interface ComparisonRow {
+  catalogId: string;
+  catalogName: string;
+  category?: string;
+  brand: string;
+  origin?: string;
+  quotes: {
+    supplierId: string;
+    supplierName: string;
+    quoteItemId: string;
+    unitPrice: number;
+    unit: string;
+    pricePerLb?: number;
+    storageLocation?: string;
+    isLowest: boolean;
+  }[];
 }
 
 export type APStatus = 'unpaid' | 'partial' | 'paid' | 'overdue';
@@ -562,6 +740,20 @@ export interface WholesaleOrderLine {
   unitPrice: number;
   discount: number;
   lineTotal: number;
+}
+
+// ─── Product BOM (配方表) ────────────────────────────────────────
+
+export interface ProductBomEntry {
+  id: string;
+  productId: string;
+  ingredientId: string;
+  quantityPerUnit: number;
+  unit: string;
+  isPrimary: boolean;
+  expectedYieldRate?: number;
+  notes?: string;
+  createdAt?: string;
 }
 
 // ─── Production / Factory types ─────────────────────────────────
