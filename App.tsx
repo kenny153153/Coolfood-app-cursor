@@ -1312,22 +1312,37 @@ const App: React.FC = () => {
   }, [isAdminRoute]);
 
   const fetchOrders = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('orders')
-      .select('id, customer_name, total, status, order_date, items_count, tracking_number, waybill_no, order_type, wholesale_brand, member_id')
-      .order('order_date', { ascending: false });
-    if (error) {
-      if (!handleSchemaError(error, 'orders')) {
-        showToast('訂單資料載入失敗', 'error');
-      }
+    if (!isAdminRoute && !user) {
+      setOrders([]);
       return;
     }
-    if (data?.length) {
-      setOrders((data as SupabaseOrderRow[]).map(mapOrderRowToOrder));
-    } else {
-      setOrders([]);
+    if (isAdminRoute) {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('id, customer_name, total, status, order_date, items_count, tracking_number, waybill_no, order_type, wholesale_brand, member_id')
+        .order('order_date', { ascending: false });
+      if (error) {
+        if (!handleSchemaError(error, 'orders')) {
+          showToast('訂單資料載入失敗', 'error');
+        }
+        return;
+      }
+      setOrders(data?.length ? (data as SupabaseOrderRow[]).map(mapOrderRowToOrder) : []);
+      return;
     }
-  }, []);
+    try {
+      const memberId = localStorage.getItem('coolfood_member_id') || '';
+      const sessionToken = localStorage.getItem('coolfood_session_token') || '';
+      const res = await fetch('/api/customer-orders', {
+        headers: { 'x-member-id': memberId, 'x-session-token': sessionToken },
+      });
+      if (!res.ok) { showToast('訂單資料載入失敗', 'error'); return; }
+      const json = await res.json();
+      setOrders(json.data?.length ? (json.data as SupabaseOrderRow[]).map(mapOrderRowToOrder) : []);
+    } catch {
+      showToast('訂單資料載入失敗', 'error');
+    }
+  }, [isAdminRoute, user]);
 
   // Load orders from Supabase on mount
   useEffect(() => {
@@ -1349,18 +1364,45 @@ const App: React.FC = () => {
       }
       const dbId = getOrderDbId(inspectingOrder.id);
       if (dbId === null) return;
-      const { data, error } = await supabase.from('orders').select('*').eq('id', dbId).single();
-      if (error || !data) {
-        showToast(error?.message || '訂單載入失敗', 'error');
+
+      if (isAdminRoute) {
+        const { data, error } = await supabase.from('orders').select('*').eq('id', dbId).single();
+        if (error || !data) {
+          showToast(error?.message || '訂單載入失敗', 'error');
+          return;
+        }
+        const details = data as SupabaseOrderRow;
+        setInspectingOrderDetails(details);
+        setOrderStatusDraft(normalizeOrderStatus(details.status));
+        setTrackingDraft(details.waybill_no ?? details.tracking_number ?? '');
         return;
       }
-      const details = data as SupabaseOrderRow;
-      setInspectingOrderDetails(details);
-      setOrderStatusDraft(normalizeOrderStatus(details.status));
-      setTrackingDraft(details.waybill_no ?? details.tracking_number ?? '');
+
+      try {
+        const memberId = localStorage.getItem('coolfood_member_id') || '';
+        const sessionToken = localStorage.getItem('coolfood_session_token') || '';
+        const res = await fetch('/api/customer-order-details', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-member-id': memberId,
+            'x-session-token': sessionToken,
+          },
+          body: JSON.stringify({ orderId: dbId }),
+        });
+        if (!res.ok) { showToast('無法查看此訂單', 'error'); return; }
+        const json = await res.json();
+        if (!json.data) { showToast('無法查看此訂單', 'error'); return; }
+        const details = json.data as SupabaseOrderRow;
+        setInspectingOrderDetails(details);
+        setOrderStatusDraft(normalizeOrderStatus(details.status));
+        setTrackingDraft(details.waybill_no ?? details.tracking_number ?? '');
+      } catch {
+        showToast('訂單載入失敗', 'error');
+      }
     };
     loadOrderDetails();
-  }, [inspectingOrder]);
+  }, [inspectingOrder, isAdminRoute, user]);
 
   const buildAdminPermissions = (role: string, overrides?: Record<string, boolean> | null): AdminPermissions => {
     if (role === 'super_admin') {
@@ -1571,46 +1613,37 @@ const App: React.FC = () => {
     });
   };
 
-  // ── 一鍵回購：核心邏輯 ──
-  const handleReorderByPhone = useCallback(async (phone: string) => {
-    if (!phone || phone.length < 6) { showToast('請輸入有效手機號碼', 'error'); return; }
+  // ── 一鍵回購：核心邏輯（通過安全 API 路由查詢，需要登入）──
+  const handleReorderByPhone = useCallback(async (_phone: string) => {
     setReorderLoading(true);
     try {
-      // 嘗試多種電話格式匹配（帶/不帶區號）
-      const phoneTrimmed = phone.replace(/\s+/g, '').replace(/^(\+?852)/, '');
-      const phoneVariants = [phoneTrimmed, `852${phoneTrimmed}`, `+852${phoneTrimmed}`, phone];
-
-      let orderRows: any[] | null = null;
-      let queryError: any = null;
-
-      for (const variant of phoneVariants) {
-        const { data, error } = await supabase
-          .from('orders')
-          .select('line_items')
-          .eq('customer_phone', variant)
-          .in('status', ['paid', 'preparing', 'shipping', 'shipped', 'delivered'])
-          .order('order_date', { ascending: false })
-          .limit(1);
-        queryError = error;
-        if (!error && data && data.length > 0) { orderRows = data; break; }
+      const memberId = localStorage.getItem('coolfood_member_id') || '';
+      const sessionToken = localStorage.getItem('coolfood_session_token') || '';
+      if (!memberId || !sessionToken) {
+        setReorderNotification({ type: 'fail', successCount: 0, failedNames: ['請先登入再使用回購功能'] });
+        setReorderLoading(false);
+        setReorderModalOpen(false);
+        return;
       }
 
-      if (queryError) {
-        console.warn('[reorder] Query error:', queryError.message);
+      const res = await fetch('/api/customer-reorder', {
+        headers: { 'x-member-id': memberId, 'x-session-token': sessionToken },
+      });
+      if (!res.ok) {
         setReorderNotification({ type: 'fail', successCount: 0, failedNames: ['系統查詢暫時出錯，請稍後再試。'] });
         setReorderLoading(false);
         setReorderModalOpen(false);
         return;
       }
+      const json = await res.json();
+      const lineItems: OrderLineItem[] = json.data || [];
 
-      if (!orderRows || orderRows.length === 0) {
+      if (lineItems.length === 0) {
         setReorderNotification({ type: 'fail', successCount: 0, failedNames: ['未搵到您嘅歷史紀錄，不如去睇下我哋今日嘅精選？'] });
         setReorderLoading(false);
         setReorderModalOpen(false);
         return;
       }
-
-      const lineItems: OrderLineItem[] = orderRows[0].line_items || [];
       if (lineItems.length === 0) {
         setReorderNotification({ type: 'fail', successCount: 0, failedNames: ['上次訂單冇產品紀錄'] });
         setReorderLoading(false);
@@ -1680,15 +1713,11 @@ const App: React.FC = () => {
   }, [cart, products]);
 
   const handleReorderClick = useCallback(() => {
-    setReorderNotification(null); // 清除舊通知
-    if (user?.phoneNumber) {
-      // 情況 A：已登入，直接查詢（不跳轉）
-      handleReorderByPhone(user.phoneNumber);
+    setReorderNotification(null);
+    if (user) {
+      handleReorderByPhone(user.phoneNumber || '');
     } else {
-      // 情況 B：未登入，彈出 Modal
-      setReorderPhone('');
-      setReorderHint({ type: 'none', text: '' });
-      setReorderModalOpen(true);
+      showToast('請先登入再使用回購功能', 'error');
     }
   }, [user, handleReorderByPhone]);
 
