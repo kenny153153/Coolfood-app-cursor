@@ -781,6 +781,59 @@ export interface ExpenseRecord {
   createdAt?: string;
 }
 
+// ─── Accounting Directory (常用資料) ─────────────────────────────
+
+export type AccountType = 'bank' | 'cash' | 'expense' | 'revenue' | 'payable' | 'receivable' | 'other';
+
+export interface AccountingAccount {
+  id: string;
+  accountCode: string;
+  accountName: string;
+  accountType: AccountType;
+  bankName?: string;
+  bankAccountNumber?: string;
+  currency?: string;
+  isDefault?: boolean;
+  notes?: string;
+  isActive: boolean;
+  createdAt?: string;
+}
+
+export type ContactType = 'supplier' | 'client' | 'employee' | 'government' | 'landlord' | 'other';
+
+export interface AccountingContact {
+  id: string;
+  name: string;
+  contactType: ContactType;
+  contactPerson?: string;
+  phone?: string;
+  email?: string;
+  bankName?: string;
+  bankAccountNumber?: string;
+  bankAccountName?: string;
+  fpsId?: string;
+  defaultPaymentMethod?: string;
+  address?: string;
+  notes?: string;
+  isFrequent: boolean;
+  isActive: boolean;
+  createdAt?: string;
+}
+
+export interface PaymentTemplate {
+  id: string;
+  templateName: string;
+  contactId?: string;
+  contactName: string;
+  accountId?: string;
+  accountName: string;
+  defaultAmount?: number;
+  category?: string;
+  description?: string;
+  notes?: string;
+  createdAt?: string;
+}
+
 // ─── Order line item (wholesale new order) ───────────────────────
 
 export interface WholesaleOrderLine {
