@@ -31,6 +31,7 @@ import WarehousePanel from './WarehousePanel';
 import ProductionPanel from './ProductionPanel';
 import SalesAnalyticsPanel from './SalesAnalyticsPanel';
 import QuotationPanel from './QuotationPanel';
+import LegacyFeaturesPanel from './LegacyFeaturesPanel';
 import { buildPickingSlipHtml, buildAggregatePickingHtml, buildInvoiceHtml, getBusinessLabel } from './printUtils';
 import type { PickingOrderData, AggregatePickingData, InvoiceOrderData } from './printUtils';
 import { useI18n, Language } from './i18n';
@@ -4028,6 +4029,7 @@ const App: React.FC = () => {
     if (adminModule === 'dispatch') return <DispatchPanel showToast={showToast} />;
     if (adminModule === 'new_order') return <NewOrderPanel showToast={showToast} />;
     if (adminModule === 'accounting') return <AccountingPanel showToast={showToast} />;
+    if (adminModule === 'legacy_features') return <LegacyFeaturesPanel showToast={showToast} />;
     if (adminModule === 'warehouse_ops') return <WarehousePanel showToast={showToast} />;
     if (adminModule === 'production') return <ProductionPanel showToast={showToast} products={products} setProducts={setProducts} ingredients={ingredients} ingredientCategories={ingredientCategories} categories={categories} costItems={costItems} setCostItems={setCostItems} siteConfig={siteConfig} isMediaUrl={isMediaUrl} />;
 

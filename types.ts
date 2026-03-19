@@ -158,7 +158,7 @@ export type AdminModuleId =
   | 'global_dashboard' | 'new_order'
   | 'dispatch' | 'warehouse_ops' | 'accounting' | 'production'
   | 'whatsapp_orders' | 'tricolor_print' | 'wholesale_clients'
-  | 'sales_reps' | 'quotations';
+  | 'sales_reps' | 'quotations' | 'legacy_features';
 
 export interface BulkDiscount {
   threshold: number;
@@ -188,6 +188,8 @@ export interface Ingredient {
   stockQty?: number;        // 庫存數量
   stockUnit?: string;       // 庫存單位（預設同 unit）
   minStockAlert?: number;   // 低庫存警報
+  committedQty?: number;    // 待出 — 已確認訂單但未出貨
+  incomingQty?: number;     // 待入 — 已下 PO 但未收貨
   createdAt?: string;
   updatedAt?: string;
 }
@@ -1124,6 +1126,191 @@ export interface StockMovement {
 }
 
 // ─── Quotation types ────────────────────────────────────────────
+
+// ─── Standard Remarks Library (備註檔案) ─────────────────────────
+
+export type RemarkCategory = 'general' | 'delivery' | 'invoice' | 'payment' | 'order' | 'quotation' | 'product';
+
+export interface StandardRemark {
+  id: string;
+  code: string;
+  contentZh: string;
+  contentEn: string;
+  category: RemarkCategory;
+  sortOrder: number;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+// ─── Separate Invoice Entity (獨立發票) ──────────────────────────
+
+export type InvoiceStatus = 'draft' | 'confirmed' | 'sent' | 'partial_paid' | 'paid' | 'cancelled' | 'void';
+
+export interface InvoiceLineItem {
+  id: string;
+  invoiceId: string;
+  orderId?: string;
+  productId?: string;
+  productName: string;
+  description?: string;
+  qty: number;
+  unit: string;
+  unitPrice: number;
+  discount: number;
+  lineTotal: number;
+  sortOrder: number;
+  notes?: string;
+  createdAt?: string;
+}
+
+export interface Invoice {
+  id: string;
+  invoiceNumber: string;
+  invoiceDate: string;
+  dueDate?: string;
+  clientId?: string;
+  clientName: string;
+  clientCode?: string;
+  brand?: WholesaleBrand;
+  salespersonId?: string;
+  salespersonName?: string;
+  deliveryAddress?: string;
+  currency: string;
+  exchangeRate: number;
+  subtotal: number;
+  discountPercent: number;
+  discountAmount: number;
+  total: number;
+  status: InvoiceStatus;
+  paymentMethod?: string;
+  warehouseId?: string;
+  deliveryDate?: string;
+  remarksTop?: string;
+  remarksBottom?: string;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  lineItems?: InvoiceLineItem[];
+  linkedOrderIds?: string[];
+}
+
+// ─── Client Price History (最後客戶貨物記錄) ─────────────────────
+
+export interface ClientPriceHistory {
+  id: string;
+  clientId?: string;
+  clientName: string;
+  productId?: string;
+  productName: string;
+  unitPrice: number;
+  qty?: number;
+  unit?: string;
+  currency: string;
+  sourceType: 'order' | 'invoice' | 'quotation';
+  sourceId?: string;
+  sourceDate: string;
+  createdAt?: string;
+}
+
+// ─── Batch Settlement (結數) ─────────────────────────────────────
+
+export type SettlementType = 'ar' | 'ap';
+
+export interface SettlementItem {
+  id: string;
+  settlementId: string;
+  documentType: 'invoice' | 'ar' | 'ap' | 'credit_note' | 'debit_note';
+  documentId: string;
+  documentNumber: string;
+  documentDate?: string;
+  originalAmount: number;
+  settledAmount: number;
+  createdAt?: string;
+}
+
+export interface Settlement {
+  id: string;
+  settlementNumber: string;
+  settlementType: SettlementType;
+  settlementDate: string;
+  clientId?: string;
+  clientName?: string;
+  supplierId?: string;
+  supplierName?: string;
+  bankAccountId?: string;
+  bankName?: string;
+  chequeNumber?: string;
+  chequeDate?: string;
+  currency: string;
+  totalAmount: number;
+  discount: number;
+  otherCharges: number;
+  netAmount: number;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  items?: SettlementItem[];
+}
+
+// ─── Module Lock Dates (設定上鎖日期) ────────────────────────────
+
+export type LockableModule = 
+  | 'quotations' | 'orders' | 'invoices'
+  | 'purchase_orders' | 'goods_receiving' | 'inventory'
+  | 'ar' | 'ap' | 'gl' | 'production';
+
+export interface ModuleLockDate {
+  moduleKey: LockableModule;
+  lockDate: string;
+  updatedBy?: string;
+  updatedAt?: string;
+}
+
+// ─── Currency (貨幣檔案) ─────────────────────────────────────────
+
+export interface Currency {
+  code: string;
+  nameZh: string;
+  nameEn: string;
+  symbol: string;
+  exchangeRate: number;
+  isBase: boolean;
+  isActive: boolean;
+  updatedAt?: string;
+}
+
+// ─── Stock Valuation (期末結存) ──────────────────────────────────
+
+export type ValuationMethod = 'average_cost' | 'standard_cost' | 'last_purchase';
+
+export interface StockValuationLine {
+  ingredientId: string;
+  ingredientName: string;
+  unit: string;
+  stockQty: number;
+  averageCost: number;
+  standardCost: number;
+  lastPurchasePrice: number;
+  valuationAmount: number;
+}
+
+// ─── Outstanding Order Line (訂單未交貨) ─────────────────────────
+
+export interface OutstandingOrderLine {
+  orderId: string;
+  orderDate: string;
+  deliveryDate?: string;
+  clientName: string;
+  clientCode?: string;
+  productName: string;
+  orderedQty: number;
+  deliveredQty: number;
+  outstandingQty: number;
+  unit?: string;
+  unitPrice: number;
+  outstandingAmount: number;
+}
 
 export type QuotationStatus = 'draft' | 'sent' | 'accepted' | 'rejected' | 'expired' | 'converted';
 

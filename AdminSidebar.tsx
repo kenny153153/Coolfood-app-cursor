@@ -5,7 +5,7 @@ import {
   Globe, Settings, ShieldCheck, LogOut,
   ChevronLeft, ChevronDown,
   ClipboardList, Cpu, Wallet, Image as ImageIcon,
-  PlusCircle, Factory, FileText,
+  PlusCircle, Factory, FileText, Layers,
 } from 'lucide-react';
 import { useWorkspace, WORKSPACE_META } from './WorkspaceContext';
 import type { AdminPermissions, AdminAccount, Workspace, AdminModuleId } from './types';
@@ -48,6 +48,7 @@ const SHARED_ITEMS: SidebarItem[] = [
   { id: 'warehouse_ops', label: '材料與倉務', icon: <Package size={18}/> },
   { id: 'production', label: '工場', icon: <Factory size={18}/> },
   { id: 'accounting', label: '會計', icon: <Wallet size={18}/> },
+  { id: 'legacy_features', label: '進階功能', icon: <Layers size={18}/> },
   { id: 'settings', label: '系統設定', icon: <Settings size={18}/> },
   { id: 'admin_management', label: '管理員', icon: <ShieldCheck size={18}/> },
 ];
@@ -57,6 +58,7 @@ const SHARED_PERMISSION_MAP: Partial<Record<AdminModuleId, keyof AdminPermission
   warehouse_ops: 'warehouse_ops',
   production: 'production',
   accounting: 'accounting',
+  legacy_features: 'accounting',
   settings: 'settings',
   admin_management: 'admin_management',
 };

@@ -236,6 +236,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
         saleChannel: r.sale_channel as SaleChannel | undefined,
         notes: r.notes, stockQty: r.stock_qty || 0, stockUnit: r.stock_unit,
         minStockAlert: r.min_stock_alert,
+        committedQty: r.committed_qty || 0, incomingQty: r.incoming_qty || 0,
         createdAt: r.created_at, updatedAt: r.updated_at,
       })));
     }
@@ -1345,6 +1346,8 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
                     <th className="px-4 py-3 text-left">類別</th>
                     <th className="px-4 py-3 text-center">單位</th>
                     <th className="px-4 py-3 text-right">庫存</th>
+                    <th className="px-4 py-3 text-right">待出</th>
+                    <th className="px-4 py-3 text-right">待入</th>
                     <th className="px-4 py-3 text-right">成本/單位</th>
                     <th className="px-4 py-3 text-left">供應商</th>
                     <th className="px-4 py-3 text-center">渠道</th>
@@ -1372,6 +1375,12 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
                           {ing.minStockAlert && (ing.stockQty || 0) <= ing.minStockAlert && (ing.stockQty || 0) > 0 && (
                             <AlertTriangle size={10} className="inline ml-1 text-amber-500" />
                           )}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className="font-bold text-[10px] text-rose-400">{(ing.committedQty || 0) > 0 ? (ing.committedQty || 0).toFixed(1) : '—'}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className="font-bold text-[10px] text-blue-400">{(ing.incomingQty || 0) > 0 ? (ing.incomingQty || 0).toFixed(1) : '—'}</span>
                         </td>
                         <td className="px-4 py-3 text-right font-black text-slate-800">${ing.baseCostPerLb.toFixed(2)}</td>
                         <td className="px-4 py-3 text-xs font-bold text-slate-500">{ing.supplier || '—'}</td>
