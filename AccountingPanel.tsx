@@ -6,26 +6,35 @@ import {
   ChevronDown, Check, Calendar, DollarSign, AlertTriangle,
   Users, Download, Filter, UserCircle, BookOpen,
   Star, Building2, Phone, Mail, CreditCard, Copy,
+  BarChart3, ChevronRight, Layers, ArrowUpDown, Eye, EyeOff, CornerDownRight,
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import { WHOLESALE_BRAND_META } from './WorkspaceContext';
+import { buildStatementHtml } from './printUtils';
+import type { StatementData, StatementEntry } from './printUtils';
 import type {
   AccountPayable, AccountReceivable, ExpenseRecord,
   APStatus, ARStatus, ExpenseCategory, WholesaleBrand, Supplier,
   SalesCommission, CommissionStatus,
   AccountingAccount, AccountingContact, PaymentTemplate,
   AccountType, ContactType,
+  JournalEntry, JournalEntryLine,
 } from './types';
 
 interface Props {
   showToast: (msg: string, type?: 'success' | 'error') => void;
 }
 
-type SubTab = 'payable' | 'receivable' | 'expenses' | 'commissions' | 'reports' | 'directory';
+type SubTab = 'payable' | 'receivable' | 'expenses' | 'commissions' | 'credit_debit' | 'journal' | 'reports' | 'directory';
 
 type DirectorySection = 'accounts' | 'contacts' | 'templates';
 
+type ReportSection = 'summary' | 'pnl' | 'trial' | 'ledger' | 'aging' | 'balance_sheet' | 'statements';
+
 const ACCOUNT_TYPE_MAP: Record<AccountType, { label: string; color: string }> = {
+  asset: { label: '資產', color: 'bg-sky-50 text-sky-600' },
+  liability: { label: '負債', color: 'bg-pink-50 text-pink-600' },
+  equity: { label: '權益', color: 'bg-purple-50 text-purple-600' },
   bank: { label: '銀行', color: 'bg-blue-50 text-blue-600' },
   cash: { label: '現金', color: 'bg-emerald-50 text-emerald-600' },
   expense: { label: '支出', color: 'bg-rose-50 text-rose-600' },
@@ -33,6 +42,27 @@ const ACCOUNT_TYPE_MAP: Record<AccountType, { label: string; color: string }> = 
   payable: { label: '應付', color: 'bg-amber-50 text-amber-600' },
   receivable: { label: '應收', color: 'bg-teal-50 text-teal-600' },
   other: { label: '其他', color: 'bg-slate-100 text-slate-500' },
+};
+
+const GL_ACCOUNTS = {
+  bankCash:   { code: '1100', name: '銀行/現金' },
+  ar:         { code: '1200', name: '應收賬款' },
+  ap:         { code: '2100', name: '應付賬款' },
+  sales:      { code: '4000', name: '銷售收入' },
+  otherInc:   { code: '4100', name: '其他收入' },
+  cogs:       { code: '5000', name: '銷售成本' },
+} as const;
+
+const EXPENSE_ACCT_MAP: Record<ExpenseCategory, { code: string; name: string }> = {
+  salary:    { code: '6100', name: '人工' },
+  rent:      { code: '6200', name: '租金' },
+  vehicle:   { code: '6300', name: '車輛' },
+  packaging: { code: '6400', name: '包裝' },
+  equipment: { code: '6500', name: '設備' },
+  license:   { code: '6600', name: '牌照' },
+  utilities: { code: '6700', name: '水電煤' },
+  insurance: { code: '6800', name: '保險' },
+  misc:      { code: '6900', name: '雜項' },
 };
 
 const CONTACT_TYPE_MAP: Record<ContactType, { label: string; color: string }> = {
@@ -93,11 +123,25 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
   const [templates, setTemplates] = useState<PaymentTemplate[]>([]);
   const [dirSection, setDirSection] = useState<DirectorySection>('contacts');
 
+  // Journal entries
+  const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
+  const [journalLines, setJournalLines] = useState<JournalEntryLine[]>([]);
+
   // Filters
   const [apFilter, setApFilter] = useState<APStatus | 'all'>('all');
   const [arFilter, setArFilter] = useState<ARStatus | 'all'>('all');
   const [commFilter, setCommFilter] = useState<CommissionStatus | 'all'>('all');
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Report state
+  const [reportSection, setReportSection] = useState<ReportSection>('summary');
+  const [pnlMonth, setPnlMonth] = useState<string>(new Date().toISOString().slice(0, 7));
+  const [pnlMode, setPnlMode] = useState<'month' | 'ytd'>('month');
+  const [ledgerAccountCode, setLedgerAccountCode] = useState<string>('');
+  const [detailExpanded, setDetailExpanded] = useState<Record<string, boolean>>({});
+  const [syncing, setSyncing] = useState(false);
+  const [lockDate, setLockDate] = useState<string>('');
+  const [lockDateInput, setLockDateInput] = useState<string>('');
 
   // Edit modals
   const [editingAP, setEditingAP] = useState<(Partial<AccountPayable> & { isNew?: boolean }) | null>(null);
@@ -150,18 +194,115 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
     if (data) setTemplates(data.map(mapTemplate));
   }, []);
 
+  const loadJournalEntries = useCallback(async () => {
+    const { data } = await supabase.from('journal_entries').select('*').order('entry_date', { ascending: false });
+    if (data) setJournalEntries(data.map(mapJournalEntry));
+  }, []);
+
+  const loadJournalLines = useCallback(async () => {
+    const { data } = await supabase.from('journal_entry_lines').select('*').order('created_at');
+    if (data) setJournalLines(data.map(mapJournalEntryLine));
+  }, []);
+
+  const loadLockDate = useCallback(async () => {
+    const { data } = await supabase.from('app_settings').select('value').eq('key', 'accounting_lock_date').maybeSingle();
+    if (data?.value) { setLockDate(data.value); setLockDateInput(data.value); }
+  }, []);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
-    await Promise.all([loadPayables(), loadReceivables(), loadExpenses(), loadSuppliers(), loadCommissions(), loadAccounts(), loadContacts(), loadTemplates()]);
+    await Promise.all([loadPayables(), loadReceivables(), loadExpenses(), loadSuppliers(), loadCommissions(), loadAccounts(), loadContacts(), loadTemplates(), loadJournalEntries(), loadJournalLines(), loadLockDate()]);
     setLoading(false);
-  }, [loadPayables, loadReceivables, loadExpenses, loadSuppliers, loadCommissions, loadAccounts, loadContacts, loadTemplates]);
+  }, [loadPayables, loadReceivables, loadExpenses, loadSuppliers, loadCommissions, loadAccounts, loadContacts, loadTemplates, loadJournalEntries, loadJournalLines, loadLockDate]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  const isBeforeLockDate = (dateStr: string) => lockDate && dateStr <= lockDate;
+
+  const saveLockDate = async () => {
+    const { error } = await supabase.from('app_settings').upsert({ key: 'accounting_lock_date', value: lockDateInput }, { onConflict: 'key' });
+    if (error) { showToast(`設定失敗：${error.message}`, 'error'); return; }
+    setLockDate(lockDateInput);
+    showToast('上鎖日期已更新');
+  };
+
+  // Statement month state
+  const [stmtMonth, setStmtMonth] = useState(() => new Date().toISOString().slice(0, 7));
+
+  const handleGenerateARStatements = () => {
+    const monthPrefix = stmtMonth;
+    const clientNames = [...new Set(receivables.filter(r => r.invoiceDate.startsWith(monthPrefix)).map(r => r.clientName))];
+    if (clientNames.length === 0) { showToast('該月份無應收帳款記錄', 'error'); return; }
+
+    const statements: StatementData[] = clientNames.map(name => {
+      const prevEntries = receivables.filter(r => r.clientName === name && r.invoiceDate < `${monthPrefix}-01`);
+      const openingBalance = prevEntries.reduce((s, r) => s + r.amount - r.paidAmount, 0);
+      const monthEntries = receivables.filter(r => r.clientName === name && r.invoiceDate.startsWith(monthPrefix));
+      const entries: StatementEntry[] = monthEntries.map(r => ({
+        date: r.invoiceDate,
+        voucherNumber: r.voucherNumber,
+        description: r.notes || `訂單 ${r.orderId || '—'}`,
+        debit: r.amount,
+        credit: r.paidAmount,
+      }));
+      const closingBalance = openingBalance + entries.reduce((s, e) => s + e.debit - e.credit, 0);
+      const brand = monthEntries[0]?.brand;
+      return {
+        type: 'client' as const,
+        name,
+        statementMonth: monthPrefix,
+        openingBalance,
+        entries,
+        closingBalance,
+        businessLabel: brand === 'GHFOODS' ? '進興食品' : brand === 'COOLFOOD' ? 'Coolfood' : 'Coolfood',
+      };
+    });
+
+    const html = buildStatementHtml(statements);
+    const w = window.open('', '_blank');
+    if (!w) { showToast('無法開啟列印視窗', 'error'); return; }
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    setTimeout(() => w.print(), 300);
+    showToast(`已生成 ${statements.length} 份客戶月結單`);
+  };
+
+  const handleGenerateAPStatements = () => {
+    const monthPrefix = stmtMonth;
+    const supplierNames = [...new Set(payables.filter(p => p.invoiceDate.startsWith(monthPrefix)).map(p => p.supplierName))];
+    if (supplierNames.length === 0) { showToast('該月份無應付帳款記錄', 'error'); return; }
+
+    const statements: StatementData[] = supplierNames.map(name => {
+      const prevEntries = payables.filter(p => p.supplierName === name && p.invoiceDate < `${monthPrefix}-01`);
+      const openingBalance = prevEntries.reduce((s, p) => s + p.amount - p.paidAmount, 0);
+      const monthEntries = payables.filter(p => p.supplierName === name && p.invoiceDate.startsWith(monthPrefix));
+      const entries: StatementEntry[] = monthEntries.map(p => ({
+        date: p.invoiceDate,
+        voucherNumber: p.voucherNumber,
+        description: p.description || `發票 ${p.invoiceNumber || '—'}`,
+        debit: p.paidAmount,
+        credit: p.amount,
+      }));
+      const closingBalance = openingBalance + entries.reduce((s, e) => s + e.debit - e.credit, 0);
+      return { type: 'supplier' as const, name, statementMonth: monthPrefix, openingBalance, entries, closingBalance, businessLabel: '' };
+    });
+
+    const html = buildStatementHtml(statements);
+    const w = window.open('', '_blank');
+    if (!w) { showToast('無法開啟列印視窗', 'error'); return; }
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    setTimeout(() => w.print(), 300);
+    showToast(`已生成 ${statements.length} 份供應商月結單`);
+  };
 
   // ── Mappers ───────────────────────────────────────────────────
 
   const mapAP = (r: any): AccountPayable => ({
-    id: r.id, supplierId: r.supplier_id, supplierName: r.supplier_name,
+    id: r.id, voucherNumber: r.voucher_number,
+    supplierId: r.supplier_id, supplierName: r.supplier_name,
     invoiceNumber: r.invoice_number, invoiceDate: r.invoice_date,
     description: r.description, amount: r.amount, dueDate: r.due_date,
     status: r.status, paidAmount: r.paid_amount, paymentMethod: r.payment_method,
@@ -169,7 +310,8 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
   });
 
   const mapAR = (r: any): AccountReceivable => ({
-    id: r.id, clientId: r.client_id, clientName: r.client_name,
+    id: r.id, voucherNumber: r.voucher_number,
+    clientId: r.client_id, clientName: r.client_name,
     brand: r.brand, orderId: r.order_id, invoiceDate: r.invoice_date,
     amount: r.amount, paidAmount: r.paid_amount, status: r.status,
     creditTerms: r.credit_terms, paymentMethod: r.payment_method,
@@ -177,7 +319,8 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
   });
 
   const mapExpense = (r: any): ExpenseRecord => ({
-    id: r.id, category: r.category, description: r.description,
+    id: r.id, voucherNumber: r.voucher_number,
+    category: r.category, description: r.description,
     amount: r.amount, type: r.type, date: r.date,
     isRecurring: r.is_recurring, recurringPeriod: r.recurring_period,
     notes: r.notes, createdAt: r.created_at,
@@ -202,7 +345,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
 
   const mapAccount = (r: any): AccountingAccount => ({
     id: r.id, accountCode: r.account_code, accountName: r.account_name,
-    accountType: r.account_type, bankName: r.bank_name,
+    accountType: r.account_type, parentId: r.parent_id, bankName: r.bank_name,
     bankAccountNumber: r.bank_account_number, currency: r.currency,
     isDefault: r.is_default, notes: r.notes, isActive: r.is_active,
     createdAt: r.created_at,
@@ -225,6 +368,116 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
     category: r.category, description: r.description, notes: r.notes,
     createdAt: r.created_at,
   });
+
+  const mapJournalEntry = (r: any): JournalEntry => ({
+    id: r.id, voucherNumber: r.voucher_number, entryDate: r.entry_date,
+    description: r.description, sourceType: r.source_type, sourceId: r.source_id,
+    isPosted: r.is_posted, createdAt: r.created_at,
+  });
+
+  const mapJournalEntryLine = (r: any): JournalEntryLine => ({
+    id: r.id, journalEntryId: r.journal_entry_id, accountId: r.account_id,
+    accountCode: r.account_code, accountName: r.account_name,
+    debit: Number(r.debit), credit: Number(r.credit),
+    description: r.description, createdAt: r.created_at,
+  });
+
+  // ── Voucher number generation ──────────────────────────────────
+
+  const generateVoucherNumber = async (prefix: string, table: string): Promise<string> => {
+    const monthStr = new Date().toISOString().slice(0, 7).replace('-', '');
+    const likePattern = `${prefix}-${monthStr}-%`;
+    const { data } = await supabase.from(table)
+      .select('voucher_number')
+      .like('voucher_number', likePattern)
+      .order('voucher_number', { ascending: false })
+      .limit(1);
+    let seq = 1;
+    if (data && data.length > 0 && data[0].voucher_number) {
+      const parts = (data[0].voucher_number as string).split('-');
+      seq = parseInt(parts[parts.length - 1], 10) + 1;
+    }
+    return `${prefix}-${monthStr}-${seq.toString().padStart(4, '0')}`;
+  };
+
+  // ── Journal entry auto-sync ────────────────────────────────────
+
+  type JELine = { accountCode: string; accountName: string; debit: number; credit: number; description?: string };
+
+  const syncJournalEntry = async (
+    sourceType: string, sourceId: string, date: string,
+    description: string, lines: JELine[],
+  ) => {
+    const { data: existing } = await supabase.from('journal_entries')
+      .select('id').eq('source_type', sourceType).eq('source_id', sourceId);
+    if (existing && existing.length > 0) {
+      for (const je of existing) {
+        await supabase.from('journal_entry_lines').delete().eq('journal_entry_id', je.id);
+        await supabase.from('journal_entries').delete().eq('id', je.id);
+      }
+    }
+    const validLines = lines.filter(l => l.debit > 0 || l.credit > 0);
+    if (validLines.length === 0) return;
+    const vn = await generateVoucherNumber('JE', 'journal_entries');
+    const { data: newJE } = await supabase.from('journal_entries').insert({
+      voucher_number: vn, entry_date: date, description,
+      source_type: sourceType, source_id: sourceId,
+    }).select('id').single();
+    if (!newJE) return;
+    await supabase.from('journal_entry_lines').insert(
+      validLines.map(l => ({
+        journal_entry_id: newJE.id, account_code: l.accountCode,
+        account_name: l.accountName, debit: l.debit, credit: l.credit,
+        description: l.description || null,
+      }))
+    );
+  };
+
+  const buildAPLines = (ap: { amount: number; paidAmount: number; supplierName: string }): JELine[] => [
+    { accountCode: GL_ACCOUNTS.cogs.code, accountName: GL_ACCOUNTS.cogs.name, debit: ap.amount, credit: 0, description: ap.supplierName },
+    ...(ap.amount - ap.paidAmount > 0 ? [{ accountCode: GL_ACCOUNTS.ap.code, accountName: GL_ACCOUNTS.ap.name, debit: 0, credit: ap.amount - ap.paidAmount }] : []),
+    ...(ap.paidAmount > 0 ? [{ accountCode: GL_ACCOUNTS.bankCash.code, accountName: GL_ACCOUNTS.bankCash.name, debit: 0, credit: ap.paidAmount }] : []),
+  ];
+
+  const buildARLines = (ar: { amount: number; paidAmount: number; clientName: string }): JELine[] => [
+    ...(ar.amount - ar.paidAmount > 0 ? [{ accountCode: GL_ACCOUNTS.ar.code, accountName: GL_ACCOUNTS.ar.name, debit: ar.amount - ar.paidAmount, credit: 0 }] : []),
+    ...(ar.paidAmount > 0 ? [{ accountCode: GL_ACCOUNTS.bankCash.code, accountName: GL_ACCOUNTS.bankCash.name, debit: ar.paidAmount, credit: 0 }] : []),
+    { accountCode: GL_ACCOUNTS.sales.code, accountName: GL_ACCOUNTS.sales.name, debit: 0, credit: ar.amount, description: ar.clientName },
+  ];
+
+  const buildExpenseLines = (exp: { type: string; category: ExpenseCategory; amount: number; description: string }): JELine[] => {
+    if (exp.type === 'income') return [
+      { accountCode: GL_ACCOUNTS.bankCash.code, accountName: GL_ACCOUNTS.bankCash.name, debit: exp.amount, credit: 0 },
+      { accountCode: GL_ACCOUNTS.otherInc.code, accountName: GL_ACCOUNTS.otherInc.name, debit: 0, credit: exp.amount, description: exp.description },
+    ];
+    const acct = EXPENSE_ACCT_MAP[exp.category] || EXPENSE_ACCT_MAP.misc;
+    return [
+      { accountCode: acct.code, accountName: acct.name, debit: exp.amount, credit: 0, description: exp.description },
+      { accountCode: GL_ACCOUNTS.bankCash.code, accountName: GL_ACCOUNTS.bankCash.name, debit: 0, credit: exp.amount },
+    ];
+  };
+
+  const handleSyncAll = async () => {
+    if (!confirm('此操作會重新產生所有日記帳憑單，確定繼續？')) return;
+    setSyncing(true);
+    try {
+      for (const ap of payables) {
+        await syncJournalEntry('ap', ap.id, ap.invoiceDate, `AP: ${ap.supplierName} - ${ap.description}`, buildAPLines(ap));
+      }
+      for (const ar of receivables) {
+        await syncJournalEntry('ar', ar.id, ar.invoiceDate, `AR: ${ar.clientName}`, buildARLines(ar));
+      }
+      for (const exp of expenses) {
+        await syncJournalEntry('expense', exp.id, exp.date, `${exp.type === 'income' ? 'INC' : 'EXP'}: ${exp.description}`, buildExpenseLines(exp));
+      }
+      await loadJournalEntries();
+      await loadJournalLines();
+      showToast('全部日記帳已同步完成');
+    } catch {
+      showToast('同步失敗', 'error');
+    }
+    setSyncing(false);
+  };
 
   // ── Commission handlers ─────────────────────────────────────────
 
@@ -250,8 +503,12 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
 
   const handleSaveAP = async () => {
     if (!editingAP) return;
+    const apDate = editingAP.invoiceDate || new Date().toISOString().slice(0, 10);
+    if (isBeforeLockDate(apDate)) { showToast(`日期 ${apDate} 在上鎖日期 (${lockDate}) 之前，無法儲存`, 'error'); return; }
     setSaving(true);
+    const vn = editingAP.isNew ? await generateVoucherNumber('AP', 'accounts_payable') : (editingAP.voucherNumber || null);
     const payload = {
+      voucher_number: vn,
       supplier_id: editingAP.supplierId || null,
       supplier_name: editingAP.supplierName || '',
       invoice_number: editingAP.invoiceNumber || null,
@@ -265,14 +522,22 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
       payment_date: editingAP.paymentDate || null,
       notes: editingAP.notes || null,
     };
+    let savedId = editingAP.id;
     if (editingAP.isNew) {
-      const { error } = await supabase.from('accounts_payable').insert(payload);
-      if (error) { showToast(`新增失敗：${error.message}`, 'error'); setSaving(false); return; }
+      const { data, error } = await supabase.from('accounts_payable').insert(payload).select('id').single();
+      if (error || !data) { showToast(`新增失敗：${error?.message}`, 'error'); setSaving(false); return; }
+      savedId = data.id;
       showToast('應付賬已新增');
     } else {
       const { error } = await supabase.from('accounts_payable').update(payload).eq('id', editingAP.id);
       if (error) { showToast(`更新失敗：${error.message}`, 'error'); setSaving(false); return; }
       showToast('應付賬已更新');
+    }
+    if (savedId) {
+      await syncJournalEntry('ap', savedId, payload.invoice_date,
+        `AP: ${payload.supplier_name} - ${payload.description}`,
+        buildAPLines({ amount: payload.amount, paidAmount: payload.paid_amount, supplierName: payload.supplier_name }));
+      loadJournalEntries(); loadJournalLines();
     }
     setEditingAP(null); setSaving(false); loadPayables();
   };
@@ -292,14 +557,22 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
       payment_method: method,
       received_date: new Date().toISOString().slice(0, 10),
     }).eq('id', ar.id);
-    if (error) showToast(`失敗：${error.message}`, 'error');
-    else { showToast('已確認收款'); loadReceivables(); }
+    if (error) { showToast(`失敗：${error.message}`, 'error'); return; }
+    showToast('已確認收款');
+    await syncJournalEntry('ar', ar.id, ar.invoiceDate,
+      `AR: ${ar.clientName}`,
+      buildARLines({ amount: ar.amount, paidAmount: ar.amount, clientName: ar.clientName }));
+    loadReceivables(); loadJournalEntries(); loadJournalLines();
   };
 
   const handleSaveExpense = async () => {
     if (!editingExpense) return;
+    const expDate = editingExpense.date || new Date().toISOString().slice(0, 10);
+    if (isBeforeLockDate(expDate)) { showToast(`日期 ${expDate} 在上鎖日期 (${lockDate}) 之前，無法儲存`, 'error'); return; }
     setSaving(true);
+    const vn = editingExpense.isNew ? await generateVoucherNumber('EX', 'expense_records') : (editingExpense.voucherNumber || null);
     const payload = {
+      voucher_number: vn,
       category: editingExpense.category || 'misc',
       description: editingExpense.description || '',
       amount: editingExpense.amount || 0,
@@ -309,14 +582,22 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
       recurring_period: editingExpense.recurringPeriod || null,
       notes: editingExpense.notes || null,
     };
+    let savedId = editingExpense.id;
     if (editingExpense.isNew) {
-      const { error } = await supabase.from('expense_records').insert(payload);
-      if (error) { showToast(`新增失敗：${error.message}`, 'error'); setSaving(false); return; }
+      const { data, error } = await supabase.from('expense_records').insert(payload).select('id').single();
+      if (error || !data) { showToast(`新增失敗：${error?.message}`, 'error'); setSaving(false); return; }
+      savedId = data.id;
       showToast('收支記錄已新增');
     } else {
       const { error } = await supabase.from('expense_records').update(payload).eq('id', editingExpense.id);
       if (error) { showToast(`更新失敗：${error.message}`, 'error'); setSaving(false); return; }
       showToast('收支記錄已更新');
+    }
+    if (savedId) {
+      await syncJournalEntry('expense', savedId, payload.date,
+        `${payload.type === 'income' ? 'INC' : 'EXP'}: ${payload.description}`,
+        buildExpenseLines({ type: payload.type, category: payload.category as ExpenseCategory, amount: payload.amount, description: payload.description }));
+      loadJournalEntries(); loadJournalLines();
     }
     setEditingExpense(null); setSaving(false); loadExpenses();
   };
@@ -338,6 +619,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
       account_code: editingAccount.accountCode || '',
       account_name: editingAccount.accountName || '',
       account_type: editingAccount.accountType || 'other',
+      parent_id: editingAccount.parentId || null,
       bank_name: editingAccount.bankName || null,
       bank_account_number: editingAccount.bankAccountNumber || null,
       currency: editingAccount.currency || 'HKD',
@@ -481,6 +763,8 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
           { id: 'receivable' as SubTab, label: '應收賬款', icon: <TrendingUp size={14} /> },
           { id: 'expenses' as SubTab, label: '收支記錄', icon: <DollarSign size={14} /> },
           { id: 'commissions' as SubTab, label: '佣金', icon: <UserCircle size={14} /> },
+          { id: 'credit_debit' as SubTab, label: '借/貸項通知', icon: <CreditCard size={14} /> },
+          { id: 'journal' as SubTab, label: '日記帳', icon: <Layers size={14} /> },
           { id: 'reports' as SubTab, label: '報表', icon: <FileText size={14} /> },
           { id: 'directory' as SubTab, label: '常用資料', icon: <BookOpen size={14} /> },
         ]).map(tab => (
@@ -537,7 +821,8 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                        <th className="px-5 py-3 text-left">供應商</th>
+                        <th className="px-5 py-3 text-left">憑單</th>
+                        <th className="px-4 py-3 text-left">供應商</th>
                         <th className="px-4 py-3 text-left">說明</th>
                         <th className="px-4 py-3 text-center">發票日</th>
                         <th className="px-4 py-3 text-center">到期日</th>
@@ -550,7 +835,8 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                     <tbody>
                       {filteredAP.map(ap => (
                         <tr key={ap.id} className="border-t border-slate-50 hover:bg-slate-50/50 group">
-                          <td className="px-5 py-3 font-black text-slate-800">{ap.supplierName}</td>
+                          <td className="px-5 py-3 text-[10px] font-bold text-blue-500 font-mono">{ap.voucherNumber || '—'}</td>
+                          <td className="px-4 py-3 font-black text-slate-800">{ap.supplierName}</td>
                           <td className="px-4 py-3 text-slate-600 font-bold max-w-[200px] truncate">{ap.description}</td>
                           <td className="px-4 py-3 text-center text-slate-500 font-bold">{ap.invoiceDate}</td>
                           <td className="px-4 py-3 text-center text-slate-500 font-bold">{ap.dueDate || '—'}</td>
@@ -603,7 +889,8 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                        <th className="px-5 py-3 text-left">客戶</th>
+                        <th className="px-5 py-3 text-left">憑單</th>
+                        <th className="px-4 py-3 text-left">客戶</th>
                         <th className="px-4 py-3 text-left">品牌</th>
                         <th className="px-4 py-3 text-center">單號</th>
                         <th className="px-4 py-3 text-center">發票日</th>
@@ -618,7 +905,8 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                         const bMeta = ar.brand ? WHOLESALE_BRAND_META[ar.brand] : null;
                         return (
                           <tr key={ar.id} className="border-t border-slate-50 hover:bg-slate-50/50 group">
-                            <td className="px-5 py-3 font-black text-slate-800">{ar.clientName}</td>
+                            <td className="px-5 py-3 text-[10px] font-bold text-blue-500 font-mono">{ar.voucherNumber || '—'}</td>
+                            <td className="px-4 py-3 font-black text-slate-800">{ar.clientName}</td>
                             <td className="px-4 py-3">
                               {bMeta ? (
                                 <span className={`px-2 py-0.5 rounded text-[10px] font-black ${bMeta.colorClasses.accent} ${bMeta.colorClasses.text}`}>
@@ -692,7 +980,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                             <p className="font-black text-sm text-slate-900 truncate">{exp.description || catInfo?.label || '—'}</p>
                             {exp.isRecurring && <span className="px-1.5 py-0.5 bg-blue-50 text-blue-500 rounded text-[9px] font-black">定期</span>}
                           </div>
-                          <p className="text-[10px] text-slate-400 font-bold">{exp.date} · {catInfo?.label || exp.category}</p>
+                          <p className="text-[10px] text-slate-400 font-bold">{exp.voucherNumber && <span className="text-blue-500 font-mono mr-1.5">{exp.voucherNumber}</span>}{exp.date} · {catInfo?.label || exp.category}</p>
                         </div>
                         <p className={`text-lg font-black ${exp.type === 'income' ? 'text-emerald-600' : 'text-rose-600'}`}>
                           {exp.type === 'income' ? '+' : '-'}${exp.amount.toLocaleString()}
@@ -795,71 +1083,792 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
             </div>
           )}
 
+          {/* ═══ CREDIT / DEBIT NOTES ═══ */}
+          {subTab === 'credit_debit' && (() => {
+            const notes = expenses.filter(e => e.type === 'credit_note' || e.type === 'debit_note');
+            const creditNotes = notes.filter(e => e.type === 'credit_note');
+            const debitNotes = notes.filter(e => e.type === 'debit_note');
+            return (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-black text-slate-800 flex items-center gap-2"><CreditCard className="text-violet-500" /> 借/貸項通知單</h3>
+                  <div className="flex gap-2">
+                    <button onClick={() => setEditingExpense({ isNew: true, type: 'credit_note', amount: 0, date: new Date().toISOString().slice(0, 10), category: 'misc', description: '', isRecurring: false })}
+                      className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-black hover:bg-emerald-500 transition-colors">
+                      <Plus size={14} /> 新增貸項通知 (Credit Note)
+                    </button>
+                    <button onClick={() => setEditingExpense({ isNew: true, type: 'debit_note', amount: 0, date: new Date().toISOString().slice(0, 10), category: 'misc', description: '', isRecurring: false })}
+                      className="flex items-center gap-2 px-4 py-2.5 bg-rose-600 text-white rounded-xl text-xs font-black hover:bg-rose-500 transition-colors">
+                      <Plus size={14} /> 新增借項通知 (Debit Note)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-white p-5 rounded-[2rem] border border-emerald-100 shadow-sm">
+                    <p className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest">貸項通知 (Credit Notes)</p>
+                    <p className="text-2xl font-black text-emerald-700 mt-1">${creditNotes.reduce((s, n) => s + n.amount, 0).toLocaleString()}</p>
+                    <p className="text-[10px] text-slate-400 font-bold">{creditNotes.length} 筆</p>
+                  </div>
+                  <div className="bg-white p-5 rounded-[2rem] border border-rose-100 shadow-sm">
+                    <p className="text-[10px] font-bold text-rose-500 uppercase tracking-widest">借項通知 (Debit Notes)</p>
+                    <p className="text-2xl font-black text-rose-700 mt-1">${debitNotes.reduce((s, n) => s + n.amount, 0).toLocaleString()}</p>
+                    <p className="text-[10px] text-slate-400 font-bold">{debitNotes.length} 筆</p>
+                  </div>
+                </div>
+
+                {notes.length === 0 ? (
+                  <div className="bg-white p-12 rounded-[3rem] border border-slate-100 shadow-sm text-center">
+                    <p className="text-sm text-slate-400 font-bold">尚無借/貸項通知</p>
+                    <p className="text-xs text-slate-300 mt-1">貸項通知 (Credit Note) 用於退貨退款；借項通知 (Debit Note) 用於額外費用或調整</p>
+                  </div>
+                ) : (
+                  <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                          <th className="px-6 py-3 text-left">類型</th>
+                          <th className="px-4 py-3 text-left">日期</th>
+                          <th className="px-4 py-3 text-left">憑單</th>
+                          <th className="px-4 py-3 text-left">說明</th>
+                          <th className="px-4 py-3 text-right">金額</th>
+                          <th className="px-4 py-3 text-center">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {notes.sort((a, b) => b.date.localeCompare(a.date)).map(n => (
+                          <tr key={n.id} className="border-t border-slate-50 hover:bg-slate-50/50">
+                            <td className="px-6 py-2.5">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-black ${n.type === 'credit_note' ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
+                                {n.type === 'credit_note' ? '貸項 CN' : '借項 DN'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-2.5 text-xs font-bold text-slate-600">{n.date}</td>
+                            <td className="px-4 py-2.5 text-xs font-mono text-blue-500">{n.voucherNumber || '—'}</td>
+                            <td className="px-4 py-2.5 font-bold text-slate-800">{n.description}</td>
+                            <td className={`px-4 py-2.5 text-right font-black ${n.type === 'credit_note' ? 'text-emerald-600' : 'text-rose-600'}`}>${n.amount.toLocaleString()}</td>
+                            <td className="px-4 py-2.5 text-center">
+                              <button onClick={() => setEditingExpense({ ...n, isNew: false })} className="p-1 rounded hover:bg-slate-100 text-slate-400">
+                                <Edit size={12} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ═══ JOURNAL ENTRIES ═══ */}
+          {subTab === 'journal' && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <SearchInput value={searchTerm} onChange={setSearchTerm} placeholder="搜尋憑單..." />
+                <button
+                  onClick={handleSyncAll}
+                  disabled={syncing}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-black hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {syncing ? <RefreshCw size={14} className="animate-spin" /> : <Layers size={14} />}
+                  {syncing ? '同步中...' : '同步全部日記帳'}
+                </button>
+              </div>
+
+              {journalEntries.length === 0 ? (
+                <EmptyState message="暫無日記帳記錄，按「同步全部」可從現有數據生成" />
+              ) : (
+                <div className="space-y-2">
+                  {journalEntries
+                    .filter(je => !searchTerm || je.voucherNumber.toLowerCase().includes(searchTerm.toLowerCase()) || je.description.toLowerCase().includes(searchTerm.toLowerCase()))
+                    .map(je => {
+                      const lines = journalLines.filter(l => l.journalEntryId === je.id);
+                      const totalDebit = lines.reduce((s, l) => s + l.debit, 0);
+                      const totalCredit = lines.reduce((s, l) => s + l.credit, 0);
+                      const isExpanded = detailExpanded[je.id];
+                      return (
+                        <div key={je.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                          <div
+                            className="p-4 flex items-center gap-4 cursor-pointer hover:bg-slate-50/50"
+                            onClick={() => setDetailExpanded(prev => ({ ...prev, [je.id]: !prev[je.id] }))}
+                          >
+                            <ChevronRight size={14} className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-mono font-bold text-blue-500">{je.voucherNumber}</span>
+                                <span className="text-[10px] text-slate-400 font-bold">{je.entryDate}</span>
+                                {je.sourceType && <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded text-[9px] font-black uppercase">{je.sourceType}</span>}
+                              </div>
+                              <p className="font-bold text-sm text-slate-700 truncate mt-0.5">{je.description}</p>
+                            </div>
+                            <div className="text-right flex-shrink-0">
+                              <p className="text-[10px] font-bold text-slate-400">借 <span className="text-slate-800 font-black">${totalDebit.toLocaleString()}</span></p>
+                              <p className="text-[10px] font-bold text-slate-400">貸 <span className="text-slate-800 font-black">${totalCredit.toLocaleString()}</span></p>
+                            </div>
+                          </div>
+                          {isExpanded && lines.length > 0 && (
+                            <div className="border-t border-slate-100 bg-slate-50/50">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                                    <th className="px-6 py-2 text-left">帳戶編號</th>
+                                    <th className="px-4 py-2 text-left">帳戶名稱</th>
+                                    <th className="px-4 py-2 text-left">說明</th>
+                                    <th className="px-4 py-2 text-right">借方</th>
+                                    <th className="px-4 py-2 text-right">貸方</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {lines.map(line => (
+                                    <tr key={line.id} className="border-t border-slate-100/50">
+                                      <td className="px-6 py-2 font-mono font-bold text-blue-600">{line.accountCode}</td>
+                                      <td className="px-4 py-2 font-bold text-slate-700">{line.accountName}</td>
+                                      <td className="px-4 py-2 text-slate-500">{line.description || '—'}</td>
+                                      <td className="px-4 py-2 text-right font-black text-slate-800">{line.debit > 0 ? `$${line.debit.toLocaleString()}` : ''}</td>
+                                      <td className="px-4 py-2 text-right font-black text-slate-800">{line.credit > 0 ? `$${line.credit.toLocaleString()}` : ''}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ═══ REPORTS ═══ */}
           {subTab === 'reports' && (
             <div className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* AP Summary */}
-                <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm space-y-4">
-                  <h4 className="font-black text-sm flex items-center gap-2"><TrendingDown size={16} className="text-rose-500" /> 應付賬款摘要</h4>
-                  <div className="space-y-2">
-                    {Object.entries(AP_STATUS_MAP).map(([status, meta]) => {
-                      const items = payables.filter(p => p.status === status);
-                      const total = items.reduce((s, p) => s + p.amount, 0);
-                      return (
-                        <div key={status} className="flex items-center justify-between py-1.5">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-black ${meta.color}`}>{meta.label}</span>
-                          <div className="text-right">
-                            <span className="font-black text-sm text-slate-800">${total.toLocaleString()}</span>
-                            <span className="text-[10px] text-slate-400 font-bold ml-2">({items.length}筆)</span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* AR Summary */}
-                <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm space-y-4">
-                  <h4 className="font-black text-sm flex items-center gap-2"><TrendingUp size={16} className="text-emerald-500" /> 應收賬款摘要</h4>
-                  <div className="space-y-2">
-                    {Object.entries(AR_STATUS_MAP).map(([status, meta]) => {
-                      const items = receivables.filter(r => r.status === status);
-                      const total = items.reduce((s, r) => s + r.amount, 0);
-                      return (
-                        <div key={status} className="flex items-center justify-between py-1.5">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-black ${meta.color}`}>{meta.label}</span>
-                          <div className="text-right">
-                            <span className="font-black text-sm text-slate-800">${total.toLocaleString()}</span>
-                            <span className="text-[10px] text-slate-400 font-bold ml-2">({items.length}筆)</span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Expense by category */}
-                <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm space-y-4 md:col-span-2">
-                  <h4 className="font-black text-sm flex items-center gap-2"><DollarSign size={16} className="text-slate-500" /> 本月支出分佈</h4>
-                  <div className="grid grid-cols-3 gap-3">
-                    {EXPENSE_CATEGORIES.map(cat => {
-                      const total = expenses
-                        .filter(e => e.type === 'expense' && e.category === cat.value && e.date.startsWith(new Date().toISOString().slice(0, 7)))
-                        .reduce((s, e) => s + e.amount, 0);
-                      return (
-                        <div key={cat.value} className="flex items-center gap-2 p-3 bg-slate-50 rounded-xl">
-                          <span className="text-lg">{cat.emoji}</span>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-[10px] font-bold text-slate-400">{cat.label}</p>
-                            <p className="font-black text-sm text-slate-800">${total.toLocaleString()}</p>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+              {/* Lock date + report tabs */}
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 justify-between">
+              <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-0.5 w-fit">
+                {([
+                  { id: 'summary' as ReportSection, label: '摘要', icon: <FileText size={12} /> },
+                  { id: 'pnl' as ReportSection, label: '損益表', icon: <BarChart3 size={12} /> },
+                  { id: 'balance_sheet' as ReportSection, label: '資產負債表', icon: <Layers size={12} /> },
+                  { id: 'trial' as ReportSection, label: '試算表', icon: <ArrowUpDown size={12} /> },
+                  { id: 'ledger' as ReportSection, label: '分類帳', icon: <BookOpen size={12} /> },
+                  { id: 'aging' as ReportSection, label: '帳齡分析', icon: <Calendar size={12} /> },
+                  { id: 'statements' as ReportSection, label: '月結單', icon: <Download size={12} /> },
+                ]).map(s => (
+                  <button
+                    key={s.id}
+                    onClick={() => setReportSection(s.id)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-black transition-all ${reportSection === s.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                  >
+                    {s.icon} {s.label}
+                  </button>
+                ))}
               </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-bold text-slate-400">上鎖日期</span>
+                <input type="date" value={lockDateInput} onChange={e => setLockDateInput(e.target.value)}
+                  className="px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-blue-300 w-36" />
+                <button onClick={saveLockDate} disabled={lockDateInput === lockDate}
+                  className="px-2.5 py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-black disabled:opacity-30 hover:bg-slate-800 transition-colors">
+                  <Save size={12} />
+                </button>
+                {lockDate && <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded-lg">{lockDate} 前已鎖定</span>}
+              </div>
+              </div>
+
+              {/* ── Summary with detail toggle ── */}
+              {reportSection === 'summary' && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* AP Summary */}
+                  <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-black text-sm flex items-center gap-2"><TrendingDown size={16} className="text-rose-500" /> 應付賬款摘要</h4>
+                      <button onClick={() => setDetailExpanded(p => ({ ...p, rptAP: !p.rptAP }))} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400" title="切換明細">
+                        {detailExpanded.rptAP ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </div>
+                    {!detailExpanded.rptAP ? (
+                      <div className="space-y-2">
+                        {Object.entries(AP_STATUS_MAP).map(([status, meta]) => {
+                          const items = payables.filter(p => p.status === status);
+                          const total = items.reduce((s, p) => s + p.amount, 0);
+                          return (
+                            <div key={status} className="flex items-center justify-between py-1.5">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-black ${meta.color}`}>{meta.label}</span>
+                              <div className="text-right">
+                                <span className="font-black text-sm text-slate-800">${total.toLocaleString()}</span>
+                                <span className="text-[10px] text-slate-400 font-bold ml-2">({items.length}筆)</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="space-y-1 max-h-60 overflow-y-auto">
+                        {payables.map(ap => (
+                          <div key={ap.id} className="flex items-center justify-between py-1 text-xs">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-black ${AP_STATUS_MAP[ap.status].color}`}>{AP_STATUS_MAP[ap.status].label}</span>
+                              <span className="font-bold text-slate-700 truncate">{ap.supplierName}</span>
+                              {ap.voucherNumber && <span className="text-[9px] font-mono text-blue-400">{ap.voucherNumber}</span>}
+                            </div>
+                            <span className="font-black text-slate-800 flex-shrink-0">${ap.amount.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* AR Summary */}
+                  <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-black text-sm flex items-center gap-2"><TrendingUp size={16} className="text-emerald-500" /> 應收賬款摘要</h4>
+                      <button onClick={() => setDetailExpanded(p => ({ ...p, rptAR: !p.rptAR }))} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400" title="切換明細">
+                        {detailExpanded.rptAR ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </div>
+                    {!detailExpanded.rptAR ? (
+                      <div className="space-y-2">
+                        {Object.entries(AR_STATUS_MAP).map(([status, meta]) => {
+                          const items = receivables.filter(r => r.status === status);
+                          const total = items.reduce((s, r) => s + r.amount, 0);
+                          return (
+                            <div key={status} className="flex items-center justify-between py-1.5">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-black ${meta.color}`}>{meta.label}</span>
+                              <div className="text-right">
+                                <span className="font-black text-sm text-slate-800">${total.toLocaleString()}</span>
+                                <span className="text-[10px] text-slate-400 font-bold ml-2">({items.length}筆)</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="space-y-1 max-h-60 overflow-y-auto">
+                        {receivables.map(ar => (
+                          <div key={ar.id} className="flex items-center justify-between py-1 text-xs">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-black ${AR_STATUS_MAP[ar.status].color}`}>{AR_STATUS_MAP[ar.status].label}</span>
+                              <span className="font-bold text-slate-700 truncate">{ar.clientName}</span>
+                              {ar.voucherNumber && <span className="text-[9px] font-mono text-blue-400">{ar.voucherNumber}</span>}
+                            </div>
+                            <span className="font-black text-slate-800 flex-shrink-0">${ar.amount.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Expense by category */}
+                  <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm space-y-4 md:col-span-2">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-black text-sm flex items-center gap-2"><DollarSign size={16} className="text-slate-500" /> 本月支出分佈</h4>
+                      <button onClick={() => setDetailExpanded(p => ({ ...p, rptExp: !p.rptExp }))} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400" title="切換明細">
+                        {detailExpanded.rptExp ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </div>
+                    {!detailExpanded.rptExp ? (
+                      <div className="grid grid-cols-3 gap-3">
+                        {EXPENSE_CATEGORIES.map(cat => {
+                          const total = expenses
+                            .filter(e => e.type === 'expense' && e.category === cat.value && e.date.startsWith(new Date().toISOString().slice(0, 7)))
+                            .reduce((s, e) => s + e.amount, 0);
+                          return (
+                            <div key={cat.value} className="flex items-center gap-2 p-3 bg-slate-50 rounded-xl">
+                              <span className="text-lg">{cat.emoji}</span>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[10px] font-bold text-slate-400">{cat.label}</p>
+                                <p className="font-black text-sm text-slate-800">${total.toLocaleString()}</p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {EXPENSE_CATEGORIES.map(cat => {
+                          const items = expenses.filter(e => e.type === 'expense' && e.category === cat.value && e.date.startsWith(new Date().toISOString().slice(0, 7)));
+                          if (items.length === 0) return null;
+                          return (
+                            <div key={cat.value}>
+                              <p className="text-[10px] font-black text-slate-400 mb-1">{cat.emoji} {cat.label} ({items.length}筆)</p>
+                              {items.map(e => (
+                                <div key={e.id} className="flex items-center justify-between py-0.5 text-xs pl-4">
+                                  <span className="text-slate-600 font-bold truncate">{e.date} · {e.description || '—'}</span>
+                                  <span className="font-black text-slate-800 flex-shrink-0">${e.amount.toLocaleString()}</span>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* ── P&L (損益表) ── */}
+              {reportSection === 'pnl' && (() => {
+                const year = pnlMonth.slice(0, 4);
+                const filterDate = (d: string) => pnlMode === 'month' ? d.startsWith(pnlMonth) : (d >= `${year}-01-01` && d <= `${pnlMonth}-31`);
+
+                const salesRevenue = receivables.filter(ar => ar.status === 'received' && filterDate(ar.invoiceDate)).reduce((s, ar) => s + ar.paidAmount, 0);
+                const otherIncome = expenses.filter(e => e.type === 'income' && filterDate(e.date)).reduce((s, e) => s + e.amount, 0);
+                const totalRevenue = salesRevenue + otherIncome;
+                const cogs = payables.filter(ap => filterDate(ap.invoiceDate)).reduce((s, ap) => s + ap.paidAmount, 0);
+                const grossProfit = totalRevenue - cogs;
+                const opexByCat = EXPENSE_CATEGORIES.map(cat => ({
+                  ...cat,
+                  total: expenses.filter(e => e.type === 'expense' && e.category === cat.value && filterDate(e.date)).reduce((s, e) => s + e.amount, 0),
+                }));
+                const totalOpex = opexByCat.reduce((s, c) => s + c.total, 0);
+                const netProfit = grossProfit - totalOpex;
+                const pct = (v: number) => totalRevenue > 0 ? `${(v / totalRevenue * 100).toFixed(1)}%` : '—';
+
+                return (
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <input type="month" value={pnlMonth} onChange={e => setPnlMonth(e.target.value)}
+                        className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-blue-300" />
+                      <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-0.5">
+                        <button onClick={() => setPnlMode('month')} className={`px-3 py-1.5 rounded-md text-[10px] font-black transition-all ${pnlMode === 'month' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>本月</button>
+                        <button onClick={() => setPnlMode('ytd')} className={`px-3 py-1.5 rounded-md text-[10px] font-black transition-all ${pnlMode === 'ytd' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>年度累計</button>
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                            <th className="px-6 py-3 text-left">項目</th>
+                            <th className="px-4 py-3 text-right">金額 (HKD)</th>
+                            <th className="px-4 py-3 text-right">佔收入%</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr className="border-t border-slate-100 bg-green-50/30">
+                            <td className="px-6 py-2 font-black text-green-700 text-xs" colSpan={3}>收入 Revenue</td>
+                          </tr>
+                          <tr className="border-t border-slate-50">
+                            <td className="px-6 py-2 pl-10 text-slate-600 font-bold">銷售收入</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-800">${salesRevenue.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right text-slate-500 font-bold">{pct(salesRevenue)}</td>
+                          </tr>
+                          <tr className="border-t border-slate-50">
+                            <td className="px-6 py-2 pl-10 text-slate-600 font-bold">其他收入</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-800">${otherIncome.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right text-slate-500 font-bold">{pct(otherIncome)}</td>
+                          </tr>
+                          <tr className="border-t border-slate-200 bg-slate-50">
+                            <td className="px-6 py-2 font-black text-slate-900">總收入</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-900">${totalRevenue.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-500">100%</td>
+                          </tr>
+
+                          <tr className="border-t border-slate-100 bg-amber-50/30">
+                            <td className="px-6 py-2 font-black text-amber-700 text-xs" colSpan={3}>銷售成本 Cost of Goods Sold</td>
+                          </tr>
+                          <tr className="border-t border-slate-50">
+                            <td className="px-6 py-2 pl-10 text-slate-600 font-bold">供應商採購</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-800">${cogs.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right text-slate-500 font-bold">{pct(cogs)}</td>
+                          </tr>
+                          <tr className="border-t border-slate-200 bg-slate-50">
+                            <td className="px-6 py-2 font-black text-slate-900">毛利 Gross Profit</td>
+                            <td className={`px-4 py-2 text-right font-black ${grossProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>${grossProfit.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-500">{pct(grossProfit)}</td>
+                          </tr>
+
+                          <tr className="border-t border-slate-100 bg-rose-50/30">
+                            <td className="px-6 py-2 font-black text-rose-700 text-xs" colSpan={3}>經營開支 Operating Expenses</td>
+                          </tr>
+                          {opexByCat.filter(c => c.total > 0).map(cat => (
+                            <tr key={cat.value} className="border-t border-slate-50">
+                              <td className="px-6 py-2 pl-10 text-slate-600 font-bold">{cat.emoji} {cat.label}</td>
+                              <td className="px-4 py-2 text-right font-black text-slate-800">${cat.total.toLocaleString()}</td>
+                              <td className="px-4 py-2 text-right text-slate-500 font-bold">{pct(cat.total)}</td>
+                            </tr>
+                          ))}
+                          <tr className="border-t border-slate-200 bg-slate-50">
+                            <td className="px-6 py-2 font-black text-slate-900">總開支</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-900">${totalOpex.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-500">{pct(totalOpex)}</td>
+                          </tr>
+
+                          <tr className="border-t-2 border-slate-300 bg-slate-100">
+                            <td className="px-6 py-3 font-black text-lg text-slate-900">淨利 / 虧損</td>
+                            <td className={`px-4 py-3 text-right font-black text-lg ${netProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>${netProfit.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-right font-black text-slate-500">{pct(netProfit)}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* ── Trial Balance (試算表) ── */}
+              {reportSection === 'trial' && (() => {
+                const balanceMap: Record<string, { code: string; name: string; debit: number; credit: number }> = {};
+                for (const line of journalLines) {
+                  if (!balanceMap[line.accountCode]) balanceMap[line.accountCode] = { code: line.accountCode, name: line.accountName, debit: 0, credit: 0 };
+                  balanceMap[line.accountCode].debit += line.debit;
+                  balanceMap[line.accountCode].credit += line.credit;
+                }
+                const rows = Object.values(balanceMap).sort((a, b) => a.code.localeCompare(b.code));
+                const totalDebit = rows.reduce((s, r) => s + r.debit, 0);
+                const totalCredit = rows.reduce((s, r) => s + r.credit, 0);
+                const isBalanced = Math.abs(totalDebit - totalCredit) < 0.01;
+
+                return (
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-3">
+                      {isBalanced && rows.length > 0 && (
+                        <span className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-600 rounded-lg text-[10px] font-black">
+                          <Check size={12} /> 借貸平衡
+                        </span>
+                      )}
+                      {!isBalanced && rows.length > 0 && (
+                        <span className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 text-rose-600 rounded-lg text-[10px] font-black">
+                          <AlertTriangle size={12} /> 借貸不平衡 (差額 ${Math.abs(totalDebit - totalCredit).toLocaleString()})
+                        </span>
+                      )}
+                      {rows.length === 0 && (
+                        <span className="text-xs text-slate-400 font-bold">尚無日記帳數據，請先在「日記帳」頁面同步數據</span>
+                      )}
+                    </div>
+
+                    {rows.length > 0 && (
+                      <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                              <th className="px-6 py-3 text-left">帳戶編號</th>
+                              <th className="px-4 py-3 text-left">帳戶名稱</th>
+                              <th className="px-4 py-3 text-right">借方 Debit</th>
+                              <th className="px-4 py-3 text-right">貸方 Credit</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map(row => (
+                              <tr key={row.code} className="border-t border-slate-50 hover:bg-slate-50/50">
+                                <td className="px-6 py-2.5 font-mono font-bold text-blue-600">{row.code}</td>
+                                <td className="px-4 py-2.5 font-bold text-slate-700">{row.name}</td>
+                                <td className="px-4 py-2.5 text-right font-black text-slate-800">{row.debit > 0 ? `$${row.debit.toLocaleString()}` : ''}</td>
+                                <td className="px-4 py-2.5 text-right font-black text-slate-800">{row.credit > 0 ? `$${row.credit.toLocaleString()}` : ''}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot>
+                            <tr className="border-t-2 border-slate-300 bg-slate-100">
+                              <td className="px-6 py-3 font-black text-slate-900" colSpan={2}>合計 Total</td>
+                              <td className="px-4 py-3 text-right font-black text-slate-900">${totalDebit.toLocaleString()}</td>
+                              <td className="px-4 py-3 text-right font-black text-slate-900">${totalCredit.toLocaleString()}</td>
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* ── Per-Account Ledger (分類帳) ── */}
+              {reportSection === 'ledger' && (() => {
+                const uniqueAccounts = Array.from(new Map(journalLines.map(l => [l.accountCode, { code: l.accountCode, name: l.accountName }])).values()).sort((a, b) => a.code.localeCompare(b.code));
+                const selectedLines = ledgerAccountCode ? journalLines.filter(l => l.accountCode === ledgerAccountCode) : [];
+                const relatedEntries = new Map(journalEntries.map(je => [je.id, je]));
+                let runningBalance = 0;
+
+                return (
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <select
+                        value={ledgerAccountCode}
+                        onChange={e => setLedgerAccountCode(e.target.value)}
+                        className="px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-blue-300 min-w-[200px]"
+                      >
+                        <option value="">— 選擇帳戶 —</option>
+                        {uniqueAccounts.map(a => <option key={a.code} value={a.code}>{a.code} · {a.name}</option>)}
+                      </select>
+                      {uniqueAccounts.length === 0 && (
+                        <span className="text-xs text-slate-400 font-bold">尚無日記帳數據，請先在「日記帳」頁面同步數據</span>
+                      )}
+                    </div>
+
+                    {ledgerAccountCode && selectedLines.length > 0 && (
+                      <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                              <th className="px-6 py-3 text-left">日期</th>
+                              <th className="px-4 py-3 text-left">憑單編號</th>
+                              <th className="px-4 py-3 text-left">說明</th>
+                              <th className="px-4 py-3 text-right">借方</th>
+                              <th className="px-4 py-3 text-right">貸方</th>
+                              <th className="px-4 py-3 text-right">餘額</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(() => { runningBalance = 0; return null; })()}
+                            {selectedLines.map(line => {
+                              const je = relatedEntries.get(line.journalEntryId);
+                              runningBalance += line.debit - line.credit;
+                              return (
+                                <tr key={line.id} className="border-t border-slate-50 hover:bg-slate-50/50">
+                                  <td className="px-6 py-2.5 text-slate-500 font-bold">{je?.entryDate || '—'}</td>
+                                  <td className="px-4 py-2.5 font-mono text-[10px] font-bold text-blue-500">{je?.voucherNumber || '—'}</td>
+                                  <td className="px-4 py-2.5 text-slate-600 font-bold truncate max-w-[200px]">{line.description || je?.description || '—'}</td>
+                                  <td className="px-4 py-2.5 text-right font-black text-slate-800">{line.debit > 0 ? `$${line.debit.toLocaleString()}` : ''}</td>
+                                  <td className="px-4 py-2.5 text-right font-black text-slate-800">{line.credit > 0 ? `$${line.credit.toLocaleString()}` : ''}</td>
+                                  <td className={`px-4 py-2.5 text-right font-black ${runningBalance >= 0 ? 'text-slate-900' : 'text-rose-600'}`}>${runningBalance.toLocaleString()}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                          <tfoot>
+                            <tr className="border-t-2 border-slate-300 bg-slate-100">
+                              <td className="px-6 py-3 font-black text-slate-900" colSpan={3}>合計</td>
+                              <td className="px-4 py-3 text-right font-black text-slate-900">${selectedLines.reduce((s, l) => s + l.debit, 0).toLocaleString()}</td>
+                              <td className="px-4 py-3 text-right font-black text-slate-900">${selectedLines.reduce((s, l) => s + l.credit, 0).toLocaleString()}</td>
+                              <td className={`px-4 py-3 text-right font-black ${runningBalance >= 0 ? 'text-slate-900' : 'text-rose-600'}`}>${runningBalance.toLocaleString()}</td>
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    )}
+
+                    {ledgerAccountCode && selectedLines.length === 0 && (
+                      <EmptyState message="此帳戶暫無交易記錄" />
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* ── Aging Analysis (帳齡分析) ── */}
+              {reportSection === 'aging' && (() => {
+                const today = new Date();
+                const daysDiff = (dateStr: string) => {
+                  const d = new Date(dateStr);
+                  return Math.floor((today.getTime() - d.getTime()) / (1000 * 60 * 60 * 24));
+                };
+                const bucket = (days: number) => days <= 30 ? '0-30' : days <= 60 ? '31-60' : days <= 90 ? '61-90' : days <= 120 ? '91-120' : '120+';
+                const BUCKETS = ['0-30', '31-60', '61-90', '91-120', '120+'] as const;
+                const BUCKET_COLORS: Record<string, string> = { '0-30': 'text-emerald-600 bg-emerald-50', '31-60': 'text-blue-600 bg-blue-50', '61-90': 'text-amber-600 bg-amber-50', '91-120': 'text-orange-600 bg-orange-50', '120+': 'text-rose-600 bg-rose-50' };
+
+                const arOpen = receivables.filter(r => r.status !== 'received');
+                const apOpen = payables.filter(p => p.status !== 'paid');
+
+                const arByBucket: Record<string, { count: number; total: number; items: typeof arOpen }> = {};
+                const apByBucket: Record<string, { count: number; total: number; items: typeof apOpen }> = {};
+                BUCKETS.forEach(b => { arByBucket[b] = { count: 0, total: 0, items: [] }; apByBucket[b] = { count: 0, total: 0, items: [] }; });
+
+                for (const ar of arOpen) {
+                  const b = bucket(daysDiff(ar.invoiceDate));
+                  arByBucket[b].count++;
+                  arByBucket[b].total += ar.amount - ar.paidAmount;
+                  arByBucket[b].items.push(ar);
+                }
+                for (const ap of apOpen) {
+                  const b = bucket(daysDiff(ap.invoiceDate));
+                  apByBucket[b].count++;
+                  apByBucket[b].total += ap.amount - ap.paidAmount;
+                  apByBucket[b].items.push(ap);
+                }
+
+                const arTotal = arOpen.reduce((s, r) => s + r.amount - r.paidAmount, 0);
+                const apTotal = apOpen.reduce((s, p) => s + p.amount - p.paidAmount, 0);
+
+                const renderAgingTable = (title: string, data: Record<string, { count: number; total: number }>, grandTotal: number, color: string) => (
+                  <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+                    <div className="px-6 py-4 border-b border-slate-100">
+                      <h4 className="font-black text-sm text-slate-800">{title}</h4>
+                      <p className="text-xs text-slate-400 font-bold mt-0.5">未結餘額：<span className={`font-black ${color}`}>${grandTotal.toLocaleString()}</span></p>
+                    </div>
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                          <th className="px-6 py-3 text-left">帳齡 (天)</th>
+                          <th className="px-4 py-3 text-right">筆數</th>
+                          <th className="px-4 py-3 text-right">金額</th>
+                          <th className="px-4 py-3 text-right">佔比</th>
+                          <th className="px-4 py-3 text-left" style={{ width: 160 }}>分佈</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {BUCKETS.map(b => {
+                          const d = data[b];
+                          const pct = grandTotal > 0 ? (d.total / grandTotal * 100) : 0;
+                          return (
+                            <tr key={b} className="border-t border-slate-50 hover:bg-slate-50/50">
+                              <td className="px-6 py-2.5"><span className={`px-2 py-0.5 rounded text-[10px] font-black ${BUCKET_COLORS[b]}`}>{b} 天</span></td>
+                              <td className="px-4 py-2.5 text-right font-bold text-slate-600">{d.count}</td>
+                              <td className="px-4 py-2.5 text-right font-black text-slate-900">${d.total.toLocaleString()}</td>
+                              <td className="px-4 py-2.5 text-right font-bold text-slate-500">{pct.toFixed(1)}%</td>
+                              <td className="px-4 py-2.5">
+                                <div className="w-full bg-slate-100 rounded-full h-2">
+                                  <div className={`h-2 rounded-full transition-all ${b === '120+' ? 'bg-rose-500' : b === '91-120' ? 'bg-orange-500' : b === '61-90' ? 'bg-amber-500' : b === '31-60' ? 'bg-blue-500' : 'bg-emerald-500'}`} style={{ width: `${Math.min(pct, 100)}%` }} />
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t-2 border-slate-300 bg-slate-100">
+                          <td className="px-6 py-3 font-black text-slate-900">合計</td>
+                          <td className="px-4 py-3 text-right font-black text-slate-900">{Object.values(data).reduce((s, d) => s + d.count, 0)}</td>
+                          <td className="px-4 py-3 text-right font-black text-slate-900">${grandTotal.toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-black text-slate-500">100%</td>
+                          <td></td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                );
+
+                return (
+                  <div className="space-y-6">
+                    {renderAgingTable('應收帳款帳齡 (AR Aging)', arByBucket, arTotal, 'text-emerald-600')}
+                    {renderAgingTable('應付帳款帳齡 (AP Aging)', apByBucket, apTotal, 'text-rose-600')}
+                  </div>
+                );
+              })()}
+
+              {/* ── Balance Sheet (資產負債表) ── */}
+              {reportSection === 'balance_sheet' && (() => {
+                const acctBalances: Record<string, { code: string; name: string; type: string; balance: number }> = {};
+                for (const acct of accounts) {
+                  acctBalances[acct.accountCode] = { code: acct.accountCode, name: acct.accountName, type: acct.accountType, balance: 0 };
+                }
+                for (const line of journalLines) {
+                  if (!acctBalances[line.accountCode]) {
+                    acctBalances[line.accountCode] = { code: line.accountCode, name: line.accountName, type: 'other', balance: 0 };
+                  }
+                  acctBalances[line.accountCode].balance += line.debit - line.credit;
+                }
+
+                const isAsset = (t: string) => ['asset', 'bank', 'cash', 'receivable'].includes(t);
+                const isLiability = (t: string) => ['liability', 'payable'].includes(t);
+                const isEquity = (t: string) => t === 'equity';
+
+                const assets = Object.values(acctBalances).filter(a => isAsset(a.type) && Math.abs(a.balance) > 0.01).sort((a, b) => a.code.localeCompare(b.code));
+                const liabilities = Object.values(acctBalances).filter(a => isLiability(a.type) && Math.abs(a.balance) > 0.01).sort((a, b) => a.code.localeCompare(b.code));
+                const equity = Object.values(acctBalances).filter(a => isEquity(a.type) && Math.abs(a.balance) > 0.01).sort((a, b) => a.code.localeCompare(b.code));
+
+                // Net income from P&L (revenue - expenses)
+                const revenueAccts = Object.values(acctBalances).filter(a => a.type === 'revenue');
+                const expenseAccts = Object.values(acctBalances).filter(a => a.type === 'expense');
+                const totalRevenue = revenueAccts.reduce((s, a) => s + a.balance, 0);
+                const totalExpenses = expenseAccts.reduce((s, a) => s + a.balance, 0);
+                const netIncome = -(totalRevenue) - totalExpenses;
+
+                const totalAssets = assets.reduce((s, a) => s + a.balance, 0);
+                const totalLiabilities = liabilities.reduce((s, a) => s + Math.abs(a.balance), 0);
+                const totalEquity = equity.reduce((s, a) => s + Math.abs(a.balance), 0) + netIncome;
+                const totalLiabEquity = totalLiabilities + totalEquity;
+                const isBalanced = Math.abs(totalAssets - totalLiabEquity) < 0.01;
+
+                const renderSection = (title: string, items: typeof assets, color: string) => (
+                  <>
+                    <tr className={`border-t border-slate-100 ${color}`}>
+                      <td className="px-6 py-2 font-black text-xs" colSpan={3}>{title}</td>
+                    </tr>
+                    {items.map(item => (
+                      <tr key={item.code} className="border-t border-slate-50">
+                        <td className="px-6 py-2 pl-10 font-mono text-blue-600 text-xs">{item.code}</td>
+                        <td className="px-4 py-2 font-bold text-slate-600">{item.name}</td>
+                        <td className="px-4 py-2 text-right font-black text-slate-800">${Math.abs(item.balance).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </>
+                );
+
+                return (
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-3">
+                      {isBalanced && totalAssets > 0 && (
+                        <span className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-600 rounded-lg text-[10px] font-black">
+                          <Check size={12} /> 資產 = 負債 + 權益
+                        </span>
+                      )}
+                      {!isBalanced && totalAssets > 0 && (
+                        <span className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 text-rose-600 rounded-lg text-[10px] font-black">
+                          <AlertTriangle size={12} /> 不平衡 (差額 ${Math.abs(totalAssets - totalLiabEquity).toLocaleString()})
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                            <th className="px-6 py-3 text-left">科目編號</th>
+                            <th className="px-4 py-3 text-left">科目名稱</th>
+                            <th className="px-4 py-3 text-right">金額 (HKD)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {renderSection('資產 Assets', assets, 'bg-sky-50/30')}
+                          <tr className="border-t-2 border-slate-200 bg-slate-50">
+                            <td className="px-6 py-2 font-black text-slate-900" colSpan={2}>總資產</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-900">${totalAssets.toLocaleString()}</td>
+                          </tr>
+
+                          {renderSection('負債 Liabilities', liabilities, 'bg-pink-50/30')}
+                          <tr className="border-t border-slate-200 bg-slate-50">
+                            <td className="px-6 py-2 font-black text-slate-700" colSpan={2}>總負債</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-700">${totalLiabilities.toLocaleString()}</td>
+                          </tr>
+
+                          {renderSection('權益 Equity', equity, 'bg-purple-50/30')}
+                          <tr className="border-t border-slate-50">
+                            <td className="px-6 py-2 pl-10 font-bold text-slate-600 italic" colSpan={2}>本期損益 (Net Income)</td>
+                            <td className={`px-4 py-2 text-right font-black ${netIncome >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>${netIncome.toLocaleString()}</td>
+                          </tr>
+                          <tr className="border-t border-slate-200 bg-slate-50">
+                            <td className="px-6 py-2 font-black text-slate-700" colSpan={2}>總權益</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-700">${totalEquity.toLocaleString()}</td>
+                          </tr>
+
+                          <tr className="border-t-2 border-slate-300 bg-slate-100">
+                            <td className="px-6 py-3 font-black text-lg text-slate-900" colSpan={2}>負債 + 權益</td>
+                            <td className="px-4 py-3 text-right font-black text-lg text-slate-900">${totalLiabEquity.toLocaleString()}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+              {/* ── Monthly Statements (月結單) ── */}
+              {reportSection === 'statements' && (
+                <div className="space-y-6">
+                  <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm">
+                    <h4 className="font-black text-sm text-slate-800 mb-4">生成月結單</h4>
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">結算月份</label>
+                        <input type="month" value={stmtMonth} onChange={e => setStmtMonth(e.target.value)}
+                          className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-blue-300" />
+                      </div>
+                      <div className="flex gap-2 pt-4">
+                        <button onClick={handleGenerateARStatements}
+                          className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-black hover:bg-emerald-500 transition-colors">
+                          <Download size={14} /> 客戶月結單 (AR)
+                        </button>
+                        <button onClick={handleGenerateAPStatements}
+                          className="flex items-center gap-2 px-5 py-2.5 bg-rose-600 text-white rounded-xl text-xs font-black hover:bg-rose-500 transition-colors">
+                          <Download size={14} /> 供應商月結單 (AP)
+                        </button>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-slate-400 font-bold mt-3">月結單會為該月份每位客戶/供應商分別生成一頁，顯示期初餘額、本月交易及期末結存。</p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -956,10 +1965,17 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredAccounts.map(a => (
+                        {filteredAccounts.map(a => {
+                          const isChild = !!a.parentId;
+                          const parentAcct = isChild ? accounts.find(p => p.id === a.parentId) : null;
+                          return (
                           <tr key={a.id} className="border-t border-slate-50 hover:bg-slate-50/50 group">
-                            <td className="px-5 py-3 font-black text-blue-600">{a.accountCode}</td>
+                            <td className="px-5 py-3 font-black text-blue-600">
+                              {isChild && <CornerDownRight size={11} className="inline mr-1 text-slate-300" />}
+                              {a.accountCode}
+                            </td>
                             <td className="px-4 py-3 font-black text-slate-800">
+                              {isChild && <span className="text-[9px] text-slate-400 font-bold mr-1">({parentAcct?.accountCode})</span>}
                               {a.accountName}
                               {a.isDefault && <span className="ml-2 px-1.5 py-0.5 bg-amber-50 text-amber-500 rounded text-[9px] font-black">預設</span>}
                               {!a.isActive && <span className="ml-2 px-1.5 py-0.5 bg-slate-100 text-slate-400 rounded text-[9px] font-black">停用</span>}
@@ -979,7 +1995,8 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                               </div>
                             </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -1077,8 +2094,12 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
       {editingAR && (
         <Modal title={editingAR.isNew ? '新增應收賬款' : '編輯應收賬款'} onClose={() => setEditingAR(null)} onSave={async () => {
           if (!editingAR) return;
+          const arDate = editingAR.invoiceDate || new Date().toISOString().slice(0, 10);
+          if (isBeforeLockDate(arDate)) { showToast(`日期 ${arDate} 在上鎖日期 (${lockDate}) 之前，無法儲存`, 'error'); return; }
           setSaving(true);
+          const vn = editingAR.isNew ? await generateVoucherNumber('AR', 'accounts_receivable') : (editingAR.voucherNumber || null);
           const payload = {
+            voucher_number: vn,
             client_name: editingAR.clientName || '',
             brand: editingAR.brand || null,
             order_id: editingAR.orderId || null,
@@ -1089,12 +2110,20 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
             credit_terms: editingAR.creditTerms || 'cod',
             notes: editingAR.notes || null,
           };
+          let savedId = editingAR.id;
           if (editingAR.isNew) {
-            await supabase.from('accounts_receivable').insert(payload);
+            const { data } = await supabase.from('accounts_receivable').insert(payload).select('id').single();
+            if (data) savedId = data.id;
             showToast('已新增');
           } else {
             await supabase.from('accounts_receivable').update(payload).eq('id', editingAR.id);
             showToast('已更新');
+          }
+          if (savedId) {
+            await syncJournalEntry('ar', savedId, payload.invoice_date,
+              `AR: ${payload.client_name}`,
+              buildARLines({ amount: payload.amount, paidAmount: payload.paid_amount, clientName: payload.client_name }));
+            loadJournalEntries(); loadJournalLines();
           }
           setEditingAR(null); setSaving(false); loadReceivables();
         }} saving={saving}>
@@ -1189,6 +2218,19 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
               <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">類型</label>
               <select value={editingAccount.accountType || 'other'} onChange={e => setEditingAccount({ ...editingAccount, accountType: e.target.value as AccountType })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm">
                 {Object.entries(ACCOUNT_TYPE_MAP).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">上級帳戶</label>
+              <select
+                value={editingAccount.parentId || ''}
+                onChange={e => setEditingAccount({ ...editingAccount, parentId: e.target.value || undefined })}
+                className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm"
+              >
+                <option value="">— 無（頂級帳戶）—</option>
+                {accounts.filter(a => a.id !== editingAccount.id && a.isActive).map(a => (
+                  <option key={a.id} value={a.id}>{a.accountCode} · {a.accountName}</option>
+                ))}
               </select>
             </div>
             <FieldInput label="幣種" value={editingAccount.currency || 'HKD'} onChange={v => setEditingAccount({ ...editingAccount, currency: v })} />

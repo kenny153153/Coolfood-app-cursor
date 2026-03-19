@@ -8,6 +8,8 @@ import {
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import { useWorkspace, WHOLESALE_BRAND_META } from './WorkspaceContext';
+import { buildPickingSlipHtml, getBusinessLabel } from './printUtils';
+import type { PickingOrderData } from './printUtils';
 import type { WholesaleBrand, WholesaleOrderLine } from './types';
 
 interface Props {
@@ -132,6 +134,31 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
   // Correction memory
   const [corrections, setCorrections] = useState<any[]>([]);
   const parsedSnapshotRef = useRef<WholesaleOrderLine[]>([]);
+
+  // Last price lookup: key = productName → { price, qty, unit, date }
+  const [lastPriceMap, setLastPriceMap] = useState<Record<string, { price: number; qty: number; unit: string; date: string }>>({});
+
+  useEffect(() => {
+    if (!selectedClient) { setLastPriceMap({}); return; }
+    (async () => {
+      const { data } = await supabase.from('orders')
+        .select('line_items, order_date')
+        .eq('customer_name', selectedClient.companyName)
+        .eq('order_type', 'wholesale')
+        .order('order_date', { ascending: false })
+        .limit(10);
+      if (!data) return;
+      const map: Record<string, { price: number; qty: number; unit: string; date: string }> = {};
+      for (const row of data as any[]) {
+        for (const item of row.line_items || []) {
+          if (!map[item.name]) {
+            map[item.name] = { price: item.unit_price, qty: item.qty, unit: item.unit || '', date: row.order_date?.slice(0, 10) || '' };
+          }
+        }
+      }
+      setLastPriceMap(map);
+    })();
+  }, [selectedClient]);
 
   // Dynamic units (base + custom from site_config)
   const [customUnitLabels, setCustomUnitLabels] = useState<string[]>([]);
@@ -648,6 +675,7 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
         unit_price: l.unitPrice,
         qty: l.qty,
         line_total: l.lineTotal,
+        unit: l.unit || undefined,
         processing_type_id: l.processingTypeId || undefined,
         processing_type_name: l.processingTypeName || undefined,
         processing_spec: l.processingSpec || undefined,
@@ -670,6 +698,7 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
       wholesale_brand: wholesaleBrand,
       wholesale_client_id: selectedClient.id,
       route_id: selectedClient.routeId,
+      client_code: selectedClient.clientCode || null,
       payment_method: 'credit',
     };
 
@@ -762,102 +791,25 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
   };
 
   const generatePickingHtml = (validLines: WholesaleOrderLine[]) => {
-    const brandLabel = WHOLESALE_BRAND_META[wholesaleBrand].label;
-    const clientName = selectedClient?.companyName || '—';
-    const clientCode = selectedClient?.clientCode || '';
-    const displayName = clientCode ? `${clientName} (${clientCode})` : clientName;
-    const orderId = savedOrderId || '—';
-    const today = new Date();
-    const timestamp = `${today.toLocaleDateString('zh-TW')} ${today.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}`;
-    const emptyRows = Math.max(0, 12 - validLines.length);
-
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>執貨紙</title>
-<style>
-  @page { size: A5 portrait; margin: 5mm; }
-  *{margin:0;padding:0;box-sizing:border-box}
-  body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;font-size:11px;color:#000;width:148mm}
-  .page{padding:4mm}
-  .top-row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:1.5mm}
-  .customer{font-size:15px;font-weight:900;flex:1}
-  .meta{font-size:10px;text-align:right;color:#333;font-weight:600;white-space:nowrap}
-  .info-bar{display:flex;justify-content:space-between;font-size:9px;color:#555;font-weight:600;padding:1.5mm 0;border-bottom:2px solid #000;margin-bottom:2mm}
-  table{width:100%;border-collapse:collapse}
-  th{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:0.5px;color:#555;
-     border-bottom:1.5px solid #000;padding:2px 3px;text-align:left}
-  th.ctr{text-align:center}
-  td{padding:4px 3px;border-bottom:0.5px solid #ccc;font-size:12px;vertical-align:middle}
-  td.name{font-weight:700;font-size:13px}
-  td.qty{font-weight:800;font-size:14px;text-align:right;padding-right:1mm}
-  td.unit{font-size:11px;color:#555}
-  td.chk{width:12mm;text-align:center;font-size:16px}
-  td.note{font-size:9px;color:#555;max-width:22mm;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  td.num{text-align:center;font-size:10px;color:#888;width:8mm}
-  .empty td{border-bottom:0.5px solid #eee;height:7mm}
-  .footer{display:flex;justify-content:space-between;align-items:flex-end;margin-top:4mm;padding-top:3mm;border-top:1.5px solid #000}
-  .sig-group{display:flex;gap:6mm}
-  .sig-box{text-align:center}
-  .sig-label{font-size:8px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6mm}
-  .sig-field{border:1px solid #999;width:22mm;height:10mm;border-radius:2px}
-  .page-num{font-size:9px;color:#888;font-weight:600}
-  @media print{
-    body{margin:0;padding:0;width:148mm}
-  }
-</style></head><body>
-<div class="page">
-  <div class="top-row">
-    <div class="customer">${displayName}</div>
-    <div class="meta">${orderId} &nbsp; ${deliveryDate}</div>
-  </div>
-  <div class="info-bar">
-    <span>${brandLabel} · 執貨紙（工場用）</span>
-    <span>${timestamp}</span>
-  </div>
-
-  <table>
-    <thead><tr>
-      <th style="width:8mm">#</th>
-      <th>貨物名稱</th>
-      <th style="width:18mm;text-align:right;padding-right:1mm">數量</th>
-      <th style="width:12mm">單位</th>
-      <th class="ctr" style="width:14mm">備註</th>
-      <th class="ctr" style="width:12mm">✓</th>
-    </tr></thead>
-    <tbody>
-    ${validLines.map((l, i) => {
-      const procTag = l.processingTypeName && l.processingTypeName !== '原件'
-        ? `${l.processingTypeName}${l.processingSpec ? ' ' + l.processingSpec : ''}`
-        : '';
-      const noteText = [procTag, l.lineNote].filter(Boolean).join(' · ');
-      return `<tr>
-        <td class="num">${i + 1}</td>
-        <td class="name">${l.productName}${procTag ? ` <span style="color:#7c3aed;font-size:11px;font-weight:800">【${procTag}】</span>` : ''}</td>
-        <td class="qty">${l.qty}</td>
-        <td class="unit">${l.unit}</td>
-        <td class="note">${l.lineNote || ''}</td>
-        <td class="chk">☐</td>
-      </tr>`;
-    }).join('')}
-    ${Array(emptyRows).fill('<tr class="empty"><td></td><td></td><td></td><td></td><td></td><td></td></tr>').join('')}
-    </tbody>
-  </table>
-
-  ${orderNotes ? `<p style="margin-top:2mm;font-size:9px;color:#555;padding:1.5mm;background:#fffde7;border:0.5px solid #e0d97a;border-radius:2px"><strong>備註：</strong>${orderNotes}</p>` : ''}
-
-  <div class="footer">
-    <div class="sig-group">
-      <div class="sig-box">
-        <div class="sig-label">執貨</div>
-        <div class="sig-field"></div>
-      </div>
-      <div class="sig-box">
-        <div class="sig-label">箱數</div>
-        <div class="sig-field"></div>
-      </div>
-    </div>
-    <div class="page-num">${validLines.length} 項 &nbsp; 1/1</div>
-  </div>
-</div>
-</body></html>`;
+    const now = new Date();
+    const orderData: PickingOrderData = {
+      orderId: savedOrderId || '—',
+      customerName: selectedClient?.companyName || '—',
+      clientCode: selectedClient?.clientCode || '',
+      deliveryDate: deliveryDate,
+      businessLabel: getBusinessLabel('wholesale', wholesaleBrand),
+      timestamp: `${now.toLocaleDateString('zh-TW')} ${now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}`,
+      items: validLines.map(l => ({
+        productName: l.productName,
+        qty: l.qty,
+        unit: l.unit,
+        processingType: l.processingTypeName,
+        processingSpec: l.processingSpec,
+        lineNote: l.lineNote,
+      })),
+      orderNotes: orderNotes || undefined,
+    };
+    return buildPickingSlipHtml([orderData]);
   };
 
   const generateGHFoodsPrintHtml = (
@@ -1374,6 +1326,12 @@ ${pages}
                           placeholder="輸入或搜尋產品..."
                           className="w-full px-3 py-2 bg-slate-50 border border-slate-100 rounded-lg text-xs font-bold outline-none focus:border-blue-300"
                         />
+                        {line.productName && lastPriceMap[line.productName] && (
+                          <span className="inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.5 bg-blue-50 text-blue-500 rounded text-[9px] font-bold"
+                            title={`上次 ${lastPriceMap[line.productName].date}: ${lastPriceMap[line.productName].qty}${lastPriceMap[line.productName].unit} @ $${lastPriceMap[line.productName].price}`}>
+                            上次 ${lastPriceMap[line.productName].price}/{lastPriceMap[line.productName].unit} ({lastPriceMap[line.productName].date})
+                          </span>
+                        )}
                         {activeProductRow === idx && productSearch && (
                           <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-50 max-h-36 overflow-y-auto">
                             {filteredProducts.map(p => (

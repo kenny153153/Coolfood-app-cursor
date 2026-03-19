@@ -80,7 +80,7 @@ export default async function handler(
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const { verifyAdminRequest } = await import('./_adminAuth');
-  const authResult = await verifyAdminRequest(req);
+  const authResult = await verifyAdminRequest(req, 'orders', 'update');
   if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
   const orders = req.body?.orders;

@@ -79,27 +79,39 @@ export interface SupabaseRecipeProductLinkRow {
 
 export type SaleChannel = 'retail' | 'wholesale' | 'both';
 
+// ─── CRUD-level permission per module (Enterprise Security) ─────
+export type CrudOp = 'read' | 'create' | 'update' | 'delete' | 'export';
+
+export interface ModulePermission {
+  read: boolean;
+  create: boolean;
+  update: boolean;
+  delete: boolean;
+  export: boolean;
+}
+
 export interface AdminPermissions {
-  global_dashboard: boolean;
-  new_order: boolean;
-  orders: boolean;
-  dispatch: boolean;
-  warehouse_ops: boolean;
-  production: boolean;
-  accounting: boolean;
-  wholesale_clients: boolean;
-  sales_reps: boolean;
-  inventory: boolean;
-  pricing: boolean;
-  dashboard: boolean;
-  members: boolean;
-  slideshow: boolean;
-  recipes: boolean;
-  ingredients: boolean;
-  costs: boolean;
-  language: boolean;
-  settings: boolean;
-  admin_management: boolean;
+  global_dashboard: ModulePermission;
+  new_order: ModulePermission;
+  orders: ModulePermission;
+  dispatch: ModulePermission;
+  warehouse_ops: ModulePermission;
+  production: ModulePermission;
+  accounting: ModulePermission;
+  wholesale_clients: ModulePermission;
+  sales_reps: ModulePermission;
+  inventory: ModulePermission;
+  pricing: ModulePermission;
+  dashboard: ModulePermission;
+  members: ModulePermission;
+  slideshow: ModulePermission;
+  recipes: ModulePermission;
+  ingredients: ModulePermission;
+  costs: ModulePermission;
+  language: ModulePermission;
+  settings: ModulePermission;
+  admin_management: ModulePermission;
+  quotations: ModulePermission;
 }
 
 export type AdminRole =
@@ -146,7 +158,7 @@ export type AdminModuleId =
   | 'global_dashboard' | 'new_order'
   | 'dispatch' | 'warehouse_ops' | 'accounting' | 'production'
   | 'whatsapp_orders' | 'tricolor_print' | 'wholesale_clients'
-  | 'sales_reps';
+  | 'sales_reps' | 'quotations';
 
 export interface BulkDiscount {
   threshold: number;
@@ -307,6 +319,7 @@ export interface OrderLineItem {
   unit_price: number;
   qty: number;
   line_total: number;
+  unit?: string;
   /** Product image URL/base64 for display in order details */
   image?: string | null;
   processing_type_id?: string;
@@ -346,6 +359,10 @@ export interface SupabaseOrderRow {
   order_type?: string | null;
   payment_method?: string | null;
   member_id?: string | null;
+  wholesale_brand?: string | null;
+  wholesale_client_id?: string | null;
+  route_id?: string | null;
+  client_code?: string | null;
 }
 
 /** Supabase public.products table – column names must match (snake_case). */
@@ -409,10 +426,12 @@ export interface SupabaseMemberRow {
   wallet_balance: number;
   tier: 'Bronze' | 'Silver' | 'Gold' | 'VIP';
   role: string;
-  admin_permissions?: Record<string, boolean> | null;
+  admin_permissions?: Record<string, boolean | ModulePermission> | null;
   member_type?: string | null;            // 'retail' | 'wholesale'
   wholesale_price_tier?: string | null;   // e.g. 'P0', 'P3'
   addresses?: UserAddress[] | null;
+  security_level?: number | null;         // hierarchy: higher sees lower staff (min 1)
+  must_change_password?: boolean | null;  // force password change on next login
 }
 
 export interface Category {
@@ -730,6 +749,7 @@ export type APStatus = 'unpaid' | 'partial' | 'paid' | 'overdue';
 
 export interface AccountPayable {
   id: string;
+  voucherNumber?: string;
   supplierId?: string;
   supplierName: string;
   invoiceNumber?: string;
@@ -749,6 +769,7 @@ export type ARStatus = 'pending' | 'partial' | 'received' | 'overdue';
 
 export interface AccountReceivable {
   id: string;
+  voucherNumber?: string;
   clientId?: string;
   clientName: string;
   brand?: WholesaleBrand;
@@ -770,11 +791,13 @@ export type ExpenseCategory =
 
 export interface ExpenseRecord {
   id: string;
+  voucherNumber?: string;
   category: ExpenseCategory;
   description: string;
   amount: number;
-  type: 'expense' | 'income';
+  type: 'expense' | 'income' | 'credit_note' | 'debit_note';
   date: string;
+  relatedOrderId?: string;
   isRecurring: boolean;
   recurringPeriod?: 'monthly' | 'quarterly' | 'yearly';
   notes?: string;
@@ -783,13 +806,14 @@ export interface ExpenseRecord {
 
 // ─── Accounting Directory (常用資料) ─────────────────────────────
 
-export type AccountType = 'bank' | 'cash' | 'expense' | 'revenue' | 'payable' | 'receivable' | 'other';
+export type AccountType = 'asset' | 'liability' | 'equity' | 'bank' | 'cash' | 'expense' | 'revenue' | 'payable' | 'receivable' | 'other';
 
 export interface AccountingAccount {
   id: string;
   accountCode: string;
   accountName: string;
   accountType: AccountType;
+  parentId?: string;
   bankName?: string;
   bankAccountNumber?: string;
   currency?: string;
@@ -831,6 +855,31 @@ export interface PaymentTemplate {
   category?: string;
   description?: string;
   notes?: string;
+  createdAt?: string;
+}
+
+// ─── Journal Entries (日記帳) ─────────────────────────────────────
+
+export interface JournalEntry {
+  id: string;
+  voucherNumber: string;
+  entryDate: string;
+  description: string;
+  sourceType?: 'manual' | 'ap' | 'ar' | 'expense';
+  sourceId?: string;
+  isPosted: boolean;
+  createdAt?: string;
+}
+
+export interface JournalEntryLine {
+  id: string;
+  journalEntryId: string;
+  accountId?: string;
+  accountCode: string;
+  accountName: string;
+  debit: number;
+  credit: number;
+  description?: string;
   createdAt?: string;
 }
 
@@ -1072,4 +1121,39 @@ export interface StockMovement {
   performedAt: string;
   notes?: string;
   ingredientName?: string;
+}
+
+// ─── Quotation types ────────────────────────────────────────────
+
+export type QuotationStatus = 'draft' | 'sent' | 'accepted' | 'rejected' | 'expired' | 'converted';
+
+export interface QuotationLineItem {
+  productId?: string;
+  productName: string;
+  qty: number;
+  unit?: string;
+  unitPrice: number;
+  lineTotal: number;
+  processingTypeName?: string;
+  processingSpec?: string;
+  lineNote?: string;
+}
+
+export interface Quotation {
+  id: string;
+  quoteNumber: string;
+  clientId?: string;
+  clientName: string;
+  clientCode?: string;
+  brand?: WholesaleBrand;
+  status: QuotationStatus;
+  quoteDate: string;
+  validUntil?: string;
+  lineItems: QuotationLineItem[];
+  subtotal: number;
+  total: number;
+  notes?: string;
+  convertedOrderId?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }

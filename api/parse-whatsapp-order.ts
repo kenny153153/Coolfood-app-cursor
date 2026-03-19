@@ -54,7 +54,7 @@ export default async function handler(req: VercelRequest & { headers?: Record<st
   }
 
   const { verifyAdminRequest } = await import('./_adminAuth');
-  const authResult = await verifyAdminRequest(req);
+  const authResult = await verifyAdminRequest(req, 'orders', 'create');
   if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
   const { message, products, clientNames, corrections, extraUnits, processingTypes, clientPreferences } = req.body || {};

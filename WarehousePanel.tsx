@@ -20,7 +20,7 @@ interface Props {
   showToast: (msg: string, type?: 'success' | 'error') => void;
 }
 
-type SubTab = 'ingredients' | 'suppliers' | 'quote_compare' | 'purchase_orders' | 'goods_receiving' | 'units' | 'processing_types';
+type SubTab = 'ingredients' | 'suppliers' | 'quote_compare' | 'purchase_orders' | 'goods_receiving' | 'units' | 'processing_types' | 'reorder_alerts';
 
 const SALE_CHANNELS: { value: SaleChannel; label: string }[] = [
   { value: 'both', label: '全部' },
@@ -1282,6 +1282,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
           { id: 'purchase_orders' as SubTab, label: '購買訂單', icon: <ShoppingCart size={16} /> },
           { id: 'goods_receiving' as SubTab, label: '收貨入倉', icon: <PackageCheck size={16} /> },
           { id: 'processing_types' as SubTab, label: '加工方式', icon: <Scissors size={16} /> },
+          { id: 'reorder_alerts' as SubTab, label: '補貨預警', icon: <AlertTriangle size={16} /> },
           { id: 'units' as SubTab, label: '單位管理', icon: <Filter size={16} /> },
         ]).map(tab => (
           <button
@@ -2821,6 +2822,86 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
           </div>
         </div>
       )}
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {/* ── TAB: 補貨預警 ── */}
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {subTab === 'reorder_alerts' && (() => {
+        const alertItems = ingredients
+          .filter(ing => ing.minStockAlert && ing.minStockAlert > 0 && (ing.stockQty || 0) <= ing.minStockAlert)
+          .sort((a, b) => ((a.stockQty || 0) / (a.minStockAlert || 1)) - ((b.stockQty || 0) / (b.minStockAlert || 1)));
+
+        const criticalCount = alertItems.filter(i => (i.stockQty || 0) <= 0).length;
+        const warningCount = alertItems.length - criticalCount;
+
+        return (
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-4">
+              <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">需補貨品項</p>
+                <p className="text-3xl font-black text-slate-900 mt-1">{alertItems.length}</p>
+              </div>
+              <div className="bg-white p-6 rounded-[2rem] border border-rose-100 shadow-sm">
+                <p className="text-[10px] font-bold text-rose-400 uppercase tracking-widest">缺貨 (0庫存)</p>
+                <p className="text-3xl font-black text-rose-600 mt-1">{criticalCount}</p>
+              </div>
+              <div className="bg-white p-6 rounded-[2rem] border border-amber-100 shadow-sm">
+                <p className="text-[10px] font-bold text-amber-400 uppercase tracking-widest">低庫存警告</p>
+                <p className="text-3xl font-black text-amber-600 mt-1">{warningCount}</p>
+              </div>
+            </div>
+
+            {alertItems.length === 0 ? (
+              <div className="bg-white p-12 rounded-[3rem] border border-slate-100 shadow-sm text-center">
+                <p className="text-lg font-black text-emerald-600">庫存充足</p>
+                <p className="text-sm text-slate-400 font-bold mt-2">所有原材料的庫存都高於安全水位</p>
+              </div>
+            ) : (
+              <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                      <th className="px-6 py-3 text-left">狀態</th>
+                      <th className="px-4 py-3 text-left">原材料</th>
+                      <th className="px-4 py-3 text-left">分類</th>
+                      <th className="px-4 py-3 text-right">現有庫存</th>
+                      <th className="px-4 py-3 text-right">安全水位</th>
+                      <th className="px-4 py-3 text-right">差額</th>
+                      <th className="px-4 py-3 text-left">供應商</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {alertItems.map(ing => {
+                      const deficit = (ing.minStockAlert || 0) - (ing.stockQty || 0);
+                      const isCritical = (ing.stockQty || 0) <= 0;
+                      return (
+                        <tr key={ing.id} className="border-t border-slate-50 hover:bg-slate-50/50">
+                          <td className="px-6 py-2.5">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-black ${isCritical ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>
+                              {isCritical ? '缺貨' : '低庫存'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2.5 font-bold text-slate-800">{ing.name}</td>
+                          <td className="px-4 py-2.5 text-xs font-bold text-slate-500">{ing.category || '—'}</td>
+                          <td className={`px-4 py-2.5 text-right font-black ${isCritical ? 'text-rose-600' : 'text-amber-600'}`}>
+                            {(ing.stockQty || 0).toFixed(1)} {ing.stockUnit || ing.unit}
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-bold text-slate-500">
+                            {(ing.minStockAlert || 0).toFixed(1)} {ing.stockUnit || ing.unit}
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-black text-rose-600">
+                            -{deficit.toFixed(1)}
+                          </td>
+                          <td className="px-4 py-2.5 text-xs font-bold text-slate-500">{ing.supplier || '—'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 };

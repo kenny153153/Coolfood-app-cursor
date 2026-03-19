@@ -129,7 +129,7 @@ export default async function handler(
 
   // Auth: allow admin users or internal server calls
   const { verifyAdminRequest } = await import('./_adminAuth');
-  const authResult = await verifyAdminRequest(req);
+  const authResult = await verifyAdminRequest(req, 'dispatch', 'create');
   if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
   const partnerID = (process.env.SF_PARTNER_ID ?? process.env.SF_CLIENT_CODE ?? '').trim();

@@ -98,7 +98,7 @@ export default async function handler(
   }
 
   const { verifyAdminRequest } = await import('./_adminAuth');
-  const authResult = await verifyAdminRequest(req);
+  const authResult = await verifyAdminRequest(req, 'dispatch', 'read');
   if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
   const body = req.body as LabelPayload;

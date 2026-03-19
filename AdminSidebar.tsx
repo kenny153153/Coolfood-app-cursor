@@ -5,7 +5,7 @@ import {
   Globe, Settings, ShieldCheck, LogOut,
   ChevronLeft, ChevronDown,
   ClipboardList, Cpu, Wallet, Image as ImageIcon,
-  PlusCircle, Factory,
+  PlusCircle, Factory, FileText,
 } from 'lucide-react';
 import { useWorkspace, WORKSPACE_META } from './WorkspaceContext';
 import type { AdminPermissions, AdminAccount, Workspace, AdminModuleId } from './types';
@@ -22,6 +22,7 @@ const WHOLESALE_ITEMS: SidebarItem[] = [
   { id: 'orders', label: '訂單列表', icon: <ClipboardList size={18}/> },
   { id: 'wholesale_clients', label: '批發客資料庫', icon: <Users size={18}/> },
   { id: 'sales_reps', label: '銷售員', icon: <Users size={18}/> },
+  { id: 'quotations', label: '報價單', icon: <FileText size={18}/> },
   { id: 'inventory', label: '產品/分類', icon: <Package size={18}/> },
   { id: 'pricing', label: '價錢設定', icon: <DollarSign size={18}/> },
 ];

@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
-import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, WholesalePriceTier, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel, MemberType, IngredientCategory, AdminPermissions, AdminAccount, AdminRole, Workspace, AdminModuleId, ProcessingType, ProductType, ProductGroup, ProductClassification, PricingMode, StaffRoleTemplate } from './types';
+import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, WholesalePriceTier, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel, MemberType, IngredientCategory, AdminPermissions, AdminAccount, AdminRole, Workspace, AdminModuleId, ProcessingType, ProductType, ProductGroup, ProductClassification, PricingMode, StaffRoleTemplate, ModulePermission, CrudOp } from './types';
 import { WorkspaceProvider } from './WorkspaceContext';
 import { useSite } from './SiteContext';
 import GHFoodsStorefront from './GHFoodsStorefront';
@@ -29,6 +29,10 @@ import NewOrderPanel from './NewOrderPanel';
 import AccountingPanel from './AccountingPanel';
 import WarehousePanel from './WarehousePanel';
 import ProductionPanel from './ProductionPanel';
+import SalesAnalyticsPanel from './SalesAnalyticsPanel';
+import QuotationPanel from './QuotationPanel';
+import { buildPickingSlipHtml, buildAggregatePickingHtml, buildInvoiceHtml, getBusinessLabel } from './printUtils';
+import type { PickingOrderData, AggregatePickingData, InvoiceOrderData } from './printUtils';
 import { useI18n, Language } from './i18n';
 import { supabase } from './supabaseClient';
 import {
@@ -510,27 +514,47 @@ const DEFAULT_SLIDESHOW: SlideshowItem[] = [
 
 // --- Admin Auth Constants ---
 
+const FULL_ACCESS: ModulePermission = { read: true, create: true, update: true, delete: true, export: true };
+const NO_ACCESS: ModulePermission = { read: false, create: false, update: false, delete: false, export: false };
+const READ_ONLY: ModulePermission = { read: true, create: false, update: false, delete: false, export: false };
+
+const CRUD_OPS: CrudOp[] = ['read', 'create', 'update', 'delete', 'export'];
+const CRUD_OP_LABELS: Record<CrudOp, string> = {
+  read: '讀取', create: '新增', update: '修改', delete: '刪除', export: '匯出',
+};
+
+/** Convert legacy boolean or ModulePermission to normalized ModulePermission */
+const normalizePermValue = (val: boolean | ModulePermission | undefined | null): ModulePermission => {
+  if (!val) return { ...NO_ACCESS };
+  if (typeof val === 'boolean') return val ? { ...FULL_ACCESS } : { ...NO_ACCESS };
+  return { read: !!val.read, create: !!val.create, update: !!val.update, delete: !!val.delete, export: !!val.export };
+};
+
+/** Check if a ModulePermission grants any access (read=true) */
+const hasAnyAccess = (perm: ModulePermission | undefined | null): boolean => !!perm?.read;
+
 const DEFAULT_ADMIN_PERMISSIONS: AdminPermissions = {
-  global_dashboard: true,
-  new_order: true,
-  orders: true,
-  dispatch: true,
-  warehouse_ops: true,
-  production: true,
-  accounting: true,
-  wholesale_clients: true,
-  sales_reps: true,
-  inventory: true,
-  pricing: true,
-  dashboard: true,
-  members: true,
-  slideshow: true,
-  recipes: true,
-  ingredients: true,
-  costs: true,
-  language: true,
-  settings: true,
-  admin_management: false,
+  global_dashboard: { ...FULL_ACCESS },
+  new_order: { ...FULL_ACCESS },
+  orders: { ...FULL_ACCESS },
+  dispatch: { ...FULL_ACCESS },
+  warehouse_ops: { ...FULL_ACCESS },
+  production: { ...FULL_ACCESS },
+  accounting: { ...FULL_ACCESS },
+  wholesale_clients: { ...FULL_ACCESS },
+  sales_reps: { ...FULL_ACCESS },
+  quotations: { ...FULL_ACCESS },
+  inventory: { ...FULL_ACCESS },
+  pricing: { ...FULL_ACCESS },
+  dashboard: { ...FULL_ACCESS },
+  members: { ...FULL_ACCESS },
+  slideshow: { ...FULL_ACCESS },
+  recipes: { ...FULL_ACCESS },
+  ingredients: { ...FULL_ACCESS },
+  costs: { ...FULL_ACCESS },
+  language: { ...FULL_ACCESS },
+  settings: { ...FULL_ACCESS },
+  admin_management: { ...NO_ACCESS },
 };
 
 const ALL_STAFF_ROLES: AdminRole[] = ['super_admin', 'admin', 'customer_service', 'buyer', 'accountant', 'factory', 'sales_rep'];
@@ -575,6 +599,7 @@ const ADMIN_MODULE_PERMISSION_MAP: Record<string, keyof AdminPermissions> = {
   accounting: 'accounting',
   wholesale_clients: 'wholesale_clients',
   sales_reps: 'sales_reps',
+  quotations: 'quotations',
   inventory: 'inventory',
   pricing: 'pricing',
   dashboard: 'dashboard',
@@ -598,6 +623,7 @@ const ADMIN_PERMISSION_LABELS: Record<keyof AdminPermissions, string> = {
   accounting: '會計',
   wholesale_clients: '批發客資料庫',
   sales_reps: '銷售員',
+  quotations: '報價單',
   inventory: '產品/分類',
   pricing: '價錢設定',
   dashboard: '零售儀表板',
@@ -613,21 +639,24 @@ const ADMIN_PERMISSION_LABELS: Record<keyof AdminPermissions, string> = {
 
 const PERMISSION_GROUPS: { label: string; keys: (keyof AdminPermissions)[] }[] = [
   { label: '通用', keys: ['global_dashboard', 'new_order'] },
-  { label: '批發', keys: ['orders', 'wholesale_clients', 'sales_reps', 'pricing'] },
+  { label: '批發', keys: ['orders', 'wholesale_clients', 'sales_reps', 'quotations', 'pricing'] },
   { label: '零售', keys: ['dashboard', 'members', 'slideshow', 'recipes', 'language'] },
   { label: '營運', keys: ['dispatch', 'warehouse_ops', 'production', 'inventory', 'ingredients'] },
   { label: '財務', keys: ['accounting', 'costs'] },
   { label: '系統', keys: ['settings', 'admin_management'] },
 ];
 
-/** Build auth headers for admin-only API calls */
-function buildAdminHeaders(admin: { id: string; role: string } | null): Record<string, string> {
+/** Build auth headers for admin-only API calls, with optional module + operation for CRUD enforcement */
+function buildAdminHeaders(admin: { id: string; role: string } | null, module?: string, op?: CrudOp): Record<string, string> {
   if (!admin) return { 'Content-Type': 'application/json' };
-  return {
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'x-admin-id': admin.id,
     'x-admin-role': admin.role,
   };
+  if (module) headers['x-admin-module'] = module;
+  if (op) headers['x-admin-op'] = op;
+  return headers;
 }
 
 // --- Main App ---
@@ -662,6 +691,9 @@ const App: React.FC = () => {
   const [staffRoles, setStaffRoles] = useState<StaffRoleTemplate[]>([]);
   const [editingStaffRole, setEditingStaffRole] = useState<(Partial<StaffRoleTemplate> & { isNew?: boolean }) | null>(null);
   const [staffMgmtTab, setStaffMgmtTab] = useState<'staff' | 'roles'>('staff');
+  const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [passwordChangeForm, setPasswordChangeForm] = useState({ newPassword: '', confirmPassword: '' });
+  const [expandedPermModules, setExpandedPermModules] = useState<Set<string>>(new Set());
   const [inventorySubTab, setInventorySubTab] = useState<'products' | 'categories' | 'rules'>('products');
   const [pricingSubTab, setPricingSubTab] = useState<'retail' | 'wholesale'>('retail');
   const [inventoryChannelFilter, setInventoryChannelFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
@@ -1291,7 +1323,7 @@ const App: React.FC = () => {
         if (!session?.id || !session?.role) return;
         const { data } = await supabase
           .from('members')
-          .select('id, name, phone_number, role, admin_permissions')
+          .select('id, name, phone_number, role, admin_permissions, must_change_password')
           .eq('id', session.id)
           .neq('role', 'customer')
           .maybeSingle();
@@ -1299,11 +1331,12 @@ const App: React.FC = () => {
           try { localStorage.removeItem('coolfood_admin_session'); } catch { /* ignore */ }
           return;
         }
-        const permissions = buildAdminPermissions(data.role, data.admin_permissions as Record<string, boolean> | null);
+        const permissions = buildAdminPermissions(data.role, data.admin_permissions as Record<string, boolean | ModulePermission> | null);
         const roleLabel = ADMIN_ROLE_LABELS[data.role as AdminRole] || data.role;
         const admin: AdminAccount = { id: data.id, name: data.name, phone: data.phone_number, role: data.role as AdminRole, roleDisplayName: roleLabel, permissions, isActive: true };
         setAdminUser(admin);
         setIsAdminAuthenticated(true);
+        if ((data as any).must_change_password) setMustChangePassword(true);
         try { localStorage.setItem('coolfood_admin_session', JSON.stringify(admin)); } catch { /* ignore */ }
       } catch { /* ignore */ }
     };
@@ -1404,29 +1437,42 @@ const App: React.FC = () => {
     loadOrderDetails();
   }, [inspectingOrder, isAdminRoute, user]);
 
-  const buildAdminPermissions = (role: string, overrides?: Record<string, boolean> | null): AdminPermissions => {
+  const buildAdminPermissions = (role: string, overrides?: Record<string, boolean | ModulePermission> | null): AdminPermissions => {
     if (role === 'super_admin') {
       const all: AdminPermissions = {} as AdminPermissions;
-      for (const key of Object.keys(DEFAULT_ADMIN_PERMISSIONS) as (keyof AdminPermissions)[]) all[key] = true;
+      for (const key of Object.keys(DEFAULT_ADMIN_PERMISSIONS) as (keyof AdminPermissions)[]) all[key] = { ...FULL_ACCESS };
       return all;
     }
     if (overrides && Object.keys(overrides).length > 0) {
-      const perms = { ...DEFAULT_ADMIN_PERMISSIONS };
-      for (const key of Object.keys(perms) as (keyof AdminPermissions)[]) {
-        perms[key] = overrides[key] ?? false;
+      const perms = {} as AdminPermissions;
+      for (const key of Object.keys(DEFAULT_ADMIN_PERMISSIONS) as (keyof AdminPermissions)[]) {
+        perms[key] = normalizePermValue(overrides[key]);
       }
-      if (role !== 'admin') perms.admin_management = false;
+      if (role !== 'admin') perms.admin_management = { ...NO_ACCESS };
       return perms;
     }
     const matched = staffRoles.find(r => r.name === role);
-    if (matched) return { ...matched.modulePermissions };
-    return { ...DEFAULT_ADMIN_PERMISSIONS, admin_management: false };
+    if (matched) {
+      const perms = {} as AdminPermissions;
+      for (const key of Object.keys(DEFAULT_ADMIN_PERMISSIONS) as (keyof AdminPermissions)[]) {
+        perms[key] = normalizePermValue((matched.modulePermissions as any)[key]);
+      }
+      return perms;
+    }
+    return { ...DEFAULT_ADMIN_PERMISSIONS, admin_management: { ...NO_ACCESS } };
   };
 
   const hasAdminPermission = (module: keyof AdminPermissions): boolean => {
     if (!adminUser) return false;
     if (adminUser.role === 'super_admin') return true;
-    return adminUser.permissions[module] ?? false;
+    return hasAnyAccess(adminUser.permissions[module]);
+  };
+
+  const hasModuleOp = (module: keyof AdminPermissions, op: CrudOp): boolean => {
+    if (!adminUser) return false;
+    if (adminUser.role === 'super_admin') return true;
+    const perm = adminUser.permissions[module];
+    return perm ? !!perm[op] : false;
   };
 
   const handleAdminModuleNav = (moduleId: AdminModuleId, workspace?: Workspace | null) => {
@@ -1454,14 +1500,14 @@ const App: React.FC = () => {
     try {
       const { data, error } = await supabase
         .from('members')
-        .select('id, name, email, password_hash, phone_number, points, wallet_balance, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses')
+        .select('id, name, email, password_hash, phone_number, points, wallet_balance, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses, must_change_password')
         .eq('phone_number', adminLoginForm.username)
         .neq('role', 'customer')
         .single();
       if (error || !data) { showToast('帳號或密碼錯誤', 'error'); return; }
       const ok = await verifyPassword(adminLoginForm.password, data.password_hash || '');
       if (!ok) { showToast('帳號或密碼錯誤', 'error'); return; }
-      const permissions = buildAdminPermissions(data.role, data.admin_permissions as Record<string, boolean> | null);
+      const permissions = buildAdminPermissions(data.role, data.admin_permissions as Record<string, boolean | ModulePermission> | null);
       const roleLabel = ADMIN_ROLE_LABELS[data.role as AdminRole] || data.role;
       const admin: AdminAccount = {
         id: data.id,
@@ -1474,10 +1520,36 @@ const App: React.FC = () => {
       };
       setAdminUser(admin);
       setIsAdminAuthenticated(true);
+      if ((data as any).must_change_password) {
+        setMustChangePassword(true);
+      }
       try { localStorage.setItem('coolfood_admin_session', JSON.stringify(admin)); } catch { /* ignore */ }
       showToast(`歡迎回來，${admin.name}！`);
     } catch {
       showToast('登入失敗，請稍後再試', 'error');
+    }
+  };
+
+  const handleForcePasswordChange = async () => {
+    if (!adminUser) return;
+    if (!passwordChangeForm.newPassword || passwordChangeForm.newPassword.length < 6) {
+      showToast('新密碼至少需要6個字元', 'error'); return;
+    }
+    if (passwordChangeForm.newPassword !== passwordChangeForm.confirmPassword) {
+      showToast('兩次輸入的密碼不一致', 'error'); return;
+    }
+    try {
+      const newHash = await hashPassword(passwordChangeForm.newPassword);
+      const { error } = await supabase
+        .from('members')
+        .update({ password_hash: newHash, must_change_password: false })
+        .eq('id', adminUser.id);
+      if (error) { showToast(`更改密碼失敗：${error.message}`, 'error'); return; }
+      setMustChangePassword(false);
+      setPasswordChangeForm({ newPassword: '', confirmPassword: '' });
+      showToast('密碼已更新！');
+    } catch {
+      showToast('更改密碼失敗', 'error');
     }
   };
 
@@ -1511,7 +1583,7 @@ const App: React.FC = () => {
       phone: r.phone_number,
       role: r.role as AdminRole,
       roleDisplayName: ADMIN_ROLE_LABELS[r.role as AdminRole] || r.role,
-      permissions: buildAdminPermissions(r.role, r.admin_permissions as Record<string, boolean> | null),
+      permissions: buildAdminPermissions(r.role, r.admin_permissions as Record<string, boolean | ModulePermission> | null),
       isActive: true,
     })));
   };
@@ -1525,7 +1597,7 @@ const App: React.FC = () => {
     if (findErr || !member) { showToast('找不到此電話號碼的會員帳戶', 'error'); return; }
     const { error } = await supabase
       .from('members')
-      .update({ role, admin_permissions: permissions })
+      .update({ role, admin_permissions: permissions, must_change_password: true })
       .eq('id', member.id);
     if (error) { showToast(`授權失敗：${error.message}`, 'error'); return; }
     await loadAdminAccounts();
@@ -2448,7 +2520,7 @@ const App: React.FC = () => {
 
   // ========== Batch Order Operations ==========
 
-  /** PAID tab → 打印執貨單 (large-font picking list) + auto transition to PREPARING */
+  /** PAID tab → 打印執貨單 (unified A5 picking slip) + auto transition to PREPARING */
   const handlePrintPickingList = async () => {
     if (selectedOrderIds.size === 0) return;
     setBatchProcessing(true);
@@ -2464,75 +2536,53 @@ const App: React.FC = () => {
       if (error || !data) { showToast('載入訂單資料失敗', 'error'); setBatchProcessing(false); return; }
 
       const orderRows = data as SupabaseOrderRow[];
-      const today = new Date().toLocaleDateString('zh-HK');
+
+      // Batch-fetch client codes and route names for wholesale orders
+      const wcIds = [...new Set(orderRows.map(r => r.wholesale_client_id).filter(Boolean))] as string[];
+      const rtIds = [...new Set(orderRows.map(r => r.route_id).filter(Boolean))] as string[];
+      let clientMap: Record<string, string> = {};
+      let routeMap: Record<string, string> = {};
+      if (wcIds.length) {
+        const { data: cl } = await supabase.from('wholesale_clients').select('id, client_code').in('id', wcIds);
+        if (cl) clientMap = Object.fromEntries(cl.map((c: any) => [c.id, c.client_code || '']));
+      }
+      if (rtIds.length) {
+        const { data: rt } = await supabase.from('delivery_routes').select('id, name').in('id', rtIds);
+        if (rt) routeMap = Object.fromEntries(rt.map((r: any) => [r.id, r.name || '']));
+      }
+
+      const now = new Date();
+      const ts = `${now.toLocaleDateString('zh-TW')} ${now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}`;
+
+      const pickingOrders: PickingOrderData[] = orderRows.map(row => {
+        const oid = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
+        const cc = row.client_code || clientMap[row.wholesale_client_id || ''] || '';
+        const rn = routeMap[row.route_id || ''] || '';
+        return {
+          orderId: oid,
+          customerName: row.customer_name,
+          clientCode: cc,
+          phone: row.customer_phone || '',
+          address: [row.delivery_district, row.delivery_address].filter(Boolean).join(' ') || '',
+          deliveryDate: row.delivery_date || '',
+          routeName: rn,
+          businessLabel: getBusinessLabel(row.order_type, row.wholesale_brand),
+          timestamp: ts,
+          items: (row.line_items || []).map(item => ({
+            productName: item.name,
+            qty: item.qty,
+            unit: item.unit || '',
+            processingType: item.processing_type_name,
+            processingSpec: item.processing_spec,
+            lineNote: item.line_note,
+          })),
+        };
+      });
+
+      const html = buildPickingSlipHtml(pickingOrders);
       const printWindow = window.open('', '_blank');
       if (!printWindow) { showToast('無法開啟列印視窗，請允許彈出視窗', 'error'); setBatchProcessing(false); return; }
-
-      const pagesHtml = orderRows.map((row, idx) => {
-        const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : row.id;
-        const address = [row.delivery_district, row.delivery_address, row.delivery_street, row.delivery_building].filter(Boolean).join(' ');
-        const floorFlat = [row.delivery_floor ? row.delivery_floor + '樓' : '', row.delivery_flat ? row.delivery_flat + '室' : ''].filter(Boolean).join(' ');
-        const fullAddress = [address, floorFlat].filter(Boolean).join(' ') || '未提供地址';
-        const items = row.line_items || [];
-        const itemCount = items.length;
-        const baseFontPx = itemCount > 12 ? 16 : itemCount > 8 ? 18 : 20;
-        const nameFontPx = itemCount > 12 ? 18 : itemCount > 8 ? 20 : 24;
-        const qtyFontPx = itemCount > 12 ? 20 : itemCount > 8 ? 22 : 26;
-
-        const lineItemsHtml = items.map((item, i) =>
-          `<tr>
-            <td style="font-size:${baseFontPx}px">${i + 1}</td>
-            <td style="font-size:${baseFontPx}px">${item.product_id || '-'}</td>
-            <td class="product-name" style="font-size:${nameFontPx}px;font-weight:900">${item.name}</td>
-            <td class="qty-cell" style="font-size:${qtyFontPx}px;font-weight:900;text-align:center">${item.qty}</td>
-            <td style="font-size:${baseFontPx}px;text-align:right">$${item.unit_price}</td>
-            <td style="font-size:${baseFontPx}px;text-align:right">$${item.line_total}</td>
-          </tr>`
-        ).join('');
-
-        return `<div class="page" ${idx < orderRows.length - 1 ? 'style="page-break-after:always"' : ''}>
-          <div class="header">
-            <div class="header-row"><span class="header-label">訂單編號</span><span class="header-value">#${orderId}</span></div>
-            <div class="header-row"><span class="header-label">日期</span><span class="header-value">${today}</span></div>
-            <div class="header-row"><span class="header-label">客戶</span><span class="header-value">${row.customer_name}</span></div>
-            <div class="header-row"><span class="header-label">電話</span><span class="header-value">${row.customer_phone || '未提供'}</span></div>
-            <div class="header-row full"><span class="header-label">地址</span><span class="header-value">${fullAddress}</span></div>
-            ${(row as any).delivery_date ? `<div class="header-row"><span class="header-label">指定到貨</span><span class="header-value">${(row as any).delivery_date}</span></div>` : ''}
-          </div>
-          <table>
-            <thead><tr><th>#</th><th>編號</th><th>商品名稱</th><th style="text-align:center">數量</th><th style="text-align:right">單價</th><th style="text-align:right">小計</th></tr></thead>
-            <tbody>${lineItemsHtml}</tbody>
-          </table>
-          <div class="footer-totals">
-            <span>小計 $${row.subtotal ?? row.total}</span>
-            <span>運費 $${row.delivery_fee ?? 0}</span>
-            <span class="grand">總計 $${row.total}</span>
-          </div>
-        </div>`;
-      }).join('');
-
-      printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>執貨單</title>
-        <style>
-          @page { size: A4; margin: 12mm; }
-          * { box-sizing: border-box; margin: 0; padding: 0; }
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft JhengHei', sans-serif; color: #1e293b; }
-          .page { width: 100%; max-height: 100vh; overflow: hidden; padding: 8px 0; }
-          .header { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 3px solid #1e293b; }
-          .header-row { display: flex; gap: 8px; align-items: baseline; }
-          .header-row.full { grid-column: 1 / -1; }
-          .header-label { font-size: 11px; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 1px; min-width: 60px; }
-          .header-value { font-size: 16px; font-weight: 900; color: #0f172a; }
-          table { width: 100%; border-collapse: collapse; line-height: 1.8; }
-          th { background: #f1f5f9; padding: 6px 8px; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #64748b; border-bottom: 2px solid #cbd5e1; text-align: left; }
-          td { padding: 5px 8px; border-bottom: 1px solid #e2e8f0; font-weight: 600; line-height: 1.8; vertical-align: middle; }
-          tr:nth-child(even) { background: #f8fafc; }
-          .product-name { font-weight: 900 !important; }
-          .qty-cell { font-weight: 900 !important; }
-          .footer-totals { display: flex; justify-content: flex-end; gap: 20px; padding-top: 8px; border-top: 2px solid #1e293b; margin-top: 8px; font-size: 14px; font-weight: 700; }
-          .footer-totals .grand { font-weight: 900; font-size: 18px; }
-          @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
-        </style>
-      </head><body>${pagesHtml}</body></html>`);
+      printWindow.document.write(html);
       printWindow.document.close();
       printWindow.focus();
       setTimeout(() => printWindow.print(), 300);
@@ -2541,7 +2591,7 @@ const App: React.FC = () => {
       if (updateErr) {
         showToast(`執貨單已生成，但狀態更新失敗：${updateErr.message}`, 'error');
       } else {
-        showToast(`已生成 ${orderRows.length} 張執貨單，訂單已轉為「備貨中」`);
+        showToast(`已生成 ${pickingOrders.length} 張執貨單，訂單已轉為「備貨中」`);
       }
       await fetchOrders();
       setSelectedOrderIds(new Set());
@@ -2551,7 +2601,7 @@ const App: React.FC = () => {
     setBatchProcessing(false);
   };
 
-  /** PREPARING tab → 打印總執貨單 (aggregate picking list for cold storage) */
+  /** PREPARING tab → 打印大執貨表 (aggregate picking list, split by business type) */
   const handlePrintAggregateList = async () => {
     if (selectedOrderIds.size === 0) return;
     setBatchProcessing(true);
@@ -2560,53 +2610,104 @@ const App: React.FC = () => {
       const { data, error } = await supabase.from('orders').select('*').in('id', dbIds);
       if (error || !data) { showToast('載入訂單資料失敗', 'error'); setBatchProcessing(false); return; }
 
-      const aggregated: Record<string, { name: string; qty: number; image?: string | null }> = {};
-      for (const row of data as SupabaseOrderRow[]) {
-        for (const item of row.line_items || []) {
-          const key = `${item.product_id}_${item.name}`;
-          if (aggregated[key]) { aggregated[key].qty += item.qty; }
-          else { aggregated[key] = { name: item.name, qty: item.qty, image: item.image }; }
-        }
-      }
-
-      const sorted = Object.values(aggregated).sort((a, b) => b.qty - a.qty);
+      const rows = data as SupabaseOrderRow[];
       const today = new Date().toLocaleDateString('zh-HK');
 
+      // Group orders by business type
+      const grouped: Record<string, SupabaseOrderRow[]> = {};
+      for (const row of rows) {
+        const label = getBusinessLabel(row.order_type, row.wholesale_brand);
+        if (!grouped[label]) grouped[label] = [];
+        grouped[label].push(row);
+      }
+
+      // Build one aggregate section per business type
+      const sections: AggregatePickingData[] = Object.entries(grouped).map(([label, bizOrders]) => {
+        const agg: Record<string, { name: string; qty: number; unit?: string }> = {};
+        for (const row of bizOrders) {
+          for (const item of row.line_items || []) {
+            const procTag = item.processing_type_name && item.processing_type_name !== '原件'
+              ? `【${item.processing_type_name}${item.processing_spec ? ' ' + item.processing_spec : ''}】`
+              : '';
+            const displayName = procTag ? `${procTag} ${item.name}` : item.name;
+            const key = `${item.product_id}_${item.name}_${procTag}`;
+            if (agg[key]) { agg[key].qty += item.qty; }
+            else { agg[key] = { name: displayName, qty: item.qty, unit: item.unit || '' }; }
+          }
+        }
+        return {
+          businessLabel: label,
+          date: today,
+          orderCount: bizOrders.length,
+          items: Object.values(agg).sort((a, b) => b.qty - a.qty),
+          orderIds: bizOrders.map(r => typeof r.id === 'number' ? `ORD-${r.id}` : String(r.id)),
+        };
+      });
+
+      const html = buildAggregatePickingHtml(sections);
       const printWindow = window.open('', '_blank');
       if (!printWindow) { showToast('無法開啟列印視窗，請允許彈出視窗', 'error'); setBatchProcessing(false); return; }
-      const orderIdList = (data as SupabaseOrderRow[]).map(r => typeof r.id === 'number' ? `ORD-${r.id}` : r.id);
-      printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>總執貨單</title>
-        <style>
-          @page { size: A4; margin: 15mm; }
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft JhengHei', sans-serif; color: #1e293b; }
-          h1 { font-size: 28px; font-weight: 900; margin-bottom: 8px; }
-          .meta { color: #64748b; font-size: 13px; margin-bottom: 24px; }
-          table { width: 100%; border-collapse: collapse; line-height: 1.8; }
-          th { background: #f1f5f9; padding: 10px 14px; text-align: left; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #64748b; border-bottom: 2px solid #e2e8f0; }
-          td { padding: 10px 14px; border-bottom: 1px solid #f1f5f9; font-size: 18px; font-weight: 700; line-height: 1.8; }
-          tr:nth-child(even) { background: #f8fafc; }
-          .name-cell { font-size: 20px; font-weight: 900; }
-          .qty-cell { font-size: 24px; font-weight: 900; color: #0f172a; text-align: center; }
-          .order-ids { margin-top: 32px; padding-top: 16px; border-top: 2px solid #e2e8f0; }
-          .order-ids h3 { font-size: 13px; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-          .order-ids p { font-size: 13px; font-weight: 700; color: #334155; line-height: 1.8; word-break: break-all; }
-          @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
-        </style>
-      </head><body>
-        <h1>總執貨單</h1>
-        <p class="meta">日期：${today} ｜ 共 ${selectedOrderIds.size} 筆訂單 ｜ ${sorted.length} 種商品</p>
-        <table>
-          <thead><tr><th>#</th><th>商品名稱</th><th style="text-align:center">總數量</th></tr></thead>
-          <tbody>${sorted.map((item, i) => `<tr><td>${i + 1}</td><td class="name-cell">${item.name}</td><td class="qty-cell">${item.qty}</td></tr>`).join('')}</tbody>
-        </table>
-        <div class="order-ids">
-          <h3>包含訂單（共 ${orderIdList.length} 筆）</h3>
-          <p>${orderIdList.map(id => '#' + id).join('、')}</p>
-        </div>
-      </body></html>`);
+      printWindow.document.write(html);
       printWindow.document.close();
       printWindow.focus();
       setTimeout(() => printWindow.print(), 300);
+    } catch (e) {
+      showToast(`列印失敗：${e instanceof Error ? e.message : String(e)}`, 'error');
+    }
+    setBatchProcessing(false);
+  };
+
+  /** Generate printable invoices for selected orders */
+  const handlePrintInvoices = async () => {
+    if (selectedOrderIds.size === 0) return;
+    setBatchProcessing(true);
+    try {
+      const dbIds = Array.from(selectedOrderIds).map(id => getOrderDbId(id)).filter((id): id is number => id !== null);
+      const { data, error } = await supabase.from('orders').select('*').in('id', dbIds);
+      if (error || !data) { showToast('載入訂單資料失敗', 'error'); setBatchProcessing(false); return; }
+
+      const rows = data as SupabaseOrderRow[];
+      const wcIds = [...new Set(rows.map(r => r.wholesale_client_id).filter(Boolean))] as string[];
+      let clientMap: Record<string, string> = {};
+      if (wcIds.length) {
+        const { data: cl } = await supabase.from('wholesale_clients').select('id, client_code').in('id', wcIds);
+        if (cl) clientMap = Object.fromEntries(cl.map((c: any) => [c.id, c.client_code || '']));
+      }
+
+      const today = new Date().toISOString().slice(0, 10);
+      const invoices: InvoiceOrderData[] = rows.map(row => {
+        const oid = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
+        const invNum = `INV-${typeof row.id === 'number' ? row.id : Date.now()}`;
+        const cc = row.client_code || clientMap[row.wholesale_client_id || ''] || '';
+        return {
+          invoiceNumber: invNum,
+          orderId: oid,
+          customerName: row.customer_name,
+          clientCode: cc,
+          phone: row.customer_phone || '',
+          address: [row.delivery_district, row.delivery_address].filter(Boolean).join(' ') || '',
+          invoiceDate: today,
+          businessLabel: getBusinessLabel(row.order_type, row.wholesale_brand),
+          items: (row.line_items || []).map(item => {
+            const procTag = item.processing_type_name && item.processing_type_name !== '原件'
+              ? `【${item.processing_type_name}${item.processing_spec ? ' ' + item.processing_spec : ''}】`
+              : '';
+            return { name: item.name, qty: item.qty, unit: item.unit || '', unitPrice: item.unit_price, lineTotal: item.line_total, processingTag: procTag || undefined };
+          }),
+          subtotal: row.subtotal ?? row.total,
+          deliveryFee: row.delivery_fee ?? 0,
+          total: row.total,
+        };
+      });
+
+      const html = buildInvoiceHtml(invoices);
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) { showToast('無法開啟列印視窗', 'error'); setBatchProcessing(false); return; }
+      printWindow.document.write(html);
+      printWindow.document.close();
+      printWindow.focus();
+      setTimeout(() => printWindow.print(), 300);
+      showToast(`已生成 ${invoices.length} 張發票`);
     } catch (e) {
       showToast(`列印失敗：${e instanceof Error ? e.message : String(e)}`, 'error');
     }
@@ -3908,7 +4009,21 @@ const App: React.FC = () => {
     );
   };
 
+  const renderPermissionDenied = (moduleName: string) => (
+    <div className="flex flex-col items-center justify-center py-24 text-slate-400 animate-fade-in">
+      <ShieldCheck size={48} className="mb-4 opacity-30" />
+      <p className="font-black text-lg">權限不足</p>
+      <p className="text-sm mt-1">您沒有權限進入「{moduleName}」模組</p>
+    </div>
+  );
+
   const renderAdminModuleContent = () => {
+    // Enterprise Security: check module-level access before rendering
+    const modulePermKey = ADMIN_MODULE_PERMISSION_MAP[adminModule] as keyof AdminPermissions | undefined;
+    if (modulePermKey && !hasAdminPermission(modulePermKey)) {
+      return renderPermissionDenied(ADMIN_PERMISSION_LABELS[modulePermKey] || adminModule);
+    }
+
     // Functional panels — shared modules
     if (adminModule === 'dispatch') return <DispatchPanel showToast={showToast} />;
     if (adminModule === 'new_order') return <NewOrderPanel showToast={showToast} />;
@@ -3919,10 +4034,12 @@ const App: React.FC = () => {
     // Functional panels — wholesale
     if (adminModule === 'wholesale_clients') return <WholesaleClientsPanel showToast={showToast} />;
     if (adminModule === 'sales_reps') return <SalesRepPanel showToast={showToast} />;
+    if (adminModule === 'quotations') return <QuotationPanel showToast={showToast} />;
     if (moduleWorkspace === 'WHOLESALE' && adminModule === 'pricing') return <WholesalePricingPanel showToast={showToast} />;
 
     // Remaining placeholder modules
-    const placeholderModules = ['global_dashboard'];
+    if (adminModule === 'global_dashboard') return <SalesAnalyticsPanel showToast={showToast} />;
+    const placeholderModules: string[] = [];
     if (placeholderModules.includes(adminModule)) {
       return renderModulePlaceholder(adminModule);
     }
@@ -4073,7 +4190,7 @@ const App: React.FC = () => {
                    <>
                      <button disabled={batchProcessing} onClick={handlePrintAggregateList}
                        className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-black transition-colors disabled:opacity-50">
-                       <ClipboardList size={14} /> 打印總執貨單
+                       <ClipboardList size={14} /> 打印大執貨表
                      </button>
                      <button disabled={batchProcessing} onClick={handlePrintSfLabels}
                        className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-black transition-colors disabled:opacity-50">
@@ -4085,8 +4202,12 @@ const App: React.FC = () => {
                      </button>
                    </>
                  )}
-                 {ordersStatusFilter !== OrderStatus.PAID && ordersStatusFilter !== OrderStatus.PREPARING && (
-                   <span className="text-xs text-slate-400 font-bold">請切換到「已付款」或「備貨中」Tab 執行操作</span>
+                 <button disabled={batchProcessing} onClick={handlePrintInvoices}
+                  className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-500 rounded-xl text-xs font-black transition-colors disabled:opacity-50">
+                  <FileText size={14} /> 打印發票
+                </button>
+                {ordersStatusFilter !== OrderStatus.PAID && ordersStatusFilter !== OrderStatus.PREPARING && ordersStatusFilter !== 'all' && (
+                   <span className="text-xs text-slate-400 font-bold">請切換到「已付款」或「備貨中」Tab 執行更多操作</span>
                  )}
                  <button onClick={() => setSelectedOrderIds(new Set())} className="ml-2 p-2 hover:bg-slate-700 rounded-xl transition-colors">
                    <X size={14} />
@@ -5782,15 +5903,6 @@ const App: React.FC = () => {
           </div>
         );
       case 'admin_management': {
-        if (!hasAdminPermission('admin_management')) {
-          return (
-            <div className="flex flex-col items-center justify-center py-24 text-slate-400">
-              <ShieldCheck size={48} className="mb-4 opacity-30" />
-              <p className="font-black text-lg">權限不足</p>
-              <p className="text-sm mt-1">只有超級管理員才能管理員工帳戶</p>
-            </div>
-          );
-        }
         return (
           <div className="space-y-8 animate-fade-in pb-20">
             {/* Header */}
@@ -5825,7 +5937,7 @@ const App: React.FC = () => {
               <>
                 <div className="flex justify-end">
                   <button
-                    onClick={() => setEditingAdminAccount({ isNew: true, newPhone: '', role: 'admin', permissions: { ...DEFAULT_ADMIN_PERMISSIONS } })}
+                    onClick={() => setEditingAdminAccount({ isNew: true, newPhone: '', role: 'admin', permissions: { ...DEFAULT_ADMIN_PERMISSIONS, admin_management: { ...NO_ACCESS } } })}
                     className="flex items-center gap-2 bg-blue-600 text-white px-5 py-3 rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all"
                   >
                     <Plus size={16}/> 新增員工
@@ -5881,16 +5993,18 @@ const App: React.FC = () => {
                             </div>
                           </div>
 
-                          {/* Permissions grid */}
+                          {/* Permissions grid with CRUD detail */}
                           <div>
                             <p className="text-[10px] font-black text-slate-400 uppercase mb-2">功能權限</p>
                             <div className="flex flex-wrap gap-1.5">
                               {(Object.keys(ADMIN_PERMISSION_LABELS) as (keyof AdminPermissions)[]).map(key => {
-                                const allowed = acc.role === 'super_admin' || acc.permissions[key];
-                                if (!allowed) return null;
+                                const perm = acc.role === 'super_admin' ? FULL_ACCESS : acc.permissions[key];
+                                if (!hasAnyAccess(perm)) return null;
+                                const ops = CRUD_OPS.filter(op => perm[op]);
+                                const isFullAccess = ops.length === 5;
                                 return (
-                                  <span key={key} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700">
-                                    {ADMIN_PERMISSION_LABELS[key]}
+                                  <span key={key} className={`text-[10px] font-bold px-2 py-1 rounded-lg ${isFullAccess ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`} title={ops.map(o => CRUD_OP_LABELS[o]).join(', ')}>
+                                    {ADMIN_PERMISSION_LABELS[key]}{!isFullAccess && <span className="ml-0.5 opacity-60">({ops.map(o => CRUD_OP_LABELS[o][0]).join('')})</span>}
                                   </span>
                                 );
                               })}
@@ -5914,7 +6028,7 @@ const App: React.FC = () => {
                       name: '',
                       displayName: '',
                       isSystem: false,
-                      modulePermissions: { ...DEFAULT_ADMIN_PERMISSIONS },
+                      modulePermissions: { ...DEFAULT_ADMIN_PERMISSIONS, admin_management: { ...NO_ACCESS } },
                       sortOrder: staffRoles.length,
                     })}
                     className="flex items-center gap-2 bg-blue-600 text-white px-5 py-3 rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all"
@@ -5927,7 +6041,7 @@ const App: React.FC = () => {
                   {staffRoles.map(role => {
                     const rc = ADMIN_ROLE_COLORS[role.name as AdminRole] || { bg: 'bg-slate-100', text: 'text-slate-700' };
                     const icon = ADMIN_ROLE_ICONS[role.name as AdminRole] || '👤';
-                    const enabledModules = Object.entries(role.modulePermissions).filter(([, v]) => v).map(([k]) => k);
+                    const enabledModules = Object.entries(role.modulePermissions).filter(([, v]) => hasAnyAccess(normalizePermValue(v as any))).map(([k]) => k);
                     return (
                       <div key={role.id} className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm p-6 space-y-3">
                         <div className="flex items-center justify-between">
@@ -5956,11 +6070,16 @@ const App: React.FC = () => {
                           </div>
                         </div>
                         <div className="flex flex-wrap gap-1.5">
-                          {enabledModules.map(key => (
-                            <span key={key} className={`text-[10px] font-bold px-2 py-1 rounded-lg ${rc.bg} ${rc.text}`}>
-                              {ADMIN_PERMISSION_LABELS[key as keyof AdminPermissions] || key}
-                            </span>
-                          ))}
+                          {enabledModules.map(key => {
+                            const perm = normalizePermValue((role.modulePermissions as any)[key]);
+                            const ops = CRUD_OPS.filter(op => perm[op]);
+                            const isFullAccess = ops.length === 5;
+                            return (
+                              <span key={key} className={`text-[10px] font-bold px-2 py-1 rounded-lg ${isFullAccess ? rc.bg + ' ' + rc.text : 'bg-amber-50 text-amber-700'}`} title={ops.map(o => CRUD_OP_LABELS[o]).join(', ')}>
+                                {ADMIN_PERMISSION_LABELS[key as keyof AdminPermissions] || key}{!isFullAccess && <span className="ml-0.5 opacity-60">({ops.map(o => CRUD_OP_LABELS[o][0]).join('')})</span>}
+                              </span>
+                            );
+                          })}
                           {enabledModules.length === 0 && <span className="text-[10px] text-slate-300 font-bold">無權限</span>}
                         </div>
                       </div>
@@ -6018,11 +6137,18 @@ const App: React.FC = () => {
                               onClick={() => {
                                 const matchedTemplate = staffRoles.find(r => r.name === role);
                                 const templatePerms = matchedTemplate?.modulePermissions;
-                                const newPerms = role === 'super_admin'
-                                  ? (() => { const all: any = {}; Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => all[k] = true); return all as AdminPermissions; })()
-                                  : templatePerms
-                                    ? { ...templatePerms }
-                                    : { ...DEFAULT_ADMIN_PERMISSIONS, admin_management: false };
+                                let newPerms: AdminPermissions;
+                                if (role === 'super_admin') {
+                                  const all: any = {};
+                                  Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => all[k] = { ...FULL_ACCESS });
+                                  newPerms = all as AdminPermissions;
+                                } else if (templatePerms) {
+                                  const p: any = {};
+                                  Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => p[k] = normalizePermValue((templatePerms as any)[k]));
+                                  newPerms = p as AdminPermissions;
+                                } else {
+                                  newPerms = { ...DEFAULT_ADMIN_PERMISSIONS, admin_management: { ...NO_ACCESS } };
+                                }
                                 setEditingAdminAccount(prev => prev ? { ...prev, role, permissions: newPerms } : null);
                               }}
                               className={`p-3 rounded-2xl border-2 text-left transition-all ${
@@ -6037,17 +6163,17 @@ const App: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Permissions tick matrix (not for super_admin) */}
+                    {/* CRUD Permissions Matrix (Enterprise Security — not for super_admin) */}
                     {editingAdminAccount.role !== 'super_admin' && (
                       <div className="space-y-4">
                         <div className="flex items-center justify-between">
-                          <label className="text-[10px] font-black text-slate-400 uppercase">功能模組權限</label>
+                          <label className="text-[10px] font-black text-slate-400 uppercase">功能模組權限（CRUD）</label>
                           <div className="flex gap-2">
                             <button
                               onClick={() => setEditingAdminAccount(prev => {
                                 if (!prev) return null;
                                 const all: any = {};
-                                Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => all[k] = k !== 'admin_management');
+                                Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => all[k] = k !== 'admin_management' ? { ...FULL_ACCESS } : { ...NO_ACCESS });
                                 return { ...prev, permissions: all };
                               })}
                               className="text-[10px] font-black text-blue-600 hover:underline"
@@ -6056,31 +6182,63 @@ const App: React.FC = () => {
                               onClick={() => setEditingAdminAccount(prev => {
                                 if (!prev) return null;
                                 const none: any = {};
-                                Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => none[k] = false);
+                                Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => none[k] = { ...NO_ACCESS });
                                 return { ...prev, permissions: none };
                               })}
                               className="text-[10px] font-black text-slate-400 hover:underline"
                             >全不選</button>
                           </div>
                         </div>
+                        {/* Column headers */}
+                        <div className="flex items-center gap-1 pl-[140px]">
+                          {CRUD_OPS.map(op => (
+                            <span key={op} className="w-10 text-center text-[9px] font-black text-slate-300 uppercase">{CRUD_OP_LABELS[op]}</span>
+                          ))}
+                        </div>
                         {PERMISSION_GROUPS.map(group => (
                           <div key={group.label}>
                             <p className="text-[10px] font-black text-slate-300 uppercase mb-1.5">{group.label}</p>
-                            <div className="grid grid-cols-1 gap-1.5">
-                              {group.keys.filter(k => k !== 'admin_management').map(key => (
-                                <label key={key} className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl cursor-pointer hover:bg-slate-100 transition-all">
-                                  <span className="font-bold text-sm text-slate-700">{ADMIN_PERMISSION_LABELS[key]}</span>
-                                  <input
-                                    type="checkbox"
-                                    checked={editingAdminAccount.permissions?.[key] ?? false}
-                                    onChange={e => setEditingAdminAccount(prev => prev ? {
-                                      ...prev,
-                                      permissions: { ...(prev.permissions || DEFAULT_ADMIN_PERMISSIONS), [key]: e.target.checked }
-                                    } : null)}
-                                    className="w-5 h-5 rounded-lg accent-blue-600"
-                                  />
-                                </label>
-                              ))}
+                            <div className="space-y-1">
+                              {group.keys.filter(k => k !== 'admin_management').map(key => {
+                                const perm = normalizePermValue((editingAdminAccount.permissions as any)?.[key]);
+                                const allOn = CRUD_OPS.every(op => perm[op]);
+                                return (
+                                  <div key={key} className="flex items-center gap-1 p-2 bg-slate-50 rounded-xl hover:bg-slate-100 transition-all">
+                                    <button
+                                      onClick={() => {
+                                        const newPerm = allOn ? { ...NO_ACCESS } : { ...FULL_ACCESS };
+                                        setEditingAdminAccount(prev => prev ? {
+                                          ...prev,
+                                          permissions: { ...(prev.permissions || DEFAULT_ADMIN_PERMISSIONS), [key]: newPerm }
+                                        } : null);
+                                      }}
+                                      className={`w-[132px] text-left text-xs font-bold truncate ${allOn ? 'text-slate-900' : perm.read ? 'text-slate-600' : 'text-slate-400'}`}
+                                      title="切換全部權限"
+                                    >
+                                      {ADMIN_PERMISSION_LABELS[key]}
+                                    </button>
+                                    {CRUD_OPS.map(op => (
+                                      <label key={op} className="w-10 flex justify-center cursor-pointer">
+                                        <input
+                                          type="checkbox"
+                                          checked={perm[op]}
+                                          onChange={e => {
+                                            const updated = { ...perm, [op]: e.target.checked };
+                                            if (op === 'read' && !e.target.checked) {
+                                              updated.create = false; updated.update = false; updated.delete = false; updated.export = false;
+                                            }
+                                            setEditingAdminAccount(prev => prev ? {
+                                              ...prev,
+                                              permissions: { ...(prev.permissions || DEFAULT_ADMIN_PERMISSIONS), [key]: updated }
+                                            } : null);
+                                          }}
+                                          className="w-4 h-4 rounded accent-blue-600"
+                                        />
+                                      </label>
+                                    ))}
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
                         ))}
@@ -6149,16 +6307,16 @@ const App: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Permission tick matrix grouped */}
+                    {/* CRUD Permission matrix grouped */}
                     <div className="space-y-4">
                       <div className="flex items-center justify-between">
-                        <label className="text-[10px] font-black text-slate-400 uppercase">模組權限</label>
+                        <label className="text-[10px] font-black text-slate-400 uppercase">模組權限（CRUD）</label>
                         <div className="flex gap-2">
                           <button
                             onClick={() => setEditingStaffRole(prev => {
                               if (!prev) return null;
                               const all: any = {};
-                              Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => all[k] = true);
+                              Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => all[k] = { ...FULL_ACCESS });
                               return { ...prev, modulePermissions: all };
                             })}
                             className="text-[10px] font-black text-blue-600 hover:underline"
@@ -6167,31 +6325,63 @@ const App: React.FC = () => {
                             onClick={() => setEditingStaffRole(prev => {
                               if (!prev) return null;
                               const none: any = {};
-                              Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => none[k] = false);
+                              Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => none[k] = { ...NO_ACCESS });
                               return { ...prev, modulePermissions: none };
                             })}
                             className="text-[10px] font-black text-slate-400 hover:underline"
                           >全不選</button>
                         </div>
                       </div>
+                      {/* Column headers */}
+                      <div className="flex items-center gap-1 pl-[140px]">
+                        {CRUD_OPS.map(op => (
+                          <span key={op} className="w-10 text-center text-[9px] font-black text-slate-300 uppercase">{CRUD_OP_LABELS[op]}</span>
+                        ))}
+                      </div>
                       {PERMISSION_GROUPS.map(group => (
                         <div key={group.label}>
                           <p className="text-[10px] font-black text-slate-300 uppercase mb-1.5">{group.label}</p>
-                          <div className="grid grid-cols-1 gap-1.5">
-                            {group.keys.map(key => (
-                              <label key={key} className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl cursor-pointer hover:bg-slate-100 transition-all">
-                                <span className="font-bold text-sm text-slate-700">{ADMIN_PERMISSION_LABELS[key]}</span>
-                                <input
-                                  type="checkbox"
-                                  checked={editingStaffRole.modulePermissions?.[key] ?? false}
-                                  onChange={e => setEditingStaffRole(prev => prev ? {
-                                    ...prev,
-                                    modulePermissions: { ...(prev.modulePermissions || DEFAULT_ADMIN_PERMISSIONS), [key]: e.target.checked }
-                                  } : null)}
-                                  className="w-5 h-5 rounded-lg accent-blue-600"
-                                />
-                              </label>
-                            ))}
+                          <div className="space-y-1">
+                            {group.keys.map(key => {
+                              const perm = normalizePermValue((editingStaffRole.modulePermissions as any)?.[key]);
+                              const allOn = CRUD_OPS.every(op => perm[op]);
+                              return (
+                                <div key={key} className="flex items-center gap-1 p-2 bg-slate-50 rounded-xl hover:bg-slate-100 transition-all">
+                                  <button
+                                    onClick={() => {
+                                      const newPerm = allOn ? { ...NO_ACCESS } : { ...FULL_ACCESS };
+                                      setEditingStaffRole(prev => prev ? {
+                                        ...prev,
+                                        modulePermissions: { ...(prev.modulePermissions || DEFAULT_ADMIN_PERMISSIONS), [key]: newPerm }
+                                      } : null);
+                                    }}
+                                    className={`w-[132px] text-left text-xs font-bold truncate ${allOn ? 'text-slate-900' : perm.read ? 'text-slate-600' : 'text-slate-400'}`}
+                                    title="切換全部權限"
+                                  >
+                                    {ADMIN_PERMISSION_LABELS[key]}
+                                  </button>
+                                  {CRUD_OPS.map(op => (
+                                    <label key={op} className="w-10 flex justify-center cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={perm[op]}
+                                        onChange={e => {
+                                          const updated = { ...perm, [op]: e.target.checked };
+                                          if (op === 'read' && !e.target.checked) {
+                                            updated.create = false; updated.update = false; updated.delete = false; updated.export = false;
+                                          }
+                                          setEditingStaffRole(prev => prev ? {
+                                            ...prev,
+                                            modulePermissions: { ...(prev.modulePermissions || DEFAULT_ADMIN_PERMISSIONS), [key]: updated }
+                                          } : null);
+                                        }}
+                                        className="w-4 h-4 rounded accent-blue-600"
+                                      />
+                                    </label>
+                                  ))}
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                       ))}
@@ -8784,7 +8974,45 @@ const App: React.FC = () => {
               showToast={showToast}
               t={t}
             />
-            {renderAdminModuleContent()}
+            {mustChangePassword ? (
+              <div className="flex items-center justify-center min-h-[60vh] animate-fade-in">
+                <div className="bg-white rounded-[2.5rem] shadow-2xl border border-slate-100 w-full max-w-md p-10 space-y-6">
+                  <div className="text-center space-y-2">
+                    <div className="w-16 h-16 bg-amber-100 rounded-2xl flex items-center justify-center mx-auto text-3xl">🔐</div>
+                    <h2 className="text-xl font-black text-slate-900">首次登入 — 請更改密碼</h2>
+                    <p className="text-sm text-slate-500 font-bold">為保安全，您必須先設定新密碼才能使用後台功能</p>
+                  </div>
+                  <div className="space-y-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase">新密碼</label>
+                      <input
+                        type="password"
+                        value={passwordChangeForm.newPassword}
+                        onChange={e => setPasswordChangeForm(f => ({ ...f, newPassword: e.target.value }))}
+                        placeholder="至少6個字元"
+                        className="w-full p-4 bg-slate-50 rounded-2xl font-bold focus:ring-2 focus:ring-blue-100 border border-transparent transition-all"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase">確認新密碼</label>
+                      <input
+                        type="password"
+                        value={passwordChangeForm.confirmPassword}
+                        onChange={e => setPasswordChangeForm(f => ({ ...f, confirmPassword: e.target.value }))}
+                        placeholder="再輸入一次新密碼"
+                        className="w-full p-4 bg-slate-50 rounded-2xl font-bold focus:ring-2 focus:ring-blue-100 border border-transparent transition-all"
+                      />
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleForcePasswordChange}
+                    className="w-full py-4 bg-blue-600 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all"
+                  >
+                    確認更改密碼
+                  </button>
+                </div>
+              </div>
+            ) : renderAdminModuleContent()}
           </main>
         </WorkspaceProvider>
       ) : (
