@@ -1,6 +1,13 @@
-// 第一部分：Airwallex 支付對接 — 沙箱使用 https://api-demo.airwallex.com/api/v1
+// Airwallex 支付對接 — 沙箱使用 https://api-demo.airwallex.com/api/v1
+import { createClient } from '@supabase/supabase-js';
+
 const AIRWALLEX_DEMO_BASE = 'https://api-demo.airwallex.com';
 const AIRWALLEX_PROD_BASE = 'https://api.airwallex.com';
+
+function getOrderDbId(orderId: string): string | number {
+  if (/^ORD-\d+$/.test(orderId)) return orderId.replace(/^ORD-/, '');
+  return orderId;
+}
 
 export default async function handler(req: { method?: string; body?: { amount?: number; merchant_order_id?: string } }, res: { setHeader: (k: string, v: string) => void; status: (n: number) => { json: (o: object) => void }; json: (o: object) => void }) {
   if (req.method !== 'POST') {
@@ -37,15 +44,53 @@ export default async function handler(req: { method?: string; body?: { amount?: 
   }
 
   const body = req.body as { amount?: number; merchant_order_id?: string; success_origin?: string };
-  const amount = typeof body?.amount === 'number' ? body.amount : undefined;
   const merchantOrderId = typeof body?.merchant_order_id === 'string' ? body.merchant_order_id : undefined;
   const successOrigin = typeof body?.success_origin === 'string' && body.success_origin ? body.success_origin : 'https://coolfood-app-cursor.vercel.app';
 
-  if (amount == null || amount <= 0 || !merchantOrderId) {
+  if (!merchantOrderId) {
     return res.status(400).json({
-      error: 'Invalid amount or merchant_order_id',
+      error: 'Invalid merchant_order_id',
       code: 'BAD_REQUEST',
     });
+  }
+
+  // Server-side amount validation: look up order total from DB
+  const supabaseUrl = (process.env.SUPABASE_URL ?? '').trim().replace(/\/$/, '');
+  const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? '').trim();
+
+  let amount: number | undefined;
+
+  if (supabaseUrl && serviceRoleKey) {
+    const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const dbId = getOrderDbId(merchantOrderId);
+    const dbIdValue = typeof dbId === 'string' && /^\d+$/.test(dbId) ? Number(dbId) : dbId;
+
+    const { data: order } = await supabaseAdmin
+      .from('orders').select('id,total').eq('id', dbIdValue).maybeSingle();
+
+    if (!order) {
+      const { data: order2 } = await supabaseAdmin
+        .from('orders').select('id,total').eq('id', merchantOrderId).maybeSingle();
+      if (order2) amount = Number(order2.total);
+    } else {
+      amount = Number(order.total);
+    }
+  }
+
+  if (amount == null || amount <= 0) {
+    // Fallback to client amount only if DB lookup failed AND it matches a reasonable range
+    const clientAmount = typeof body?.amount === 'number' ? body.amount : undefined;
+    if (clientAmount != null && clientAmount > 0) {
+      console.warn('[Airwallex] DB lookup failed, using client amount as fallback:', clientAmount);
+      amount = clientAmount;
+    } else {
+      return res.status(400).json({
+        error: 'Order not found or invalid amount',
+        code: 'BAD_REQUEST',
+      });
+    }
   }
 
   const successUrl = `${successOrigin.replace(/\/$/, '')}/success?order=${encodeURIComponent(merchantOrderId)}`;

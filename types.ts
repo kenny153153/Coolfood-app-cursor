@@ -80,12 +80,20 @@ export interface SupabaseRecipeProductLinkRow {
 export type SaleChannel = 'retail' | 'wholesale' | 'both';
 
 export interface AdminPermissions {
-  dashboard: boolean;
-  inventory: boolean;
+  global_dashboard: boolean;
+  new_order: boolean;
   orders: boolean;
+  dispatch: boolean;
+  warehouse_ops: boolean;
+  production: boolean;
+  accounting: boolean;
+  wholesale_clients: boolean;
+  sales_reps: boolean;
+  inventory: boolean;
+  pricing: boolean;
+  dashboard: boolean;
   members: boolean;
   slideshow: boolean;
-  pricing: boolean;
   recipes: boolean;
   ingredients: boolean;
   costs: boolean;
@@ -94,16 +102,29 @@ export interface AdminPermissions {
   admin_management: boolean;
 }
 
-export type AdminRole = 'super_admin' | 'admin';
+export type AdminRole =
+  | 'super_admin' | 'admin'
+  | 'customer_service' | 'buyer' | 'accountant'
+  | 'factory' | 'sales_rep';
 
 export interface AdminAccount {
   id: string;
   name: string;
   phone: string;
   role: AdminRole;
+  roleDisplayName?: string;
   permissions: AdminPermissions;
   isActive: boolean;
   lastLoginAt?: string;
+}
+
+export interface StaffRoleTemplate {
+  id: string;
+  name: string;
+  displayName: string;
+  isSystem: boolean;
+  modulePermissions: AdminPermissions;
+  sortOrder: number;
 }
 
 // ─── Multi-brand workspace types ────────────────────────────────
@@ -114,8 +135,9 @@ export type WholesaleBrand = 'GHFOODS' | 'COOLFOOD';
 
 export type StaffRole =
   | 'super_admin' | 'admin'
-  | 'ghfoods_staff' | 'coolfood_staff'
-  | 'accountant' | 'buyer' | 'warehouse';
+  | 'customer_service' | 'buyer' | 'accountant'
+  | 'factory' | 'sales_rep'
+  | 'ghfoods_staff' | 'coolfood_staff' | 'warehouse';
 
 export type AdminModuleId =
   | 'dashboard' | 'inventory' | 'orders' | 'members' | 'slideshow'
@@ -151,6 +173,9 @@ export interface Ingredient {
   category?: string;        // 類別（如 牛肉、豬肉、海鮮）
   saleChannel?: SaleChannel; // 渠道：retail / wholesale / both
   notes?: string;
+  stockQty?: number;        // 庫存數量
+  stockUnit?: string;       // 庫存單位（預設同 unit）
+  minStockAlert?: number;   // 低庫存警報
   createdAt?: string;
   updatedAt?: string;
 }
@@ -176,6 +201,9 @@ export interface SupabaseIngredientRow {
   category?: string | null;
   sale_channel?: string | null;
   notes?: string | null;
+  stock_qty?: number;
+  stock_unit?: string | null;
+  min_stock_alert?: number | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -211,6 +239,14 @@ export interface Product {
   miscCost?: number;        // 稅費 / 其他
   saleChannel?: SaleChannel; // 銷售渠道：retail / wholesale / both
   purchaseLimit?: number;   // 每位客人每單限購數量，null = 不限
+  productType?: ProductType; // standalone / processed / raw_material / in_house
+  processingTypeId?: string; // FK → processing_types.id
+  parentIngredientId?: string; // FK → ingredients.id (加工來源原材料)
+  packSize?: string;         // 包裝規格描述 e.g. '5磅/包'
+  packWeightLb?: number;     // 包裝重量(磅)
+  groupId?: string;           // FK → product_groups.id
+  variantLabel?: string;      // 規格標籤 e.g. '原件', '切粒', '1kg'
+  pricingMode?: PricingMode;  // 'fixed_pack' | 'by_piece' (抄碼)
 }
 
 export interface CartItem extends Product {
@@ -244,7 +280,7 @@ export interface User {
   points: number;
   walletBalance: number;
   tier: 'Bronze' | 'Silver' | 'Gold' | 'VIP';
-  role: 'customer' | 'admin';
+  role: string;
   memberType: MemberType;                // 零售 / 批發
   wholesalePriceTier?: string;           // 批發 P 等級（如 'P0', 'P3'）— 僅批發會員適用
   addresses?: UserAddress[];
@@ -261,6 +297,7 @@ export interface Order {
   items: number;
   trackingNumber?: string;
   orderType?: OrderType;
+  memberId?: string;
 }
 
 /** One line item stored in orders.line_items JSONB. */
@@ -272,6 +309,10 @@ export interface OrderLineItem {
   line_total: number;
   /** Product image URL/base64 for display in order details */
   image?: string | null;
+  processing_type_id?: string;
+  processing_type_name?: string;
+  processing_spec?: string;
+  line_note?: string;
 }
 
 /** Supabase public.orders table – column names must match exactly (snake_case). id may be bigint (number) or text. */
@@ -304,6 +345,7 @@ export interface SupabaseOrderRow {
   delivery_date?: string | null;
   order_type?: string | null;
   payment_method?: string | null;
+  member_id?: string | null;
 }
 
 /** Supabase public.products table – column names must match (snake_case). */
@@ -338,6 +380,14 @@ export interface SupabaseProductRow {
   legacy_id?: string | null;
   sale_channel?: string | null;
   purchase_limit?: number | null;
+  product_type?: string | null;
+  processing_type_id?: string | null;
+  parent_ingredient_id?: string | null;
+  pack_size?: string | null;
+  pack_weight_lb?: number | null;
+  group_id?: string | null;
+  variant_label?: string | null;
+  pricing_mode?: string | null;
 }
 
 /** Supabase public.categories table – column names must match (snake_case). */
@@ -358,7 +408,8 @@ export interface SupabaseMemberRow {
   points: number;
   wallet_balance: number;
   tier: 'Bronze' | 'Silver' | 'Gold' | 'VIP';
-  role: 'customer' | 'admin';
+  role: string;
+  admin_permissions?: Record<string, boolean> | null;
   member_type?: string | null;            // 'retail' | 'wholesale'
   wholesale_price_tier?: string | null;   // e.g. 'P0', 'P3'
   addresses?: UserAddress[] | null;
@@ -740,6 +791,98 @@ export interface WholesaleOrderLine {
   unitPrice: number;
   discount: number;
   lineTotal: number;
+  processingTypeId?: string;
+  processingTypeName?: string;
+  processingSpec?: string;
+  lineNote?: string;
+}
+
+// ─── Processing Types (加工方式) ─────────────────────────────────
+
+export type ProductType = 'standalone' | 'processed' | 'raw_material' | 'in_house' | 'third_party';
+
+export type ProductClassification = 'raw_material' | 'third_party' | 'in_house';
+
+export type PricingMode = 'fixed_pack' | 'by_piece';
+
+export interface ProductGroup {
+  id: string;
+  name: string;
+  nameEn?: string;
+  classification: ProductClassification;
+  ingredientId?: string;
+  image?: string;
+  category?: string;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SupabaseProductGroupRow {
+  id: string;
+  name: string;
+  name_en?: string | null;
+  classification: string;
+  ingredient_id?: string | null;
+  image?: string | null;
+  category?: string | null;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ProcessingType {
+  id: string;
+  code: string;
+  name: string;
+  nameEn?: string;
+  spec?: string;
+  surchargePorkChicken: number;
+  surchargeBeefLambSeafood: number;
+  requiresRepackaging: boolean;
+  defaultPackWeightLb?: number;
+  sortOrder: number;
+  isActive: boolean;
+  createdAt?: string;
+}
+
+export interface SupabaseProcessingTypeRow {
+  id: string;
+  code: string;
+  name: string;
+  name_en?: string | null;
+  spec?: string | null;
+  surcharge_pork_chicken: number;
+  surcharge_beef_lamb_seafood: number;
+  requires_repackaging: boolean;
+  default_pack_weight_lb?: number | null;
+  sort_order: number;
+  is_active: boolean;
+  created_at?: string;
+}
+
+export interface MaterialProcessingEntry {
+  id: string;
+  ingredientId: string;
+  processingTypeId: string;
+  productId?: string;
+  surchargeOverride?: number;
+  yieldRateOverride?: number;
+  isAvailable: boolean;
+  notes?: string;
+  createdAt?: string;
+}
+
+export interface SupabaseMaterialProcessingRow {
+  id: string;
+  ingredient_id: string;
+  processing_type_id: string;
+  product_id?: string | null;
+  surcharge_override?: number | null;
+  yield_rate_override?: number | null;
+  is_available: boolean;
+  notes?: string | null;
+  created_at?: string;
 }
 
 // ─── Product BOM (配方表) ────────────────────────────────────────
@@ -823,4 +966,57 @@ export interface ProductionOrderOutput {
   packagingCostTotal: number;
   estimatedUnitCost: number;
   notes?: string;
+}
+
+// ─── Goods Receiving (收貨入倉) ─────────────────────────────────
+
+export type GoodsReceiptStatus = 'draft' | 'confirmed' | 'cancelled';
+
+export interface GoodsReceiptItem {
+  id: string;
+  goodsReceiptId: string;
+  ingredientId?: string;
+  productName: string;
+  orderedQty: number;
+  receivedQty: number;
+  rejectedQty: number;
+  unit: string;
+  unitCost: number;
+  lineTotal: number;
+  storageLocation?: string;
+  notes?: string;
+  createdAt?: string;
+}
+
+export interface GoodsReceipt {
+  id: string;
+  grnNumber: string;
+  purchaseOrderId?: number;
+  poNumber?: string;
+  supplierName: string;
+  receivedBy?: string;
+  receivedAt: string;
+  deliveryNoteNumber?: string;
+  status: GoodsReceiptStatus;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  items?: GoodsReceiptItem[];
+}
+
+export type StockMovementType = 'receive' | 'production_out' | 'adjustment' | 'wastage' | 'return';
+
+export interface StockMovement {
+  id: string;
+  ingredientId?: string;
+  productId?: string;
+  movementType: StockMovementType;
+  quantity: number;
+  unit?: string;
+  referenceType?: string;
+  referenceId?: string;
+  performedBy?: string;
+  performedAt: string;
+  notes?: string;
+  ingredientName?: string;
 }

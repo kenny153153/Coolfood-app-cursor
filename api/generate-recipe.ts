@@ -262,10 +262,14 @@ ${context}
   },
 };
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(req: VercelRequest & { headers?: Record<string, string | string[] | undefined> }, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  const { verifyAdminRequest } = await import('./_adminAuth');
+  const authResult = await verifyAdminRequest(req);
+  if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
   const { action, payload } = req.body || {};
 

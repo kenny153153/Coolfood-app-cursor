@@ -70,20 +70,26 @@ export const WHOLESALE_BRAND_META: Record<WholesaleBrand, {
 const ROLE_WORKSPACE_ACCESS: Record<StaffRole, Workspace[] | 'all'> = {
   super_admin: 'all',
   admin: 'all',
+  customer_service: 'all',
+  buyer: 'all',
+  accountant: 'all',
+  factory: 'all',
+  sales_rep: ['WHOLESALE'],
   ghfoods_staff: ['WHOLESALE'],
   coolfood_staff: ['COOLFOOD_RETAIL', 'WHOLESALE'],
-  accountant: 'all',
-  buyer: 'all',
   warehouse: 'all',
 };
 
 const ROLE_WHOLESALE_BRANDS: Record<StaffRole, WholesaleBrand[] | 'all'> = {
   super_admin: 'all',
   admin: 'all',
+  customer_service: 'all',
+  buyer: 'all',
+  accountant: 'all',
+  factory: 'all',
+  sales_rep: 'all',
   ghfoods_staff: ['GHFOODS'],
   coolfood_staff: ['COOLFOOD'],
-  accountant: 'all',
-  buyer: 'all',
   warehouse: 'all',
 };
 

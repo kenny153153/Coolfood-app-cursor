@@ -20,7 +20,7 @@ const MODULE_TITLES: Record<string, string> = {
   costs: '成本管理',
   language: '語言翻譯',
   settings: '系統設定',
-  admin_management: '管理員管理',
+  admin_management: '員工與權限管理',
   dispatch: '派車表',
   warehouse_ops: '材料與倉務',
   production: '工場',
@@ -173,7 +173,7 @@ const AdminTopbar: React.FC<AdminTopbarProps> = ({
               <div className="text-right">
                 <p className="text-xs font-black text-slate-800 leading-none">{adminUser.name}</p>
                 <p className="text-[10px] text-slate-400 leading-none mt-0.5">
-                  {adminUser.role === 'super_admin' ? '超級管理員' : '管理員'}
+                  {adminUser.roleDisplayName || (adminUser.role === 'super_admin' ? '超級管理員' : '管理員')}
                 </p>
               </div>
             </div>

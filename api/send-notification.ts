@@ -74,10 +74,14 @@ async function processNotification(
 }
 
 export default async function handler(
-  req: { method?: string; body?: { orders?: NotifRequest[] } },
+  req: { method?: string; body?: { orders?: NotifRequest[] }; headers?: Record<string, string | string[] | undefined> },
   res: { status: (n: number) => { json: (o: object) => void } },
 ) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  const { verifyAdminRequest } = await import('./_adminAuth');
+  const authResult = await verifyAdminRequest(req);
+  if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
   const orders = req.body?.orders;
   if (!Array.isArray(orders) || orders.length === 0) {

@@ -119,13 +119,18 @@ function computeMsgDigest(msgData: string, timestamp: string, checkword: string)
 }
 
 export default async function handler(
-  req: { method?: string; body?: SfOrderPayload & { orderId: string } },
+  req: { method?: string; body?: SfOrderPayload & { orderId: string }; headers?: Record<string, string | string[] | undefined> },
   res: { setHeader: (k: string, v: string) => void; status: (n: number) => { json: (o: object) => void }; json: (o: object) => void }
 ) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  // Auth: allow admin users or internal server calls
+  const { verifyAdminRequest } = await import('./_adminAuth');
+  const authResult = await verifyAdminRequest(req);
+  if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
   const partnerID = (process.env.SF_PARTNER_ID ?? process.env.SF_CLIENT_CODE ?? '').trim();
   const checkword = (process.env.SF_CHECKWORD ?? process.env.SF_CHECK_WORD ?? '').trim();

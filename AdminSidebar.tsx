@@ -52,6 +52,10 @@ const SHARED_ITEMS: SidebarItem[] = [
 ];
 
 const SHARED_PERMISSION_MAP: Partial<Record<AdminModuleId, keyof AdminPermissions>> = {
+  dispatch: 'dispatch',
+  warehouse_ops: 'warehouse_ops',
+  production: 'production',
+  accounting: 'accounting',
   settings: 'settings',
   admin_management: 'admin_management',
 };
@@ -65,7 +69,7 @@ export interface AdminSidebarProps {
   adminUser: AdminAccount | null;
   isOpen: boolean;
   setIsOpen: (fn: boolean | ((prev: boolean) => boolean)) => void;
-  hasAdminPermission: (module: keyof AdminPermissions) => boolean;
+  hasAdminPermission: (module: keyof AdminPermissions | string) => boolean;
   onLogout: () => void;
   t: any;
 }
@@ -140,7 +144,7 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({
           <div className="min-w-0">
             <p className="text-xs font-bold text-white truncate">{adminUser.name}</p>
             <p className="text-[10px] text-slate-400 truncate">
-              {adminUser.role === 'super_admin' ? '超級管理員' : '管理員'}
+              {adminUser.roleDisplayName || (adminUser.role === 'super_admin' ? '超級管理員' : '管理員')}
             </p>
           </div>
         </div>
@@ -159,24 +163,28 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({
       <nav className="flex-1 mt-4 w-full min-w-0 space-y-0.5 overflow-y-auto hide-scrollbar">
 
         {/* ── 總儀表版 ── */}
-        <SidebarBtn
-          active={isItemActive('global_dashboard')}
-          icon={<BarChart3 size={18}/>}
-          label="總儀表版"
-          isOpen={isOpen}
-          onClick={() => onNavigate('global_dashboard', null)}
-          highlight
-        />
+        {hasAdminPermission('global_dashboard') && (
+          <SidebarBtn
+            active={isItemActive('global_dashboard')}
+            icon={<BarChart3 size={18}/>}
+            label="總儀表版"
+            isOpen={isOpen}
+            onClick={() => onNavigate('global_dashboard', null)}
+            highlight
+          />
+        )}
 
         {/* ── ＋新訂單 ── */}
-        <SidebarBtn
-          active={isItemActive('new_order')}
-          icon={<PlusCircle size={18}/>}
-          label="＋新訂單"
-          isOpen={isOpen}
-          onClick={() => onNavigate('new_order', null)}
-          accentClass="text-emerald-400"
-        />
+        {hasAdminPermission('new_order') && (
+          <SidebarBtn
+            active={isItemActive('new_order')}
+            icon={<PlusCircle size={18}/>}
+            label="＋新訂單"
+            isOpen={isOpen}
+            onClick={() => onNavigate('new_order', null)}
+            accentClass="text-emerald-400"
+          />
+        )}
 
         {/* ── Divider ── */}
         <div className="py-2">{isOpen && <div className="h-px bg-white/10 mx-2" />}</div>
@@ -216,7 +224,10 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({
               {/* Sub-items */}
               {isExpanded && isOpen && (
                 <div className="ml-3 pl-3 border-l border-white/10 space-y-0.5 pb-1">
-                  {section.items.map(item => (
+                  {section.items.filter(item => {
+                    const permKey = item.id as keyof AdminPermissions;
+                    return hasAdminPermission(permKey);
+                  }).map(item => (
                     <button
                       key={`${ws}-${item.id}`}
                       onClick={() => onNavigate(item.id, ws)}

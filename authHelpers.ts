@@ -35,3 +35,15 @@ export async function verifyPassword(plain: string, storedHash: string | null | 
   const legacy = await sha256(plain);
   return legacy === storedHash;
 }
+
+/** Generate a session token from member ID + password hash. Used to prevent impersonation via localStorage tampering. */
+export async function generateSessionToken(memberId: string, passwordHash: string | null | undefined): Promise<string> {
+  const raw = `session:${memberId}:${passwordHash ?? ''}`;
+  return sha256(raw);
+}
+
+/** Verify a session token matches the expected member ID + password hash. */
+export async function verifySessionToken(token: string, memberId: string, passwordHash: string | null | undefined): Promise<boolean> {
+  const expected = await generateSessionToken(memberId, passwordHash);
+  return token === expected;
+}

@@ -1,5 +1,10 @@
 import {
   Product,
+  ProductType,
+  ProductClassification,
+  PricingMode,
+  ProductGroup,
+  SupabaseProductGroupRow,
   Category,
   User,
   Order,
@@ -18,6 +23,10 @@ import {
   Ingredient,
   SupabaseIngredientRow,
   IngredientCategory,
+  ProcessingType,
+  SupabaseProcessingTypeRow,
+  MaterialProcessingEntry,
+  SupabaseMaterialProcessingRow,
 } from './types';
 
 export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
@@ -51,6 +60,14 @@ export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
   legacyId: row.legacy_id ?? undefined,
   saleChannel: (['retail', 'wholesale', 'both'].includes(row.sale_channel ?? '') ? row.sale_channel as SaleChannel : 'retail'),
   purchaseLimit: row.purchase_limit ?? undefined,
+  productType: (['standalone', 'processed', 'raw_material', 'in_house', 'third_party'].includes(row.product_type ?? '') ? row.product_type as ProductType : 'standalone'),
+  processingTypeId: row.processing_type_id ?? undefined,
+  parentIngredientId: row.parent_ingredient_id ?? undefined,
+  packSize: row.pack_size ?? undefined,
+  packWeightLb: row.pack_weight_lb ?? undefined,
+  groupId: row.group_id ?? undefined,
+  variantLabel: row.variant_label ?? undefined,
+  pricingMode: (['fixed_pack', 'by_piece'].includes(row.pricing_mode ?? '') ? row.pricing_mode as PricingMode : undefined),
 });
 
 export const mapProductToRow = (product: Product): SupabaseProductRow => ({
@@ -84,6 +101,14 @@ export const mapProductToRow = (product: Product): SupabaseProductRow => ({
   legacy_id: product.legacyId ?? null,
   sale_channel: product.saleChannel ?? 'retail',
   purchase_limit: product.purchaseLimit ?? null,
+  product_type: product.productType ?? 'standalone',
+  processing_type_id: product.processingTypeId ?? null,
+  parent_ingredient_id: product.parentIngredientId ?? null,
+  pack_size: product.packSize ?? null,
+  pack_weight_lb: product.packWeightLb ?? null,
+  group_id: product.groupId ?? null,
+  variant_label: product.variantLabel ?? null,
+  pricing_mode: product.pricingMode ?? null,
 });
 
 export const mapIngredientRowToIngredient = (row: SupabaseIngredientRow): Ingredient => ({
@@ -98,6 +123,9 @@ export const mapIngredientRowToIngredient = (row: SupabaseIngredientRow): Ingred
   category: row.category ?? undefined,
   saleChannel: (['retail', 'wholesale', 'both'].includes(row.sale_channel ?? '') ? row.sale_channel as SaleChannel : undefined),
   notes: row.notes ?? undefined,
+  stockQty: row.stock_qty ?? 0,
+  stockUnit: row.stock_unit ?? undefined,
+  minStockAlert: row.min_stock_alert ?? undefined,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -114,6 +142,9 @@ export const mapIngredientToRow = (ing: Ingredient): SupabaseIngredientRow => ({
   category: ing.category ?? null,
   sale_channel: ing.saleChannel ?? null,
   notes: ing.notes ?? null,
+  stock_qty: ing.stockQty ?? 0,
+  stock_unit: ing.stockUnit ?? null,
+  min_stock_alert: ing.minStockAlert ?? null,
 });
 
 /** Compute the final cost of a product using the ingredient -> product formula.
@@ -213,6 +244,7 @@ export const mapOrderRowToOrder = (row: SupabaseOrderRow): Order => ({
   items: row.items_count,
   trackingNumber: row.waybill_no ?? row.tracking_number ?? undefined,
   orderType: (row.order_type === 'wholesale' ? 'wholesale' : 'retail') as 'retail' | 'wholesale',
+  memberId: row.member_id ?? undefined,
 });
 
 export const mapSlideshowRowToItem = (row: SupabaseSlideshowRow): SlideshowItem => ({
@@ -275,4 +307,84 @@ export const mapIngredientCategoryRow = (row: { id: string; name: string; emoji:
   name: row.name,
   emoji: row.emoji ?? '📦',
   sortOrder: row.sort_order ?? 0,
+});
+
+// ── Processing Types mappers ──
+
+export const mapProcessingTypeRow = (row: SupabaseProcessingTypeRow): ProcessingType => ({
+  id: row.id,
+  code: row.code,
+  name: row.name,
+  nameEn: row.name_en ?? undefined,
+  spec: row.spec ?? undefined,
+  surchargePorkChicken: row.surcharge_pork_chicken,
+  surchargeBeefLambSeafood: row.surcharge_beef_lamb_seafood,
+  requiresRepackaging: row.requires_repackaging,
+  defaultPackWeightLb: row.default_pack_weight_lb ?? undefined,
+  sortOrder: row.sort_order,
+  isActive: row.is_active,
+  createdAt: row.created_at,
+});
+
+export const mapProcessingTypeToRow = (pt: ProcessingType): Omit<SupabaseProcessingTypeRow, 'created_at'> => ({
+  id: pt.id,
+  code: pt.code,
+  name: pt.name,
+  name_en: pt.nameEn ?? null,
+  spec: pt.spec ?? null,
+  surcharge_pork_chicken: pt.surchargePorkChicken,
+  surcharge_beef_lamb_seafood: pt.surchargeBeefLambSeafood,
+  requires_repackaging: pt.requiresRepackaging,
+  default_pack_weight_lb: pt.defaultPackWeightLb ?? null,
+  sort_order: pt.sortOrder,
+  is_active: pt.isActive,
+});
+
+export const mapMaterialProcessingRow = (row: SupabaseMaterialProcessingRow): MaterialProcessingEntry => ({
+  id: row.id,
+  ingredientId: row.ingredient_id,
+  processingTypeId: row.processing_type_id,
+  productId: row.product_id ?? undefined,
+  surchargeOverride: row.surcharge_override ?? undefined,
+  yieldRateOverride: row.yield_rate_override ?? undefined,
+  isAvailable: row.is_available,
+  notes: row.notes ?? undefined,
+  createdAt: row.created_at,
+});
+
+export const mapMaterialProcessingToRow = (entry: MaterialProcessingEntry): Omit<SupabaseMaterialProcessingRow, 'created_at'> => ({
+  id: entry.id,
+  ingredient_id: entry.ingredientId,
+  processing_type_id: entry.processingTypeId,
+  product_id: entry.productId ?? null,
+  surcharge_override: entry.surchargeOverride ?? null,
+  yield_rate_override: entry.yieldRateOverride ?? null,
+  is_available: entry.isAvailable,
+  notes: entry.notes ?? null,
+});
+
+// ── Product Groups mappers ──
+
+export const mapProductGroupRow = (row: SupabaseProductGroupRow): ProductGroup => ({
+  id: row.id,
+  name: row.name,
+  nameEn: row.name_en ?? undefined,
+  classification: (['raw_material', 'third_party', 'in_house'].includes(row.classification) ? row.classification as ProductClassification : 'raw_material'),
+  ingredientId: row.ingredient_id ?? undefined,
+  image: row.image ?? undefined,
+  category: row.category ?? undefined,
+  isActive: row.is_active,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+export const mapProductGroupToRow = (group: ProductGroup): Omit<SupabaseProductGroupRow, 'created_at' | 'updated_at'> => ({
+  id: group.id,
+  name: group.name,
+  name_en: group.nameEn ?? null,
+  classification: group.classification,
+  ingredient_id: group.ingredientId ?? null,
+  image: group.image ?? null,
+  category: group.category ?? null,
+  is_active: group.isActive,
 });

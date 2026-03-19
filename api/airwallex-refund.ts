@@ -7,6 +7,7 @@
  *   - amount: 退款金額（部分退款時由管理員輸入，全額退款時等於訂單 total）
  *   - reason: 退款原因（可選）
  */
+import { verifyAdminRequest } from './_adminAuth';
 
 const AIRWALLEX_DEMO = 'https://api-demo.airwallex.com';
 const AIRWALLEX_PROD = 'https://api.airwallex.com';
@@ -52,13 +53,16 @@ type RefundPayload = {
 };
 
 export default async function handler(
-  req: { method?: string; body?: RefundPayload },
+  req: { method?: string; body?: RefundPayload; headers?: Record<string, string | string[] | undefined> },
   res: { setHeader: (k: string, v: string) => void; status: (n: number) => { json: (o: object) => void }; json: (o: object) => void }
 ) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  const authResult = await verifyAdminRequest(req);
+  if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
   const body = req.body as RefundPayload;
   const orderId = safeTrim(body?.orderId ?? '');

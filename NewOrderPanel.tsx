@@ -23,6 +23,7 @@ interface ClientOption {
   brand: WholesaleBrand;
   priceTier: string;
   routeId: string | null;
+  clientCode: string;
 }
 
 interface ProductOption {
@@ -34,6 +35,34 @@ interface ProductOption {
   weight?: string;
   categories?: string[];
   saleChannel?: string;
+  productType?: string;
+  processingTypeName?: string;
+  packSize?: string;
+  ingredientId?: string;
+  parentIngredientId?: string;
+  groupId?: string;
+  variantLabel?: string;
+}
+
+interface ProcessingTypeOption {
+  id: string;
+  code: string;
+  name: string;
+  nameEn?: string;
+  spec?: string;
+  sortOrder: number;
+}
+
+interface ProcessingMatrixEntry {
+  ingredientId: string;
+  processingTypeId: string;
+}
+
+interface ClientPreference {
+  ingredientId: string;
+  processingTypeId: string;
+  defaultSpec?: string;
+  note?: string;
 }
 
 interface ParsedLine {
@@ -42,6 +71,8 @@ interface ParsedLine {
   unit: string;
   matched?: ProductOption;
   note?: string;
+  processingCode?: string;
+  processingSpec?: string;
 }
 
 const EMPTY_LINE: WholesaleOrderLine = {
@@ -52,6 +83,10 @@ const EMPTY_LINE: WholesaleOrderLine = {
   unitPrice: 0,
   discount: 0,
   lineTotal: 0,
+  processingTypeId: undefined,
+  processingTypeName: undefined,
+  processingSpec: undefined,
+  lineNote: undefined,
 };
 
 const BASE_UNITS = ['磅', '斤', '件', '包', '盒', '箱', '碟', '隻', '條', '塊', '盤', '份', '打', 'kg', 'pc'];
@@ -89,6 +124,11 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
   const [activeProductRow, setActiveProductRow] = useState<number | null>(null);
   const [productSearch, setProductSearch] = useState('');
 
+  // Processing types & matrix
+  const [processingTypes, setProcessingTypes] = useState<ProcessingTypeOption[]>([]);
+  const [processingMatrix, setProcessingMatrix] = useState<ProcessingMatrixEntry[]>([]);
+  const [clientPreferences, setClientPreferences] = useState<ClientPreference[]>([]);
+
   // Correction memory
   const [corrections, setCorrections] = useState<any[]>([]);
   const parsedSnapshotRef = useRef<WholesaleOrderLine[]>([]);
@@ -105,17 +145,19 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [clientsRes, productsRes, correctionsRes, unitsRes] = await Promise.all([
-      supabase.from('wholesale_clients').select('id, company_name, contact_name, phone, address, brand, price_tier, route_id').eq('is_active', true),
-      supabase.from('products').select('id, name, name_en, price, weight, categories, sale_channel').order('name'),
+    const [clientsRes, productsRes, correctionsRes, unitsRes, ptRes, matrixRes] = await Promise.all([
+      supabase.from('wholesale_clients').select('id, company_name, contact_name, phone, address, brand, price_tier, route_id, client_code').eq('is_active', true),
+      supabase.from('products').select('id, name, name_en, price, weight, categories, sale_channel, product_type, processing_type_id, pack_size, processing_types(name), ingredient_id, parent_ingredient_id, group_id, variant_label').order('name'),
       supabase.from('parsing_corrections').select('original_text, corrected_product_name, corrected_qty, corrected_unit').order('created_at', { ascending: false }).limit(40),
       supabase.from('site_config').select('value').eq('id', 'custom_units').single(),
+      supabase.from('processing_types').select('id, code, name, name_en, spec, sort_order').eq('is_active', true).order('sort_order'),
+      supabase.from('material_processing_matrix').select('ingredient_id, processing_type_id').eq('is_available', true),
     ]);
     if (clientsRes.data) {
       setClients(clientsRes.data.map((c: any) => ({
         id: c.id, companyName: c.company_name, contactName: c.contact_name || '',
         phone: c.phone || '', address: c.address || '', brand: c.brand,
-        priceTier: c.price_tier || 'P0', routeId: c.route_id,
+        priceTier: c.price_tier || 'P0', routeId: c.route_id, clientCode: c.client_code || '',
       })));
     }
     if (productsRes.data) {
@@ -130,11 +172,17 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
           weight: p.weight || undefined,
           categories: p.categories || [],
           saleChannel: p.sale_channel || 'retail',
+          productType: p.product_type || 'standalone',
+          processingTypeName: p.processing_types?.name || undefined,
+          packSize: p.pack_size || undefined,
+          ingredientId: p.ingredient_id || undefined,
+          parentIngredientId: p.parent_ingredient_id || undefined,
+          groupId: p.group_id || undefined,
+          variantLabel: p.variant_label || undefined,
         }))
       );
     }
     if (correctionsRes.data) {
-      // Deduplicate by original_text, keep latest
       const seen = new Set<string>();
       const deduped = correctionsRes.data.filter((c: any) => {
         const key = c.original_text.toLowerCase();
@@ -146,6 +194,19 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
     }
     if (unitsRes.data?.value && Array.isArray(unitsRes.data.value)) {
       setCustomUnitLabels(unitsRes.data.value.map((u: any) => u.label).filter(Boolean));
+    }
+    if (ptRes.data) {
+      setProcessingTypes(ptRes.data.map((pt: any) => ({
+        id: pt.id, code: pt.code, name: pt.name,
+        nameEn: pt.name_en || undefined, spec: pt.spec || undefined,
+        sortOrder: pt.sort_order,
+      })));
+    }
+    if (matrixRes.data) {
+      setProcessingMatrix(matrixRes.data.map((m: any) => ({
+        ingredientId: m.ingredient_id,
+        processingTypeId: m.processing_type_id,
+      })));
     }
     setLoading(false);
   }, []);
@@ -161,6 +222,73 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, []);
+
+  // ── Processing helpers ──────────────────────────────────────────
+
+  const getIngredientId = useCallback((productId: string | undefined): string | undefined => {
+    if (!productId) return undefined;
+    const p = products.find(x => x.id === productId);
+    return p?.parentIngredientId || p?.ingredientId;
+  }, [products]);
+
+  const getAvailableProcessing = useCallback((productId: string | undefined): ProcessingTypeOption[] => {
+    const ingId = getIngredientId(productId);
+    if (!ingId) return [];
+    return processingMatrix
+      .filter(m => m.ingredientId === ingId)
+      .map(m => processingTypes.find(pt => pt.id === m.processingTypeId))
+      .filter((pt): pt is ProcessingTypeOption => !!pt)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+  }, [getIngredientId, processingMatrix, processingTypes]);
+
+  const getSpecOptions = useCallback((processingTypeId: string | undefined): string[] => {
+    if (!processingTypeId) return [];
+    const pt = processingTypes.find(p => p.id === processingTypeId);
+    if (!pt?.spec) return [];
+    return pt.spec.split(/\s*[/／]\s*/).map(s => s.trim()).filter(Boolean);
+  }, [processingTypes]);
+
+  const getClientPreference = useCallback((ingredientId: string | undefined): ClientPreference | undefined => {
+    if (!ingredientId) return undefined;
+    return clientPreferences.find(cp => cp.ingredientId === ingredientId);
+  }, [clientPreferences]);
+
+  const loadClientPreferences = useCallback(async (clientId: string) => {
+    try {
+      const { data } = await supabase.from('client_product_preferences')
+        .select('ingredient_id, default_processing_type_id, default_spec, note')
+        .eq('client_id', clientId);
+      if (data) {
+        setClientPreferences(data.map((d: any) => ({
+          ingredientId: d.ingredient_id,
+          processingTypeId: d.default_processing_type_id,
+          defaultSpec: d.default_spec || undefined,
+          note: d.note || undefined,
+        })));
+      }
+    } catch {
+      setClientPreferences([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selectedClient) {
+      loadClientPreferences(selectedClient.id);
+    } else {
+      setClientPreferences([]);
+    }
+  }, [selectedClient, loadClientPreferences]);
+
+  const formatProductDisplay = (line: WholesaleOrderLine): string => {
+    let display = line.productName;
+    if (line.processingTypeName && line.processingTypeName !== '原件') {
+      display += ` 【${line.processingTypeName}${line.processingSpec ? ` ${line.processingSpec}` : ''}】`;
+    }
+    if (line.lineNote) {
+      display += ` (${line.lineNote})`;
+    }
+    return display;
+  };
 
   // ── WhatsApp parsing (AI-powered + regex fallback) ────────────
 
@@ -180,22 +308,45 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
     setParsedLines(parsed);
 
     if (parsed.length > 0) {
-      const newLines: WholesaleOrderLine[] = parsed.map(p => ({
-        productId: p.matched?.id,
-        productName: p.matched?.name || p.productName,
-        qty: p.qty,
-        unit: p.unit,
-        unitPrice: p.matched?.price || 0,
-        discount: 0,
-        lineTotal: p.qty * (p.matched?.price || 0),
-      }));
+      const newLines: WholesaleOrderLine[] = parsed.map(p => {
+        let ptId: string | undefined;
+        let ptName: string | undefined;
+        let pSpec: string | undefined;
+        let lineNote: string | undefined = p.note || undefined;
+
+        if (p.processingCode) {
+          const pt = processingTypes.find(t => t.code === p.processingCode);
+          if (pt) { ptId = pt.id; ptName = pt.name; }
+        }
+        if (p.processingSpec) pSpec = p.processingSpec;
+
+        if (!ptId && p.matched?.id && selectedClient) {
+          const ingId = getIngredientId(p.matched.id);
+          const pref = getClientPreference(ingId);
+          if (pref) {
+            ptId = pref.processingTypeId;
+            ptName = processingTypes.find(t => t.id === pref.processingTypeId)?.name;
+            pSpec = pSpec || pref.defaultSpec;
+            if (!lineNote && pref.note) lineNote = pref.note;
+          }
+        }
+
+        return {
+          productId: p.matched?.id,
+          productName: p.matched?.name || p.productName,
+          qty: p.qty,
+          unit: p.unit,
+          unitPrice: p.matched?.price || 0,
+          discount: 0,
+          lineTotal: p.qty * (p.matched?.price || 0),
+          processingTypeId: ptId,
+          processingTypeName: ptName,
+          processingSpec: pSpec,
+          lineNote,
+        };
+      });
       setOrderLines(newLines);
       parsedSnapshotRef.current = newLines.map(l => ({ ...l }));
-
-      const notes = parsed.filter(p => p.note).map(p => `${p.matched?.name || p.productName}: ${p.note}`);
-      if (notes.length > 0) {
-        setOrderNotes(prev => prev ? `${prev}\n${notes.join('\n')}` : notes.join('\n'));
-      }
     }
 
     // Try to auto-detect client from message
@@ -224,15 +375,34 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
 
     const extraUnits = allUnits.filter(u => !BASE_UNITS.includes(u));
 
+    const ptPayload = processingTypes.map(pt => ({
+      code: pt.code, name: pt.name, spec: pt.spec || undefined,
+    }));
+
+    const prefPayload = clientPreferences.length > 0
+      ? clientPreferences.map(cp => {
+          const pt = processingTypes.find(t => t.id === cp.processingTypeId);
+          const prod = products.find(p => (p.parentIngredientId || p.ingredientId) === cp.ingredientId);
+          return { ingredientName: prod?.name || cp.ingredientId, processingName: pt?.name || '', spec: cp.defaultSpec };
+        })
+      : undefined;
+
+    const adminHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+    try {
+      const session = JSON.parse(localStorage.getItem('coolfood_admin_session') || '{}');
+      if (session?.id) { adminHeaders['x-admin-id'] = session.id; adminHeaders['x-admin-role'] = session.role || ''; }
+    } catch { /* ignore */ }
     const resp = await fetch('/api/parse-whatsapp-order', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: adminHeaders,
       body: JSON.stringify({
         message: waMessage,
         products: productPayload,
         clientNames,
         corrections: corrections.length > 0 ? corrections : undefined,
         extraUnits: extraUnits.length > 0 ? extraUnits : undefined,
+        processingTypes: ptPayload.length > 0 ? ptPayload : undefined,
+        clientPreferences: prefPayload,
       }),
     });
 
@@ -251,13 +421,15 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
         ? products.find(p => p.id === item.productId)
         : undefined;
       return {
-        productName: item.originalText || item.productName,
+        productName: item.productName || item.originalText,
         qty: Number(item.qty) || 1,
         unit: item.unit || '磅',
         matched: matchedProduct
-          ? { id: matchedProduct.id, name: matchedProduct.name, price: matchedProduct.price, unit: matchedProduct.unit }
+          ? { ...matchedProduct }
           : undefined,
         note: item.note || undefined,
+        processingCode: item.processingCode || undefined,
+        processingSpec: item.processingSpec || undefined,
       };
     });
   };
@@ -364,15 +536,29 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
 
   const applyParsedLines = () => {
     if (parsedLines.length === 0) return;
-    const newLines: WholesaleOrderLine[] = parsedLines.map(p => ({
-      productId: p.matched?.id,
-      productName: p.matched?.name || p.productName,
-      qty: p.qty,
-      unit: p.unit,
-      unitPrice: p.matched?.price || 0,
-      discount: 0,
-      lineTotal: p.qty * (p.matched?.price || 0),
-    }));
+    const newLines: WholesaleOrderLine[] = parsedLines.map(p => {
+      let ptId: string | undefined;
+      let ptName: string | undefined;
+      let pSpec: string | undefined;
+      if (p.processingCode) {
+        const pt = processingTypes.find(t => t.code === p.processingCode);
+        if (pt) { ptId = pt.id; ptName = pt.name; }
+      }
+      if (p.processingSpec) pSpec = p.processingSpec;
+      return {
+        productId: p.matched?.id,
+        productName: p.matched?.name || p.productName,
+        qty: p.qty,
+        unit: p.unit,
+        unitPrice: p.matched?.price || 0,
+        discount: 0,
+        lineTotal: p.qty * (p.matched?.price || 0),
+        processingTypeId: ptId,
+        processingTypeName: ptName,
+        processingSpec: pSpec,
+        lineNote: p.note || undefined,
+      };
+    });
     setOrderLines(newLines);
   };
 
@@ -411,6 +597,13 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
     const wasAIParsed = snapshot && snapshot.productName;
     const isDifferentProduct = wasAIParsed && snapshot.productName !== product.name;
 
+    const ingId = product.parentIngredientId || product.ingredientId;
+    const pref = ingId ? getClientPreference(ingId) : undefined;
+    let ptId = pref?.processingTypeId;
+    let ptName = ptId ? processingTypes.find(t => t.id === ptId)?.name : undefined;
+    let pSpec = pref?.defaultSpec;
+    let lineNote = pref?.note;
+
     setOrderLines(prev => {
       const next = [...prev];
       next[idx] = {
@@ -419,6 +612,10 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
         productName: product.name,
         unitPrice: product.price,
         lineTotal: next[idx].qty * product.price * (1 - next[idx].discount / 100),
+        processingTypeId: ptId,
+        processingTypeName: ptName,
+        processingSpec: pSpec,
+        lineNote: lineNote,
       };
       return next;
     });
@@ -451,9 +648,14 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
         unit_price: l.unitPrice,
         qty: l.qty,
         line_total: l.lineTotal,
+        processing_type_id: l.processingTypeId || undefined,
+        processing_type_name: l.processingTypeName || undefined,
+        processing_spec: l.processingSpec || undefined,
+        line_note: l.lineNote || undefined,
       }));
 
     const payload = {
+      id: Date.now(),
       customer_name: selectedClient.companyName,
       customer_phone: selectedClient.phone,
       total: subtotal,
@@ -491,6 +693,30 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
       credit_terms: 'cod',
     });
 
+    // Auto-save client product preferences for lines with processing info
+    if (selectedClient) {
+      const prefsToSave = orderLines
+        .filter(l => l.productId && l.processingTypeId)
+        .map(l => {
+          const ingId = getIngredientId(l.productId);
+          return ingId ? {
+            client_id: selectedClient.id,
+            ingredient_id: ingId,
+            default_processing_type_id: l.processingTypeId,
+            default_spec: l.processingSpec || null,
+            note: l.lineNote || null,
+            last_ordered_at: new Date().toISOString(),
+          } : null;
+        })
+        .filter(Boolean);
+      if (prefsToSave.length > 0) {
+        try {
+          await supabase.from('client_product_preferences')
+            .upsert(prefsToSave, { onConflict: 'client_id,ingredient_id,default_processing_type_id' });
+        } catch { /* table may not exist yet */ }
+      }
+    }
+
     setSavedOrderId(data.id?.toString() || null);
     setSaving(false);
     showToast('訂單已儲存');
@@ -517,33 +743,312 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
   };
 
   const generatePrintHtml = (type: string) => {
-    const brandLabel = WHOLESALE_BRAND_META[wholesaleBrand].label;
     const validLines = orderLines.filter(l => l.productName);
-    const colors: Record<string, string> = { tricolor: '#fff', picking: '#ffffcc', delivery: '#ccffcc' };
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${type}</title>
-    <style>body{font-family:sans-serif;padding:20px;background:${colors[type] || '#fff'}}
-    table{width:100%;border-collapse:collapse;margin-top:12px}
-    th,td{border:1px solid #333;padding:6px 8px;text-align:left;font-size:13px}
-    th{background:#eee;font-weight:bold}
-    .header{display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #333;padding-bottom:8px;margin-bottom:12px}
-    .total{text-align:right;font-size:16px;font-weight:bold;margin-top:12px}
-    @media print{body{margin:0;padding:10px}}</style></head><body>
-    <div class="header"><div><h2 style="margin:0">${brandLabel}</h2>
-    <p style="margin:4px 0;font-size:12px">${type === 'tricolor' ? '訂單確認單' : type === 'picking' ? '執貨紙（工場用）' : '送貨單（司機用）'}</p></div>
-    <div style="text-align:right"><p style="margin:0;font-size:12px">單號：${savedOrderId || '—'}</p>
-    <p style="margin:2px 0;font-size:12px">日期：${new Date().toLocaleDateString('zh-TW')}</p>
-    <p style="margin:2px 0;font-size:12px">送貨日：${deliveryDate}</p></div></div>
-    <p><strong>客戶：</strong>${selectedClient?.companyName || '—'}</p>
-    <p><strong>電話：</strong>${selectedClient?.phone || '—'}</p>
-    <p><strong>地址：</strong>${selectedClient?.address || '—'}</p>
-    <table><thead><tr><th>#</th><th>品名</th><th>數量</th><th>單位</th>
-    ${type !== 'picking' ? '<th>單價</th><th>金額</th>' : ''}</tr></thead><tbody>
-    ${validLines.map((l, i) => `<tr><td>${i + 1}</td><td>${l.productName}</td><td>${l.qty}</td><td>${l.unit}</td>
-    ${type !== 'picking' ? `<td>$${l.unitPrice.toFixed(1)}</td><td>$${l.lineTotal.toFixed(1)}</td>` : ''}</tr>`).join('')}
-    </tbody></table>
-    ${type !== 'picking' ? `<p class="total">合計：$${subtotal.toFixed(2)}</p>` : ''}
-    ${orderNotes ? `<p style="margin-top:12px;font-size:12px"><strong>備註：</strong>${orderNotes}</p>` : ''}
-    </body></html>`;
+    const today = new Date().toLocaleDateString('zh-TW');
+    const orderId = savedOrderId || '—';
+    const clientName = selectedClient?.companyName || '—';
+    const clientPhone = selectedClient?.phone || '—';
+    const clientAddr = selectedClient?.address || '—';
+    const clientCode = selectedClient?.clientCode || '';
+
+    if (type === 'picking') {
+      return generatePickingHtml(validLines);
+    }
+
+    if (wholesaleBrand === 'GHFOODS') {
+      return generateGHFoodsPrintHtml(type, validLines, today, orderId, clientName, clientPhone, clientAddr, clientCode);
+    }
+    return generateCoolfoodPrintHtml(type, validLines, today, orderId, clientName, clientPhone, clientAddr, clientCode);
+  };
+
+  const generatePickingHtml = (validLines: WholesaleOrderLine[]) => {
+    const brandLabel = WHOLESALE_BRAND_META[wholesaleBrand].label;
+    const clientName = selectedClient?.companyName || '—';
+    const clientCode = selectedClient?.clientCode || '';
+    const displayName = clientCode ? `${clientName} (${clientCode})` : clientName;
+    const orderId = savedOrderId || '—';
+    const today = new Date();
+    const timestamp = `${today.toLocaleDateString('zh-TW')} ${today.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}`;
+    const emptyRows = Math.max(0, 12 - validLines.length);
+
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>執貨紙</title>
+<style>
+  @page { size: A5 portrait; margin: 5mm; }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;font-size:11px;color:#000;width:148mm}
+  .page{padding:4mm}
+  .top-row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:1.5mm}
+  .customer{font-size:15px;font-weight:900;flex:1}
+  .meta{font-size:10px;text-align:right;color:#333;font-weight:600;white-space:nowrap}
+  .info-bar{display:flex;justify-content:space-between;font-size:9px;color:#555;font-weight:600;padding:1.5mm 0;border-bottom:2px solid #000;margin-bottom:2mm}
+  table{width:100%;border-collapse:collapse}
+  th{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:0.5px;color:#555;
+     border-bottom:1.5px solid #000;padding:2px 3px;text-align:left}
+  th.ctr{text-align:center}
+  td{padding:4px 3px;border-bottom:0.5px solid #ccc;font-size:12px;vertical-align:middle}
+  td.name{font-weight:700;font-size:13px}
+  td.qty{font-weight:800;font-size:14px;text-align:right;padding-right:1mm}
+  td.unit{font-size:11px;color:#555}
+  td.chk{width:12mm;text-align:center;font-size:16px}
+  td.note{font-size:9px;color:#555;max-width:22mm;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  td.num{text-align:center;font-size:10px;color:#888;width:8mm}
+  .empty td{border-bottom:0.5px solid #eee;height:7mm}
+  .footer{display:flex;justify-content:space-between;align-items:flex-end;margin-top:4mm;padding-top:3mm;border-top:1.5px solid #000}
+  .sig-group{display:flex;gap:6mm}
+  .sig-box{text-align:center}
+  .sig-label{font-size:8px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6mm}
+  .sig-field{border:1px solid #999;width:22mm;height:10mm;border-radius:2px}
+  .page-num{font-size:9px;color:#888;font-weight:600}
+  @media print{
+    body{margin:0;padding:0;width:148mm}
+  }
+</style></head><body>
+<div class="page">
+  <div class="top-row">
+    <div class="customer">${displayName}</div>
+    <div class="meta">${orderId} &nbsp; ${deliveryDate}</div>
+  </div>
+  <div class="info-bar">
+    <span>${brandLabel} · 執貨紙（工場用）</span>
+    <span>${timestamp}</span>
+  </div>
+
+  <table>
+    <thead><tr>
+      <th style="width:8mm">#</th>
+      <th>貨物名稱</th>
+      <th style="width:18mm;text-align:right;padding-right:1mm">數量</th>
+      <th style="width:12mm">單位</th>
+      <th class="ctr" style="width:14mm">備註</th>
+      <th class="ctr" style="width:12mm">✓</th>
+    </tr></thead>
+    <tbody>
+    ${validLines.map((l, i) => {
+      const procTag = l.processingTypeName && l.processingTypeName !== '原件'
+        ? `${l.processingTypeName}${l.processingSpec ? ' ' + l.processingSpec : ''}`
+        : '';
+      const noteText = [procTag, l.lineNote].filter(Boolean).join(' · ');
+      return `<tr>
+        <td class="num">${i + 1}</td>
+        <td class="name">${l.productName}${procTag ? ` <span style="color:#7c3aed;font-size:11px;font-weight:800">【${procTag}】</span>` : ''}</td>
+        <td class="qty">${l.qty}</td>
+        <td class="unit">${l.unit}</td>
+        <td class="note">${l.lineNote || ''}</td>
+        <td class="chk">☐</td>
+      </tr>`;
+    }).join('')}
+    ${Array(emptyRows).fill('<tr class="empty"><td></td><td></td><td></td><td></td><td></td><td></td></tr>').join('')}
+    </tbody>
+  </table>
+
+  ${orderNotes ? `<p style="margin-top:2mm;font-size:9px;color:#555;padding:1.5mm;background:#fffde7;border:0.5px solid #e0d97a;border-radius:2px"><strong>備註：</strong>${orderNotes}</p>` : ''}
+
+  <div class="footer">
+    <div class="sig-group">
+      <div class="sig-box">
+        <div class="sig-label">執貨</div>
+        <div class="sig-field"></div>
+      </div>
+      <div class="sig-box">
+        <div class="sig-label">箱數</div>
+        <div class="sig-field"></div>
+      </div>
+    </div>
+    <div class="page-num">${validLines.length} 項 &nbsp; 1/1</div>
+  </div>
+</div>
+</body></html>`;
+  };
+
+  const generateGHFoodsPrintHtml = (
+    type: string, validLines: WholesaleOrderLine[], today: string,
+    orderId: string, clientName: string, clientPhone: string, clientAddr: string, clientCode: string,
+  ) => {
+    const isDelivery = type === 'delivery';
+    const totalAmount = validLines.reduce((s, l) => s + l.lineTotal, 0);
+    const totalPkgs = validLines.length;
+    const displayName = clientCode ? `(${clientCode})${clientName}` : clientName;
+
+    const ROW_TOP = 54;
+    const ROW_H = 7.2;
+
+    const itemRows = validLines.map((l, i) => {
+      const y = ROW_TOP + i * ROW_H;
+      const procTag = l.processingTypeName && l.processingTypeName !== '原件'
+        ? ` 【${l.processingTypeName}${l.processingSpec ? ' ' + l.processingSpec : ''}】`
+        : '';
+      const noteTag = l.lineNote ? ` (${l.lineNote})` : '';
+      return `
+        <span class="f" style="top:${y}mm;left:7mm;width:12mm;text-align:center">${i + 1}</span>
+        <span class="f" style="top:${y}mm;left:52mm;width:85mm">${l.productName}${procTag}${noteTag}</span>
+        <span class="f" style="top:${y}mm;left:150mm;width:22mm;text-align:right">${l.qty}${l.unit}</span>
+        ${!isDelivery ? `
+        <span class="f" style="top:${y}mm;left:175mm;width:28mm;text-align:right">${l.unitPrice.toFixed(2)} / ${l.unit}</span>
+        <span class="f" style="top:${y}mm;left:208mm;width:28mm;text-align:right">${l.lineTotal.toFixed(2)}</span>
+        ` : ''}`;
+    }).join('');
+
+    const pkgsY = ROW_TOP + Math.max(validLines.length, 7) * ROW_H + 2;
+
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>進興 三色紙</title>
+<style>
+  @page { size: 241mm 140mm; margin: 0; }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    font-family:'Courier New','NSimSun',monospace;
+    font-size:11px;
+    width:241mm;height:140mm;
+    position:relative;
+    color:#000;
+    background:transparent;
+  }
+  .f{position:absolute;white-space:nowrap;overflow:hidden}
+  @media print{
+    body{margin:0;padding:0;width:241mm;height:140mm;background:transparent}
+  }
+</style></head><body>
+
+  <!-- ===== Customer info (left column) ===== -->
+  <span class="f" style="top:22mm;left:48mm;width:100mm;font-size:12px">${displayName}</span>
+  <span class="f" style="top:28mm;left:22mm;width:130mm;font-size:10px">${clientAddr}</span>
+  <span class="f" style="top:38mm;left:32mm;width:60mm;font-size:10px">${clientPhone}</span>
+
+  <!-- ===== Invoice info (right column) ===== -->
+  <span class="f" style="top:18mm;left:152mm;width:85mm;font-size:9px;text-align:right">${today}</span>
+  <span class="f" style="top:22mm;left:195mm;width:42mm;font-size:11px;text-align:right">${orderId}</span>
+  <span class="f" style="top:28mm;left:195mm;width:42mm;font-size:10px;text-align:right">${deliveryDate}</span>
+  <span class="f" style="top:38mm;left:210mm;width:28mm;font-size:10px;text-align:right">C.O.D</span>
+
+  <!-- ===== Item rows (variable data only, no headers/borders) ===== -->
+  ${itemRows}
+
+  <!-- ===== Totals ===== -->
+  <span class="f" style="top:${pkgsY}mm;left:135mm;width:30mm;text-align:center;font-size:11px;font-weight:bold">共${totalPkgs}項</span>
+  ${!isDelivery ? `<span class="f" style="top:${pkgsY + 8}mm;left:200mm;width:38mm;text-align:right;font-size:13px;font-weight:bold">${totalAmount.toFixed(2)}</span>` : ''}
+
+  <!-- ===== Remarks ===== -->
+  ${orderNotes ? `<span class="f" style="top:${pkgsY + 8}mm;left:10mm;width:130mm;font-size:9px">${orderNotes}</span>` : ''}
+
+</body></html>`;
+  };
+
+  const generateCoolfoodPrintHtml = (
+    type: string, validLines: WholesaleOrderLine[], today: string,
+    orderId: string, clientName: string, clientPhone: string, clientAddr: string, clientCode: string,
+  ) => {
+    const isDelivery = type === 'delivery';
+    const totalAmount = validLines.reduce((s, l) => s + l.lineTotal, 0);
+    const emptyRows = Math.max(0, 10 - validLines.length);
+
+    const copies = isDelivery
+      ? [{ label: '送貨單（司機用）', sublabel: 'DELIVERY NOTE', showPrice: false }]
+      : [
+          { label: '正本 ORIGINAL', sublabel: '客戶存根', showPrice: true },
+          { label: '副本 COMPANY COPY', sublabel: '公司存根', showPrice: true },
+        ];
+
+    const pages = copies.map((copy, pageIdx) => `
+<div class="page ${pageIdx > 0 ? 'page-break' : ''}">
+  <div class="header">
+    <div class="brand-block">
+      <div class="brand-name">Coolfood</div>
+      <div class="brand-sub">批發部 Wholesale Division</div>
+    </div>
+    <div class="copy-label">${copy.label}</div>
+  </div>
+
+  <div class="info-section">
+    <div class="info-left">
+      <div class="info-row"><span class="lbl">客戶</span><span class="val">${clientCode ? `(${clientCode}) ` : ''}${clientName}</span></div>
+      <div class="info-row"><span class="lbl">電話</span><span class="val">${clientPhone}</span></div>
+      <div class="info-row"><span class="lbl">地址</span><span class="val">${clientAddr}</span></div>
+    </div>
+    <div class="info-right">
+      <div class="info-row"><span class="lbl">單號</span><span class="val">#${orderId}</span></div>
+      <div class="info-row"><span class="lbl">日期</span><span class="val">${today}</span></div>
+      <div class="info-row"><span class="lbl">送貨日</span><span class="val">${deliveryDate}</span></div>
+    </div>
+  </div>
+
+  <table>
+    <thead><tr>
+      <th style="width:30px">#</th>
+      <th>品名</th>
+      <th style="width:50px">數量</th>
+      <th style="width:45px">單位</th>
+      ${copy.showPrice ? '<th style="width:65px">單價 ($)</th><th style="width:70px">金額 ($)</th>' : ''}
+    </tr></thead>
+    <tbody>
+    ${validLines.map((l, i) => {
+      const procTag = l.processingTypeName && l.processingTypeName !== '原件'
+        ? ` <span style="color:#7c3aed;font-weight:700">【${l.processingTypeName}${l.processingSpec ? ' ' + l.processingSpec : ''}】</span>`
+        : '';
+      const noteTag = l.lineNote ? ` <span style="color:#666;font-size:9px">(${l.lineNote})</span>` : '';
+      return `<tr>
+      <td class="ctr">${i + 1}</td>
+      <td>${l.productName}${procTag}${noteTag}</td>
+      <td class="num">${l.qty}</td>
+      <td class="ctr">${l.unit}</td>
+      ${copy.showPrice ? `<td class="num">${l.unitPrice.toFixed(2)}</td><td class="num">${l.lineTotal.toFixed(2)}</td>` : ''}
+    </tr>`;}).join('')}
+    ${Array(emptyRows).fill('<tr><td>&nbsp;</td><td></td><td></td><td></td>' + (copy.showPrice ? '<td></td><td></td>' : '') + '</tr>').join('')}
+    </tbody>
+  </table>
+
+  ${copy.showPrice ? `<div class="total-bar"><span>合計 Total</span><span class="total-amount">$${totalAmount.toFixed(2)}</span></div>` : ''}
+  ${orderNotes ? `<p class="notes"><strong>備註:</strong> ${orderNotes}</p>` : ''}
+
+  <div class="footer-sig">
+    <div class="sig-box"><div class="sig-label">客戶簽收</div><div class="sig-line"></div></div>
+    <div class="sig-box"><div class="sig-label">送貨員</div><div class="sig-line"></div></div>
+    <div class="sig-box"><div class="sig-label">日期</div><div class="sig-line"></div></div>
+  </div>
+
+  ${copy.label.includes('副本') ? '<div class="copy-notice">* 此副本經客戶簽收後由司機帶回公司存檔</div>' : ''}
+</div>`).join('');
+
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Coolfood 批發</title>
+<style>
+  @page { size: A5 portrait; margin: 5mm; }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;font-size:11px;color:#1a1a2e;line-height:1.35}
+  .page{width:148mm;min-height:200mm;padding:5mm;position:relative;page-break-after:always}
+  .page:last-child{page-break-after:auto}
+  .page-break{page-break-before:always}
+  .header{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:3mm;margin-bottom:3mm;border-bottom:2px solid #0ea5e9}
+  .brand-name{font-size:22px;font-weight:900;color:#0ea5e9;letter-spacing:0.5px}
+  .brand-sub{font-size:9px;color:#64748b;font-weight:600}
+  .copy-label{font-size:11px;font-weight:800;color:#fff;background:#0ea5e9;padding:3px 12px;border-radius:4px;align-self:center}
+  .info-section{display:flex;gap:4mm;margin-bottom:3mm;padding:2mm;background:#f8fafc;border-radius:4px;border:1px solid #e2e8f0}
+  .info-left{flex:1.2}.info-right{flex:0.8}
+  .info-row{display:flex;gap:4px;padding:1px 0;font-size:10px}
+  .info-row .lbl{color:#64748b;font-weight:700;min-width:36px}
+  .info-row .val{color:#1a1a2e;font-weight:600}
+  table{width:100%;border-collapse:collapse;font-size:10px}
+  th{background:#0ea5e9;color:#fff;font-weight:700;padding:3px 4px;text-align:center;font-size:9px;text-transform:uppercase;letter-spacing:0.5px}
+  td{border:1px solid #cbd5e1;padding:2.5px 4px}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  td.ctr{text-align:center}
+  tbody tr:nth-child(even){background:#f8fafc}
+  .total-bar{display:flex;justify-content:space-between;align-items:center;margin-top:2mm;padding:3px 8px;background:#0ea5e9;color:#fff;border-radius:4px;font-weight:800;font-size:13px}
+  .total-amount{font-size:15px}
+  .notes{margin-top:2mm;font-size:9px;color:#475569;padding:2mm;background:#fffbeb;border:1px solid #fde68a;border-radius:3px}
+  .footer-sig{display:flex;justify-content:space-between;margin-top:4mm;gap:3mm}
+  .sig-box{flex:1;text-align:center}
+  .sig-label{font-size:8px;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:8mm}
+  .sig-line{border-top:1px solid #cbd5e1;margin-top:1mm}
+  .copy-notice{text-align:center;font-size:8px;color:#94a3b8;font-style:italic;margin-top:2mm}
+  @media print{
+    body{margin:0;padding:0}
+    .page{width:148mm;padding:5mm}
+    th{background:#0ea5e9 !important;color:#fff !important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    tbody tr:nth-child(even){background:#f8fafc !important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .total-bar{background:#0ea5e9 !important;color:#fff !important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .copy-label{background:#0ea5e9 !important;color:#fff !important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  }
+</style></head><body>
+${pages}
+</body></html>`;
   };
 
   const resetForm = () => {
@@ -561,12 +1066,14 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
 
   const filteredClients = clients
     .filter(c => c.brand === wholesaleBrand)
-    .filter(c =>
-      !clientSearch ||
-      c.companyName.toLowerCase().includes(clientSearch.toLowerCase()) ||
-      c.phone.includes(clientSearch) ||
-      c.contactName.toLowerCase().includes(clientSearch.toLowerCase())
-    );
+    .filter(c => {
+      if (!clientSearch) return true;
+      const q = clientSearch.toLowerCase();
+      return c.companyName.toLowerCase().includes(q) ||
+        c.phone.includes(clientSearch) ||
+        c.contactName.toLowerCase().includes(q) ||
+        c.clientCode.toLowerCase().includes(q);
+    });
 
   const filteredProducts = products.filter(p =>
     !productSearch || p.name.toLowerCase().includes(productSearch.toLowerCase())
@@ -595,13 +1102,13 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
             </p>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className={`grid ${wholesaleBrand === 'GHFOODS' ? 'grid-cols-2' : 'grid-cols-3'} gap-3`}>
             <button
               onClick={() => handlePrint('tricolor')}
               className="flex flex-col items-center gap-2 p-5 bg-rose-50 border border-rose-200 rounded-2xl hover:bg-rose-100 transition-colors"
             >
               <Printer size={24} className="text-rose-500" />
-              <span className="text-xs font-black text-rose-600">三色單</span>
+              <span className="text-xs font-black text-rose-600">{wholesaleBrand === 'GHFOODS' ? '三色紙' : '正本 / 副本'}</span>
             </button>
             <button
               onClick={() => handlePrint('picking')}
@@ -610,13 +1117,15 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
               <ClipboardList size={24} className="text-amber-500" />
               <span className="text-xs font-black text-amber-600">執貨紙</span>
             </button>
-            <button
-              onClick={() => handlePrint('delivery')}
-              className="flex flex-col items-center gap-2 p-5 bg-emerald-50 border border-emerald-200 rounded-2xl hover:bg-emerald-100 transition-colors"
-            >
-              <FileText size={24} className="text-emerald-500" />
-              <span className="text-xs font-black text-emerald-600">送貨單</span>
-            </button>
+            {wholesaleBrand !== 'GHFOODS' && (
+              <button
+                onClick={() => handlePrint('delivery')}
+                className="flex flex-col items-center gap-2 p-5 bg-emerald-50 border border-emerald-200 rounded-2xl hover:bg-emerald-100 transition-colors"
+              >
+                <FileText size={24} className="text-emerald-500" />
+                <span className="text-xs font-black text-emerald-600">送貨單</span>
+              </button>
+            )}
           </div>
 
           <div className="flex gap-3 justify-center pt-2">
@@ -627,7 +1136,11 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
               <Plus size={16} /> 繼續下一張訂單
             </button>
             <button
-              onClick={() => { handlePrint('tricolor'); handlePrint('picking'); handlePrint('delivery'); }}
+              onClick={() => {
+                handlePrint('tricolor');
+                handlePrint('picking');
+                if (wholesaleBrand !== 'GHFOODS') handlePrint('delivery');
+              }}
               className="flex items-center gap-2 px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-sm hover:bg-slate-800"
             >
               <Printer size={16} /> 全部列印
@@ -721,6 +1234,7 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
                       )}
                       <span className="truncate flex-1">
                         {p.productName}
+                        {p.processingCode && <span className="text-violet-500 font-bold ml-1">【{p.processingCode}{p.processingSpec ? ` ${p.processingSpec}` : ''}】</span>}
                         {p.note && <span className="text-slate-400 font-normal ml-1">({p.note})</span>}
                       </span>
                       <span className="text-slate-400">{p.qty} {p.unit}</span>
@@ -787,7 +1301,7 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
                           className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 text-left transition-colors"
                         >
                           <div className="flex-1 min-w-0">
-                            <p className="text-xs font-black text-slate-800 truncate">{c.companyName}</p>
+                            <p className="text-xs font-black text-slate-800 truncate">{c.clientCode ? `(${c.clientCode}) ` : ''}{c.companyName}</p>
                             <p className="text-[10px] text-slate-400">{c.phone} · {c.priceTier}</p>
                           </div>
                           <span className={`px-1.5 py-0.5 rounded text-[9px] font-black ${WHOLESALE_BRAND_META[c.brand].colorClasses.accent} ${WHOLESALE_BRAND_META[c.brand].colorClasses.text}`}>
@@ -844,9 +1358,13 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {orderLines.map((line, idx) => (
+                  {orderLines.map((line, idx) => {
+                    const availProc = getAvailableProcessing(line.productId);
+                    const specOpts = getSpecOptions(line.processingTypeId);
+                    const showProcessingRow = line.productId && (availProc.length > 0 || line.processingTypeId || line.lineNote);
+                    return (
                     <tr key={idx} className="border-t border-slate-50 hover:bg-slate-50/50">
-                      <td className="px-4 py-2 text-slate-400 font-bold">{idx + 1}</td>
+                      <td className="px-4 py-2 text-slate-400 font-bold align-top pt-3">{idx + 1}</td>
                       <td className="px-3 py-2 relative">
                         <input
                           value={line.productName}
@@ -862,16 +1380,70 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
                               <button
                                 key={p.id}
                                 onMouseDown={() => selectProduct(idx, p)}
-                                className="w-full flex items-center justify-between px-4 py-2 hover:bg-slate-50 text-left"
+                                className="w-full flex items-center justify-between px-4 py-2 hover:bg-slate-50 text-left gap-2"
                               >
-                                <span className="text-xs font-bold text-slate-700 truncate">{p.name}</span>
-                                <span className="text-xs text-slate-400">${p.price}</span>
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="text-xs font-bold text-slate-700 truncate">{p.name}</span>
+                                  {p.variantLabel && p.variantLabel !== '原件' && (
+                                    <span className="flex-shrink-0 px-1 py-0.5 bg-violet-50 text-violet-600 rounded text-[9px] font-bold">{p.variantLabel}</span>
+                                  )}
+                                  {!p.variantLabel && p.processingTypeName && (
+                                    <span className="flex-shrink-0 px-1 py-0.5 bg-violet-50 text-violet-600 rounded text-[9px] font-bold">{p.processingTypeName}</span>
+                                  )}
+                                  {p.packSize && (
+                                    <span className="flex-shrink-0 text-[9px] text-slate-400">{p.packSize}</span>
+                                  )}
+                                </div>
+                                <span className="text-xs text-slate-400 flex-shrink-0">${p.price}</span>
                               </button>
                             ))}
                           </div>
                         )}
+
+                        {showProcessingRow && (
+                          <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                            {availProc.length > 0 && (
+                              <select
+                                value={line.processingTypeId || ''}
+                                onChange={e => {
+                                  const ptId = e.target.value || undefined;
+                                  const pt = ptId ? processingTypes.find(t => t.id === ptId) : undefined;
+                                  setOrderLines(prev => {
+                                    const next = [...prev];
+                                    next[idx] = { ...next[idx], processingTypeId: ptId, processingTypeName: pt?.name, processingSpec: undefined };
+                                    return next;
+                                  });
+                                }}
+                                className="px-2 py-1 bg-violet-50 border border-violet-200 rounded-md text-[10px] font-bold text-violet-700 outline-none focus:border-violet-400 cursor-pointer"
+                              >
+                                <option value="">原件（不加工）</option>
+                                {availProc.map(pt => (
+                                  <option key={pt.id} value={pt.id}>{pt.name}{pt.nameEn ? ` ${pt.nameEn}` : ''}</option>
+                                ))}
+                              </select>
+                            )}
+                            {specOpts.length > 0 && (
+                              <select
+                                value={line.processingSpec || ''}
+                                onChange={e => updateLine(idx, 'processingSpec', e.target.value || undefined)}
+                                className="px-2 py-1 bg-amber-50 border border-amber-200 rounded-md text-[10px] font-bold text-amber-700 outline-none focus:border-amber-400 cursor-pointer"
+                              >
+                                <option value="">規格...</option>
+                                {specOpts.map(s => (
+                                  <option key={s} value={s}>{s}</option>
+                                ))}
+                              </select>
+                            )}
+                            <input
+                              value={line.lineNote || ''}
+                              onChange={e => updateLine(idx, 'lineNote', e.target.value || undefined)}
+                              placeholder="備註..."
+                              className="flex-1 min-w-[60px] px-2 py-1 bg-slate-50 border border-slate-100 rounded-md text-[10px] font-bold outline-none focus:border-blue-300 placeholder:text-slate-300"
+                            />
+                          </div>
+                        )}
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2 align-top pt-3">
                         <input
                           type="number"
                           value={line.qty || ''}
@@ -881,7 +1453,7 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
                           step="0.5"
                         />
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2 align-top pt-3">
                         <select
                           value={line.unit}
                           onChange={e => updateLine(idx, 'unit', e.target.value)}
@@ -890,7 +1462,7 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
                           {allUnits.map(u => <option key={u} value={u}>{u}</option>)}
                         </select>
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2 align-top pt-3">
                         <input
                           type="number"
                           value={line.unitPrice || ''}
@@ -900,7 +1472,7 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
                           step="0.1"
                         />
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2 align-top pt-3">
                         <input
                           type="number"
                           value={line.discount || ''}
@@ -910,14 +1482,15 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
                           max="100"
                         />
                       </td>
-                      <td className="px-3 py-2 text-right font-black text-slate-800">${line.lineTotal.toFixed(1)}</td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2 text-right font-black text-slate-800 align-top pt-3">${line.lineTotal.toFixed(1)}</td>
+                      <td className="px-3 py-2 align-top pt-3">
                         <button onClick={() => removeLine(idx)} className="p-1 text-slate-300 hover:text-rose-500 transition-colors">
                           <Trash2 size={14} />
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

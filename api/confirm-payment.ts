@@ -139,7 +139,7 @@ export default async function handler(
       console.warn('[confirm-payment] Airwallex error (non-fatal):', airwallexError);
     }
   } else {
-    airwallexVerified = true;
+    return res.status(400).json({ error: 'Missing payment_intent_id', code: 'BAD_REQUEST' });
   }
 
   if (!orderId) {
@@ -189,7 +189,7 @@ export default async function handler(
           console.log('[confirm-payment] Auto SF call for', orderId);
           const sfRes = await fetchWithTimeout(`${selfOrigin}/api/sf-order`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'x-internal-secret': serviceRoleKey },
             body: JSON.stringify({ orderId }),
           }, 12000);
           const sfData: any = await sfRes.json().catch(() => ({}));

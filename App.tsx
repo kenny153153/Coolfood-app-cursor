@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
-import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, WholesalePriceTier, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel, MemberType, IngredientCategory, AdminPermissions, AdminAccount, AdminRole, Workspace, AdminModuleId } from './types';
+import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, WholesalePriceTier, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel, MemberType, IngredientCategory, AdminPermissions, AdminAccount, AdminRole, Workspace, AdminModuleId, ProcessingType, ProductType, ProductGroup, ProductClassification, PricingMode, StaffRoleTemplate } from './types';
 import { WorkspaceProvider } from './WorkspaceContext';
 import { useSite } from './SiteContext';
 import GHFoodsStorefront from './GHFoodsStorefront';
@@ -48,9 +48,12 @@ import {
   mapIngredientRowToIngredient,
   mapIngredientToRow,
   mapIngredientCategoryRow,
-  computeProductCost
+  computeProductCost,
+  mapProcessingTypeRow,
+  mapProductGroupRow,
+  mapProductGroupToRow,
 } from './supabaseMappers';
-import { hashPassword, verifyPassword } from './authHelpers';
+import { hashPassword, verifyPassword, generateSessionToken, verifySessionToken } from './authHelpers';
 import { uploadImage, uploadImages, deleteImage, isMediaUrl } from './imageUpload';
 
 const LazySetupPage = lazy(() => import('./SetupPage'));
@@ -387,28 +390,7 @@ const SuccessView: React.FC<{
         } catch {
           errData = null;
         }
-        if (errData?.code === 'SUPABASE_FETCH_FAILED' && orderId) {
-          const dbId = orderId.startsWith('ORD-') ? orderId.replace(/^ORD-/, '') : orderId;
-          const attemptUpdate = async (idValue: string) => {
-            const { data, error } = await supabase
-              .from('orders')
-              .update({ status: 'paid' })
-              .eq('id', idValue)
-              .select('id,status,tracking_number,waybill_no')
-              .maybeSingle();
-            if (error) return null;
-            return data ?? null;
-          };
-          const updated = (await attemptUpdate(dbId)) ?? (await attemptUpdate(orderId));
-          if (updated) {
-            setSuccessWaybillLoading(false);
-            setConfirmSuccess(true);
-            setSuccessWaybill((updated as SupabaseOrderRow).waybill_no ?? (updated as SupabaseOrderRow).tracking_number ?? null);
-            setConfirmError(null);
-            onRefreshOrders();
-            return;
-          }
-        }
+        // Client-side fallback removed for security: only the server can mark orders as paid
         setSuccessWaybillLoading(false);
         setConfirmError(`錯誤 ${response.status}${text ? `: ${text.slice(0, 100)}` : ''}`);
         setConfirmSuccess(false);
@@ -529,12 +511,20 @@ const DEFAULT_SLIDESHOW: SlideshowItem[] = [
 // --- Admin Auth Constants ---
 
 const DEFAULT_ADMIN_PERMISSIONS: AdminPermissions = {
-  dashboard: true,
-  inventory: true,
+  global_dashboard: true,
+  new_order: true,
   orders: true,
+  dispatch: true,
+  warehouse_ops: true,
+  production: true,
+  accounting: true,
+  wholesale_clients: true,
+  sales_reps: true,
+  inventory: true,
+  pricing: true,
+  dashboard: true,
   members: true,
   slideshow: true,
-  pricing: true,
   recipes: true,
   ingredients: true,
   costs: true,
@@ -543,13 +533,53 @@ const DEFAULT_ADMIN_PERMISSIONS: AdminPermissions = {
   admin_management: false,
 };
 
+const ALL_STAFF_ROLES: AdminRole[] = ['super_admin', 'admin', 'customer_service', 'buyer', 'accountant', 'factory', 'sales_rep'];
+
+const ADMIN_ROLE_LABELS: Record<AdminRole, string> = {
+  super_admin: '超級管理員',
+  admin: '管理員',
+  customer_service: '客服',
+  buyer: '採購',
+  accountant: '會計',
+  factory: '工場',
+  sales_rep: '銷售員',
+};
+
+const ADMIN_ROLE_COLORS: Record<AdminRole, { bg: string; text: string }> = {
+  super_admin: { bg: 'bg-violet-100', text: 'text-violet-700' },
+  admin: { bg: 'bg-blue-100', text: 'text-blue-700' },
+  customer_service: { bg: 'bg-emerald-100', text: 'text-emerald-700' },
+  buyer: { bg: 'bg-amber-100', text: 'text-amber-700' },
+  accountant: { bg: 'bg-cyan-100', text: 'text-cyan-700' },
+  factory: { bg: 'bg-orange-100', text: 'text-orange-700' },
+  sales_rep: { bg: 'bg-pink-100', text: 'text-pink-700' },
+};
+
+const ADMIN_ROLE_ICONS: Record<AdminRole, string> = {
+  super_admin: '👑',
+  admin: '🛡️',
+  customer_service: '🎧',
+  buyer: '📦',
+  accountant: '📊',
+  factory: '🏭',
+  sales_rep: '💼',
+};
+
 const ADMIN_MODULE_PERMISSION_MAP: Record<string, keyof AdminPermissions> = {
-  dashboard: 'dashboard',
-  inventory: 'inventory',
+  global_dashboard: 'global_dashboard',
+  new_order: 'new_order',
   orders: 'orders',
+  dispatch: 'dispatch',
+  warehouse_ops: 'warehouse_ops',
+  production: 'production',
+  accounting: 'accounting',
+  wholesale_clients: 'wholesale_clients',
+  sales_reps: 'sales_reps',
+  inventory: 'inventory',
+  pricing: 'pricing',
+  dashboard: 'dashboard',
   members: 'members',
   slideshow: 'slideshow',
-  pricing: 'pricing',
   recipes: 'recipes',
   ingredients: 'ingredients',
   costs: 'costs',
@@ -559,19 +589,46 @@ const ADMIN_MODULE_PERMISSION_MAP: Record<string, keyof AdminPermissions> = {
 };
 
 const ADMIN_PERMISSION_LABELS: Record<keyof AdminPermissions, string> = {
-  dashboard: '儀表板',
-  inventory: '產品/分類',
+  global_dashboard: '總儀表版',
+  new_order: '新訂單',
   orders: '訂單管理',
+  dispatch: '派車表',
+  warehouse_ops: '材料與倉務',
+  production: '工場',
+  accounting: '會計',
+  wholesale_clients: '批發客資料庫',
+  sales_reps: '銷售員',
+  inventory: '產品/分類',
+  pricing: '價錢設定',
+  dashboard: '零售儀表板',
   members: '會員管理',
   slideshow: '廣告輪播',
-  pricing: '價錢設定',
   recipes: '食譜',
   ingredients: '原材料',
   costs: '成本管理',
   language: '語言翻譯',
   settings: '系統設定',
-  admin_management: '管理員管理',
+  admin_management: '員工與權限管理',
 };
+
+const PERMISSION_GROUPS: { label: string; keys: (keyof AdminPermissions)[] }[] = [
+  { label: '通用', keys: ['global_dashboard', 'new_order'] },
+  { label: '批發', keys: ['orders', 'wholesale_clients', 'sales_reps', 'pricing'] },
+  { label: '零售', keys: ['dashboard', 'members', 'slideshow', 'recipes', 'language'] },
+  { label: '營運', keys: ['dispatch', 'warehouse_ops', 'production', 'inventory', 'ingredients'] },
+  { label: '財務', keys: ['accounting', 'costs'] },
+  { label: '系統', keys: ['settings', 'admin_management'] },
+];
+
+/** Build auth headers for admin-only API calls */
+function buildAdminHeaders(admin: { id: string; role: string } | null): Record<string, string> {
+  if (!admin) return { 'Content-Type': 'application/json' };
+  return {
+    'Content-Type': 'application/json',
+    'x-admin-id': admin.id,
+    'x-admin-role': admin.role,
+  };
+}
 
 // --- Main App ---
 
@@ -602,6 +659,9 @@ const App: React.FC = () => {
   const [adminUser, setAdminUser] = useState<AdminAccount | null>(null);
   const [adminAccounts, setAdminAccounts] = useState<AdminAccount[]>([]);
   const [editingAdminAccount, setEditingAdminAccount] = useState<(Partial<AdminAccount> & { isNew?: boolean; newPhone?: string }) | null>(null);
+  const [staffRoles, setStaffRoles] = useState<StaffRoleTemplate[]>([]);
+  const [editingStaffRole, setEditingStaffRole] = useState<(Partial<StaffRoleTemplate> & { isNew?: boolean }) | null>(null);
+  const [staffMgmtTab, setStaffMgmtTab] = useState<'staff' | 'roles'>('staff');
   const [inventorySubTab, setInventorySubTab] = useState<'products' | 'categories' | 'rules'>('products');
   const [pricingSubTab, setPricingSubTab] = useState<'retail' | 'wholesale'>('retail');
   const [inventoryChannelFilter, setInventoryChannelFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
@@ -790,7 +850,21 @@ const App: React.FC = () => {
   const [editingIngredient, setEditingIngredient] = useState<Ingredient | null>(null);
   const [ingredientSubTab, setIngredientSubTab] = useState<'list' | 'units' | 'categories'>('list');
   const [ingredientCategoryList, setIngredientCategoryList] = useState<IngredientCategory[]>([]);
+
+  // Processing Types (加工方式) for product editing
+  const [processingTypes, setProcessingTypes] = useState<ProcessingType[]>([]);
   const [editingIngredientCategory, setEditingIngredientCategory] = useState<IngredientCategory | null>(null);
+
+  // Product Groups (產品群組)
+  const [productGroups, setProductGroups] = useState<ProductGroup[]>([]);
+  const [newProductWizard, setNewProductWizard] = useState<{
+    classification: ProductClassification | null;
+    ingredientId: string;
+    pricingMode: PricingMode;
+    packSize: string;
+    productName: string;
+    variantLabel: string;
+  } | null>(null);
   const [customUnits, setCustomUnits] = useState<{ id: string; label: string; value: string }[]>([]);
   const [selectedIngredientIds, setSelectedIngredientIds] = useState<Set<string>>(new Set());
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
@@ -1039,7 +1113,7 @@ const App: React.FC = () => {
       const [productsRes, categoriesRes, membersRes, slideshowRes] = await Promise.all([
         supabase.from('products').select('*'),
         supabase.from('categories').select('*'),
-        supabase.from('members').select('*'),
+        supabase.from('members').select('id, name, email, phone_number, points, wallet_balance, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses'),
         supabase.from('slideshow').select('*').order('sort_order', { ascending: true })
       ]);
 
@@ -1117,17 +1191,25 @@ const App: React.FC = () => {
         console.warn('[recipes] Failed to load');
       }
 
-      // ── 載入原材料 (Ingredients) ──
+      // ── 載入原材料 (Ingredients) + 加工方式 (Processing Types) + 產品群組 ──
       try {
-        const [ingRes, icRes] = await Promise.all([
+        const [ingRes, icRes, ptRes, pgRes] = await Promise.all([
           supabase.from('ingredients').select('*').order('name'),
           supabase.from('ingredient_categories').select('*').order('sort_order'),
+          supabase.from('processing_types').select('*').eq('is_active', true).order('sort_order'),
+          supabase.from('product_groups').select('*').eq('is_active', true).order('name'),
         ]);
         if (!ingRes.error && ingRes.data) {
           setIngredients(ingRes.data.map(mapIngredientRowToIngredient));
         }
         if (!icRes.error && icRes.data && icRes.data.length > 0) {
           setIngredientCategoryList(icRes.data.map(mapIngredientCategoryRow));
+        }
+        if (!ptRes.error && ptRes.data) {
+          setProcessingTypes(ptRes.data.map((r: any) => mapProcessingTypeRow(r)));
+        }
+        if (!pgRes.error && pgRes.data) {
+          setProductGroups(pgRes.data.map(mapProductGroupRow));
         }
       } catch {
         console.warn('[ingredients] Failed to load');
@@ -1174,50 +1256,65 @@ const App: React.FC = () => {
   // Restore member login from localStorage after page load (e.g. after return from payment)
   useEffect(() => {
     let storedId: string | null = null;
-    try { storedId = localStorage.getItem('coolfood_member_id'); } catch { /* ignore */ }
+    let storedToken: string | null = null;
+    try {
+      storedId = localStorage.getItem('coolfood_member_id');
+      storedToken = localStorage.getItem('coolfood_session_token');
+    } catch { /* ignore */ }
     if (!storedId) return;
     const restoreUser = async () => {
-      const { data, error } = await supabase.from('members').select('*').eq('id', storedId).maybeSingle();
+      const { data, error } = await supabase.from('members').select('id, name, email, password_hash, phone_number, points, wallet_balance, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses').eq('id', storedId).maybeSingle();
       if (error || !data) return;
-      setUser(mapMemberRowToUser(data as SupabaseMemberRow));
+      const row = data as SupabaseMemberRow;
+      // Validate session token to prevent impersonation via localStorage tampering
+      if (storedToken) {
+        const valid = await verifySessionToken(storedToken, row.id, row.password_hash);
+        if (!valid) {
+          try { localStorage.removeItem('coolfood_member_id'); localStorage.removeItem('coolfood_session_token'); } catch { /* ignore */ }
+          return;
+        }
+      }
+      setUser(mapMemberRowToUser(row));
     };
     restoreUser();
   }, []);
 
-  // Restore admin session from localStorage
+  // Load staff roles on admin route, then restore admin session
   useEffect(() => {
     if (!isAdminRoute) return;
-    try {
-      const saved = localStorage.getItem('coolfood_admin_session');
-      if (!saved) return;
-      const session = JSON.parse(saved) as AdminAccount;
-      if (!session?.id || !session?.role) return;
-      // Re-verify the session against Supabase to ensure the account is still active
-      supabase
-        .from('members')
-        .select('id, name, phone_number, role, admin_permissions')
-        .eq('id', session.id)
-        .in('role', ['admin', 'super_admin'])
-        .maybeSingle()
-        .then(({ data }) => {
-          if (!data) {
-            try { localStorage.removeItem('coolfood_admin_session'); } catch { /* ignore */ }
-            return;
-          }
-          const permissions = buildAdminPermissions(data.role, data.admin_permissions as Record<string, boolean> | null);
-          const admin: AdminAccount = { id: data.id, name: data.name, phone: data.phone_number, role: data.role as AdminRole, permissions, isActive: true };
-          setAdminUser(admin);
-          setIsAdminAuthenticated(true);
-          try { localStorage.setItem('coolfood_admin_session', JSON.stringify(admin)); } catch { /* ignore */ }
-        });
-    } catch { /* ignore */ }
+    const init = async () => {
+      await loadStaffRoles();
+      try {
+        const saved = localStorage.getItem('coolfood_admin_session');
+        if (!saved) return;
+        const session = JSON.parse(saved) as AdminAccount;
+        if (!session?.id || !session?.role) return;
+        const { data } = await supabase
+          .from('members')
+          .select('id, name, phone_number, role, admin_permissions')
+          .eq('id', session.id)
+          .neq('role', 'customer')
+          .maybeSingle();
+        if (!data) {
+          try { localStorage.removeItem('coolfood_admin_session'); } catch { /* ignore */ }
+          return;
+        }
+        const permissions = buildAdminPermissions(data.role, data.admin_permissions as Record<string, boolean> | null);
+        const roleLabel = ADMIN_ROLE_LABELS[data.role as AdminRole] || data.role;
+        const admin: AdminAccount = { id: data.id, name: data.name, phone: data.phone_number, role: data.role as AdminRole, roleDisplayName: roleLabel, permissions, isActive: true };
+        setAdminUser(admin);
+        setIsAdminAuthenticated(true);
+        try { localStorage.setItem('coolfood_admin_session', JSON.stringify(admin)); } catch { /* ignore */ }
+      } catch { /* ignore */ }
+    };
+    init();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdminRoute]);
 
   const fetchOrders = useCallback(async () => {
     const { data, error } = await supabase
       .from('orders')
-      .select('id, customer_name, total, status, order_date, items_count, tracking_number, waybill_no')
+      .select('id, customer_name, total, status, order_date, items_count, tracking_number, waybill_no, order_type, wholesale_brand, member_id')
       .order('order_date', { ascending: false });
     if (error) {
       if (!handleSchemaError(error, 'orders')) {
@@ -1267,9 +1364,21 @@ const App: React.FC = () => {
 
   const buildAdminPermissions = (role: string, overrides?: Record<string, boolean> | null): AdminPermissions => {
     if (role === 'super_admin') {
-      return { ...DEFAULT_ADMIN_PERMISSIONS, admin_management: true };
+      const all: AdminPermissions = {} as AdminPermissions;
+      for (const key of Object.keys(DEFAULT_ADMIN_PERMISSIONS) as (keyof AdminPermissions)[]) all[key] = true;
+      return all;
     }
-    return { ...DEFAULT_ADMIN_PERMISSIONS, ...(overrides || {}), admin_management: false };
+    if (overrides && Object.keys(overrides).length > 0) {
+      const perms = { ...DEFAULT_ADMIN_PERMISSIONS };
+      for (const key of Object.keys(perms) as (keyof AdminPermissions)[]) {
+        perms[key] = overrides[key] ?? false;
+      }
+      if (role !== 'admin') perms.admin_management = false;
+      return perms;
+    }
+    const matched = staffRoles.find(r => r.name === role);
+    if (matched) return { ...matched.modulePermissions };
+    return { ...DEFAULT_ADMIN_PERMISSIONS, admin_management: false };
   };
 
   const hasAdminPermission = (module: keyof AdminPermissions): boolean => {
@@ -1300,61 +1409,66 @@ const App: React.FC = () => {
 
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    // #region agent log
-    console.log(`[DEBUG-H4] handleAdminLogin CALLED | username="${adminLoginForm.username}" hasPassword=${!!adminLoginForm.password}`);
-    // #endregion
     try {
       const { data, error } = await supabase
         .from('members')
-        .select('*')
+        .select('id, name, email, password_hash, phone_number, points, wallet_balance, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses')
         .eq('phone_number', adminLoginForm.username)
-        .in('role', ['admin', 'super_admin'])
+        .neq('role', 'customer')
         .single();
-      // #region agent log
-      console.log(`[DEBUG-H1] Supabase query | hasData=${!!data} error=${error?.message || 'none'} role=${data?.role || 'n/a'} hasHash=${!!(data as any)?.password_hash}`);
-      // #endregion
       if (error || !data) { showToast('帳號或密碼錯誤', 'error'); return; }
       const ok = await verifyPassword(adminLoginForm.password, data.password_hash || '');
-      // #region agent log
-      console.log(`[DEBUG-H2] Password verify | ok=${ok} hasHash=${!!(data.password_hash)} hashPrefix=${(data.password_hash||'').slice(0,10)}`);
-      // #endregion
       if (!ok) { showToast('帳號或密碼錯誤', 'error'); return; }
       const permissions = buildAdminPermissions(data.role, data.admin_permissions as Record<string, boolean> | null);
+      const roleLabel = ADMIN_ROLE_LABELS[data.role as AdminRole] || data.role;
       const admin: AdminAccount = {
         id: data.id,
         name: data.name,
         phone: data.phone_number,
         role: data.role as AdminRole,
+        roleDisplayName: roleLabel,
         permissions,
         isActive: true,
       };
       setAdminUser(admin);
       setIsAdminAuthenticated(true);
-      // #region agent log
-      console.log('[DEBUG-H5] Login SUCCESS', { adminName: admin.name, adminRole: admin.role });
-      // #endregion
       try { localStorage.setItem('coolfood_admin_session', JSON.stringify(admin)); } catch { /* ignore */ }
       showToast(`歡迎回來，${admin.name}！`);
-    } catch (err) {
-      // #region agent log
-      console.log('[DEBUG-H3] Login EXCEPTION', { error: String(err) });
-      // #endregion
+    } catch {
       showToast('登入失敗，請稍後再試', 'error');
     }
   };
 
+  const loadStaffRoles = async () => {
+    const { data, error } = await supabase
+      .from('staff_roles')
+      .select('*')
+      .order('sort_order', { ascending: true });
+    if (error) return;
+    setStaffRoles((data || []).map(r => ({
+      id: r.id,
+      name: r.name,
+      displayName: r.display_name,
+      isSystem: r.is_system,
+      modulePermissions: r.module_permissions as unknown as AdminPermissions,
+      sortOrder: r.sort_order,
+    })));
+  };
+
   const loadAdminAccounts = async () => {
+    await loadStaffRoles();
     const { data, error } = await supabase
       .from('members')
       .select('id, name, phone_number, role, admin_permissions')
-      .in('role', ['admin', 'super_admin'])
+      .neq('role', 'customer')
       .order('role', { ascending: false });
-    if (error) { showToast(`載入管理員列表失敗：${error.message}`, 'error'); return; }
+    if (error) { showToast(`載入員工列表失敗：${error.message}`, 'error'); return; }
     setAdminAccounts((data || []).map(r => ({
       id: r.id,
       name: r.name,
       phone: r.phone_number,
       role: r.role as AdminRole,
+      roleDisplayName: ADMIN_ROLE_LABELS[r.role as AdminRole] || r.role,
       permissions: buildAdminPermissions(r.role, r.admin_permissions as Record<string, boolean> | null),
       isActive: true,
     })));
@@ -1373,7 +1487,7 @@ const App: React.FC = () => {
       .eq('id', member.id);
     if (error) { showToast(`授權失敗：${error.message}`, 'error'); return; }
     await loadAdminAccounts();
-    showToast(`已將 ${member.name}（${phone}）設為管理員`);
+    showToast(`已將 ${member.name}（${phone}）設為${ADMIN_ROLE_LABELS[role] || role}`);
     setEditingAdminAccount(null);
   };
 
@@ -1383,26 +1497,56 @@ const App: React.FC = () => {
       .update({ role, admin_permissions: permissions })
       .eq('id', id);
     if (error) { showToast(`更新失敗：${error.message}`, 'error'); return; }
-    // If updating the current logged-in admin, refresh their session
     if (adminUser?.id === id) {
       const updated: AdminAccount = { ...adminUser, role, permissions };
       setAdminUser(updated);
       try { localStorage.setItem('coolfood_admin_session', JSON.stringify(updated)); } catch { /* ignore */ }
     }
     await loadAdminAccounts();
-    showToast('管理員權限已更新');
+    showToast('員工權限已更新');
     setEditingAdminAccount(null);
   };
 
   const revokeAdminAccess = async (id: string, name: string) => {
-    if (!window.confirm(`確定要撤銷 ${name} 的管理員權限嗎？`)) return;
+    if (!window.confirm(`確定要撤銷 ${name} 的後台權限嗎？`)) return;
     const { error } = await supabase
       .from('members')
       .update({ role: 'customer', admin_permissions: null })
       .eq('id', id);
     if (error) { showToast(`撤銷失敗：${error.message}`, 'error'); return; }
     await loadAdminAccounts();
-    showToast(`已撤銷 ${name} 的管理員權限`);
+    showToast(`已撤銷 ${name} 的後台權限`);
+  };
+
+  const saveStaffRole = async (roleData: Partial<StaffRoleTemplate> & { isNew?: boolean }) => {
+    if (roleData.isNew) {
+      const { error } = await supabase.from('staff_roles').insert({
+        name: roleData.name,
+        display_name: roleData.displayName,
+        is_system: false,
+        module_permissions: roleData.modulePermissions,
+        sort_order: staffRoles.length,
+      });
+      if (error) { showToast(`新增失敗：${error.message}`, 'error'); return; }
+      showToast('新角色已建立');
+    } else {
+      const { error } = await supabase.from('staff_roles').update({
+        display_name: roleData.displayName,
+        module_permissions: roleData.modulePermissions,
+      }).eq('id', roleData.id);
+      if (error) { showToast(`更新失敗：${error.message}`, 'error'); return; }
+      showToast('角色已更新');
+    }
+    await loadStaffRoles();
+    setEditingStaffRole(null);
+  };
+
+  const deleteStaffRole = async (id: string, name: string) => {
+    if (!window.confirm(`確定要刪除「${name}」角色嗎？`)) return;
+    const { error } = await supabase.from('staff_roles').delete().eq('id', id);
+    if (error) { showToast(`刪除失敗：${error.message}`, 'error'); return; }
+    await loadStaffRoles();
+    showToast(`已刪除「${name}」`);
   };
 
   const accentClass = 'bg-blue-600';
@@ -1659,10 +1803,11 @@ const App: React.FC = () => {
       showToast('請輸入電郵或電話及密碼', 'error');
       return;
     }
+    const loginCols = 'id, name, email, password_hash, phone_number, points, wallet_balance, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses';
     const isEmail = input.includes('@');
     const { data, error } = isEmail
-      ? await supabase.from('members').select('*').eq('email', input.toLowerCase()).maybeSingle()
-      : await supabase.from('members').select('*').eq('phone_number', input).maybeSingle();
+      ? await supabase.from('members').select(loginCols).eq('email', input.toLowerCase()).maybeSingle()
+      : await supabase.from('members').select(loginCols).eq('phone_number', input).maybeSingle();
     if (error) {
       showToast(error.message || '登入失敗', 'error');
       return;
@@ -1679,7 +1824,11 @@ const App: React.FC = () => {
     }
     const u = mapMemberRowToUser(row);
     setUser(u);
-    try { localStorage.setItem('coolfood_member_id', u.id); } catch { /* ignore */ }
+    try {
+      localStorage.setItem('coolfood_member_id', u.id);
+      const sessionToken = await generateSessionToken(u.id, row.password_hash);
+      localStorage.setItem('coolfood_session_token', sessionToken);
+    } catch { /* ignore */ }
     setShowAuthModal(false);
     setAuthForm({ email: '', password: '', name: '', phone: '' });
     setView('profile');
@@ -1733,7 +1882,11 @@ const App: React.FC = () => {
     }
     const u = mapMemberRowToUser(data as SupabaseMemberRow);
     setUser(u);
-    try { localStorage.setItem('coolfood_member_id', u.id); } catch { /* ignore */ }
+    try {
+      localStorage.setItem('coolfood_member_id', u.id);
+      const sessionToken = await generateSessionToken(u.id, passwordHash);
+      localStorage.setItem('coolfood_session_token', sessionToken);
+    } catch { /* ignore */ }
     setMembers(prev => [...prev, u]);
     setShowAuthModal(false);
     setAuthForm({ email: '', password: '', name: '', phone: '' });
@@ -1841,6 +1994,27 @@ const App: React.FC = () => {
       next[idx] = mapped;
       return next;
     });
+  };
+
+  const upsertProductGroup = async (group: ProductGroup): Promise<ProductGroup | null> => {
+    const { data, error } = await supabase
+      .from('product_groups')
+      .upsert(mapProductGroupToRow(group))
+      .select()
+      .single();
+    if (error || !data) {
+      showToast(error?.message || '群組保存失敗', 'error');
+      return null;
+    }
+    const mapped = mapProductGroupRow(data);
+    setProductGroups(prev => {
+      const idx = prev.findIndex(g => g.id === mapped.id);
+      if (idx === -1) return [...prev, mapped];
+      const next = [...prev];
+      next[idx] = mapped;
+      return next;
+    });
+    return mapped;
   };
 
   const upsertProducts = async (items: Product[]) => {
@@ -1993,7 +2167,7 @@ const App: React.FC = () => {
     try {
       const res = await fetch('/api/generate-recipe', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildAdminHeaders(adminUser),
         body: JSON.stringify({ action: 'generate-recipe-image', payload: { title, description } }),
       });
       const json = await res.json();
@@ -2094,7 +2268,7 @@ const App: React.FC = () => {
     try {
       const catMap = recipeCategories.map(c => ({ id: c.id, name: c.name }));
       const res = await fetch('/api/generate-recipe', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: buildAdminHeaders(adminUser),
         body: JSON.stringify({ action: 'single-recipe', payload: { title, linkedProductNames: linkedNames, existingTitles: recipes.map(r => r.title).filter(Boolean), categoryIds: catMap.map(c => c.id), categoryMap: catMap, userInstruction: userInstruction || undefined } }),
       });
       const json = await res.json();
@@ -2136,7 +2310,7 @@ const App: React.FC = () => {
     setAiFieldLoading(fieldType);
     try {
       const res = await fetch('/api/generate-recipe', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: buildAdminHeaders(adminUser),
         body: JSON.stringify({ action: 'generate-field', payload: { fieldType, productName: editingProduct.name, productDescription: editingProduct.description || '' } }),
       });
       const json = await res.json();
@@ -2426,7 +2600,7 @@ const App: React.FC = () => {
         const oid = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
         try {
           const sfRes = await fetch(`${window.location.origin}/api/sf-label`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            method: 'POST', headers: buildAdminHeaders(adminUser),
             body: JSON.stringify({ orderId: oid }),
           });
           const sfJson = await sfRes.json().catch(() => ({}));
@@ -2562,7 +2736,7 @@ const App: React.FC = () => {
 
       try {
         const sfRes = await fetch(`${window.location.origin}/api/sf-order`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: buildAdminHeaders(adminUser),
           body: JSON.stringify({ orderId }),
         });
         const sfText = await sfRes.text();
@@ -2611,7 +2785,7 @@ const App: React.FC = () => {
     setRefundProcessing(true);
     try {
       const res = await fetch(`${window.location.origin}/api/airwallex-refund`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: buildAdminHeaders(adminUser),
         body: JSON.stringify({ orderId: refundModal.orderId, amount }),
       });
       const data = await res.json();
@@ -2844,6 +3018,7 @@ const App: React.FC = () => {
         contact_name: wsContactName,
         order_type: 'wholesale',
         payment_method: paymentMethod,
+        member_id: user.id,
       };
       if (wholesaleDeliveryDate) insertRow.delivery_date = wholesaleDeliveryDate;
       if (deliveryAddress?.district) insertRow.delivery_district = deliveryAddress.district;
@@ -2866,7 +3041,7 @@ const App: React.FC = () => {
         if (cartItem && p.trackInventory) return { ...p, stock: Math.max(0, p.stock - cartItem.qty) };
         return p;
       }));
-      const newOrder: Order = { id: orderIdDisplay, customerName: user.name, total, status: wsStatus, date: orderDate, items: itemsCount, orderType: 'wholesale' };
+      const newOrder: Order = { id: orderIdDisplay, customerName: user.name, total, status: wsStatus, date: orderDate, items: itemsCount, orderType: 'wholesale', memberId: user.id };
       setOrders(prev => [...prev, newOrder]);
       setCart([]);
       try { localStorage.removeItem('coolfood_cart'); } catch { /* ignore */ }
@@ -2907,7 +3082,8 @@ const App: React.FC = () => {
       status: OrderStatus.PENDING_PAYMENT,
       date: orderDate,
       items: itemsCount,
-      orderType: 'retail'
+      orderType: 'retail',
+      memberId: user?.id,
     };
 
     const insertRow: Record<string, unknown> = {
@@ -2923,11 +3099,12 @@ const App: React.FC = () => {
       line_items: lineItems,
       delivery_method: deliveryMethod,
       delivery_address: deliveryAddr,
-      contact_name: contactName
-      , delivery_alt_contact_name: altContactName
-      , delivery_alt_contact_phone: altContactPhone
-      , order_type: 'retail'
-      , payment_method: 'card'
+      contact_name: contactName,
+      delivery_alt_contact_name: altContactName,
+      delivery_alt_contact_phone: altContactPhone,
+      order_type: 'retail',
+      payment_method: 'card',
+      member_id: user?.id ?? null,
     };
     if (deliveryMethod === 'home' && deliveryAddress) {
       insertRow.delivery_district = deliveryAddress.district ?? null;
@@ -3073,7 +3250,7 @@ const App: React.FC = () => {
     setIsAnalyzing(true);
     try {
       const res = await fetch('/api/generate-recipe', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: buildAdminHeaders(adminUser),
         body: JSON.stringify({ action: 'business-analysis', payload: {} }),
       });
       const json = await res.json();
@@ -3116,54 +3293,68 @@ const App: React.FC = () => {
   };
 
   const downloadCSVTemplate = () => {
-    const headers = ['id', 'legacyId', 'name', 'price', 'memberPrice', 'stock', 'saleChannel', 'categories', 'tags', 'trackInventory', 'description', 'origin', 'weight', 'image', 'imageAlt', 'seoTitle', 'seoDescription'];
-    const sample1 = ['', 'OLD-101', '澳洲M5和牛肉眼', '350', '298', '10', 'both', 'beef|wagyu', '急凍|牛扒', 'true', '頂級和牛肉眼扒', '澳洲', '300g', '', '澳洲M5和牛肉眼 急凍真空包裝', '澳洲M5和牛肉眼 | 香港急凍肉網購', '新鮮急凍澳洲M5和牛肉眼扒，順豐冷鏈配送到家'];
-    const sample2 = ['', 'OLD-102', '安格斯牛扒', '120', '', '20', 'retail', 'beef', '牛扒|安格斯', 'true', '優質安格斯牛扒', '美國', '250g', '', '', '', ''];
-    const sample3 = ['', 'OLD-103', '急凍三文魚柳（批發）', '280', '', '50', 'wholesale', 'fish', '三文魚|批發', 'true', '整件批發三文魚柳', '挪威', '1kg', '', '', '', ''];
+    const headers = ['id', 'legacyId', 'name', 'nameEn', 'price', 'memberPrice', 'stock', 'saleChannel', 'productType', 'categories', 'tags', 'trackInventory', 'description', 'origin', 'weight', 'packSize', 'packWeightLb', 'costPrice', 'image', 'imageAlt', 'seoTitle', 'seoDescription'];
+    const sample1 = ['', 'OLD-101', '澳洲M5和牛肉眼', 'AU M5 Wagyu Ribeye', '350', '298', '10', 'both', 'raw_material', 'beef|wagyu', '急凍|牛扒', 'true', '頂級和牛肉眼扒', '澳洲', '300g', '', '', '280', '', '', '', ''];
+    const sample2 = ['', 'OLD-102', '安格斯牛扒（原塊）', 'Angus Steak Whole', '0', '', '20', 'wholesale', 'raw_material', 'beef', '牛扒|安格斯', 'true', '原塊安格斯牛扒', '美國', '', '5磅/包', '5', '95', '', '', '', ''];
+    const sample3 = ['', 'OLD-103', '急凍三文魚柳', 'Frozen Salmon Fillet', '0', '', '50', 'wholesale', 'standalone', 'fish', '三文魚|批發', 'true', '整件批發三文魚柳', '挪威', '1kg', '2磅/包', '2', '60', '', '', '', ''];
+    const sample4 = ['', 'OLD-104', '西冷牛扒（切片）', 'Sirloin Steak Sliced', '0', '', '', 'wholesale', 'processed', 'beef', '牛扒|切片', 'true', '切片西冷', '美國', '', '3磅/包', '3', '', '', '', '', ''];
     const instructions = [
       '# ═══════════════════════════════════════════════',
       '# 產品批量上傳範本 — 使用說明',
       '# ═══════════════════════════════════════════════',
       '#',
-      '# ★ 必填欄位：name（名稱）、price（售價）',
+      '# ★ 必填欄位：name（名稱）',
+      '# ★ 售價可先填 0，之後由同事在系統內設定',
       '#',
       '# ─── 各欄位說明 ───',
-      '# id          : 留空則自動生成（推薦新產品留空）；填寫則覆蓋更新同一 ID 的產品',
-      '# legacyId    : 舊系統產品編號（選填），方便對照舊系統',
-      '# name        : 產品名稱（必填）',
-      '# price       : 售價，數字，例如 350',
-      '# memberPrice : 折扣價，留空或填 0 = 不設折扣',
-      '# stock       : 庫存數量，必須為整數（例如 10），trackInventory=false 時可留空',
+      '# id            : 留空則自動生成（推薦新產品留空）；填寫則覆蓋更新同一 ID 的產品',
+      '# legacyId      : 舊系統產品編號（選填），方便對照舊系統',
+      '# name          : 產品名稱（必填）',
+      '# nameEn        : 英文名稱（選填）',
+      '# price         : 售價，數字，例如 350（可先填 0，之後再改）',
+      '# memberPrice   : 折扣價，留空或填 0 = 不設折扣',
+      '# stock         : 庫存數量，必須為整數（例如 10），trackInventory=false 時可留空',
       '#',
-      '# saleChannel : 銷售渠道（重要！）',
-      '#               both     = 零售 + 批發（預設，留空即視為 both）',
-      '#               retail   = 僅零售網店顯示',
-      '#               wholesale= 僅批發網店顯示',
+      '# saleChannel   : 銷售渠道（重要！）',
+      '#                  both     = 零售 + 批發',
+      '#                  retail   = 僅零售網店顯示',
+      '#                  wholesale= 僅批發網店顯示（進興批發用此值）',
       '#',
-      '# categories  : 產品分類，多個用 | 分隔，例如: beef|wagyu',
-      '#               可填分類名稱或分類 ID，系統會自動對應',
-      '# tags        : 搜尋標籤，多個用 | 分隔，例如: 牛扒|急凍',
+      '# productType   : 產品類型',
+      '#                  standalone   = 獨立商品（預設，兼容舊數據）',
+      '#                  raw_material = 原材料（原件/加工品）',
+      '#                  third_party  = 第三方產品（外購品牌）',
+      '#                  in_house     = 自製產品（醃製/醬料）',
+      '#                  processed    = 加工品（舊值，兼容用）',
+      '#',
+      '# categories    : 產品分類，多個用 | 分隔，例如: beef|wagyu',
+      '#                  可填分類名稱或分類 ID，系統會自動對應',
+      '# tags          : 搜尋標籤，多個用 | 分隔，例如: 牛扒|急凍',
       '# trackInventory: 是否追蹤庫存，填 true 或 false（預設 true）',
-      '# description : 產品描述文字（選填）',
-      '# origin      : 產地，例如：澳洲、美國、挪威（選填）',
-      '# weight      : 重量規格，例如：300g、1kg（選填）',
-      '# image       : 產品圖片 URL（選填），留空則顯示預設 emoji',
-      '# imageAlt    : 圖片替代文字，有助 SEO（選填）',
-      '# seoTitle    : SEO 標題，有助 Google 搜尋排名（選填）',
+      '# description   : 產品描述文字（選填）',
+      '# origin        : 產地，例如：澳洲、美國、挪威（選填）',
+      '# weight        : 重量規格，例如：300g、1kg（選填）',
+      '# packSize      : 包裝規格描述，例如：5磅/包、10磅/箱（選填）',
+      '# packWeightLb  : 包裝重量（磅），數字，例如：5（選填）',
+      '# costPrice     : 買入成本/每磅成本，數字（選填，之後可改）',
+      '# image         : 產品圖片 URL（選填），留空則顯示預設 emoji',
+      '# imageAlt      : 圖片替代文字，有助 SEO（選填）',
+      '# seoTitle      : SEO 標題（選填）',
       '# seoDescription: SEO 描述（選填）',
       '#',
       '# ─── 注意事項 ───',
       '# • 以 # 開頭的行為說明，匯入時會自動跳過',
       '# • 相同 id 的產品會覆蓋更新（Upsert）',
+      '# • 加工方式 / 出成率 / 加工費等可之後在系統「產品詳情」內設定',
       '# • 用 Excel 或 Google Sheets 開啟後，請存成 CSV 格式再上傳',
       '# ═══════════════════════════════════════════════',
     ];
-    const csvContent = [instructions.join('\n'), headers.join(','), sample1.join(','), sample2.join(','), sample3.join(',')].join('\n');
+    const csvContent = [instructions.join('\n'), headers.join(','), sample1.join(','), sample2.join(','), sample3.join(','), sample4.join(',')].join('\n');
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', 'fridge_link_product_template.csv');
+    link.setAttribute('download', 'product_import_template.csv');
     link.click();
   };
 
@@ -3177,7 +3368,7 @@ const App: React.FC = () => {
         if (lines.length < 2) { showToast('CSV 格式錯誤：缺少標題列或資料列', 'error'); return; }
         const headers = lines[0].split(',').map(h => h.trim());
         const existingIds = new Set(products.map(p => p.id));
-        const numericFields = new Set(['price', 'memberPrice', 'costPrice', 'yieldRate', 'processingCost', 'packagingCost', 'miscCost']);
+        const numericFields = new Set(['price', 'memberPrice', 'costPrice', 'yieldRate', 'processingCost', 'packagingCost', 'miscCost', 'packWeightLb', 'purchaseLimit']);
         const catLookup = new Map<string, string>();
         categories.forEach(c => {
           catLookup.set(c.id.toLowerCase(), c.id);
@@ -3203,6 +3394,11 @@ const App: React.FC = () => {
               const ch = val.toLowerCase();
               p.saleChannel = (['retail', 'wholesale', 'both'].includes(ch) ? ch as SaleChannel : 'retail');
             }
+            else if (h === 'productType' || h === 'product_type') {
+              const pt = val.toLowerCase();
+              if (['standalone', 'processed', 'raw_material', 'in_house', 'third_party'].includes(pt)) p.productType = pt;
+            }
+            else if (h === 'nameEn' || h === 'name_en') { if (val) p.nameEn = val; }
             else if (val) p[h] = val;
           });
           if (!p.id || p.id === '') {
@@ -3387,7 +3583,7 @@ const App: React.FC = () => {
                   setAiBatchProgress({ current: i + 1, total: batch.length, label: `正在為「${p.name}」生成描述 (${i + 1}/${batch.length})...` });
                   try {
                     const res = await fetch('/api/generate-recipe', {
-                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      method: 'POST', headers: buildAdminHeaders(adminUser),
                       body: JSON.stringify({ action: 'single-product-desc', payload: { productName: p.name } }),
                     });
                     const json = await res.json();
@@ -3407,7 +3603,7 @@ const App: React.FC = () => {
               }} className="px-6 py-3 bg-purple-600 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-sm hover:bg-purple-700 transition-all disabled:opacity-50">
                 {aiDescLoading ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />} AI 批量寫描述
               </button>
-              <button onClick={() => setEditingProduct({ id: 'P-'+Date.now(), name: '', price: 0, memberPrice: 0, stock: 0, categories: [], tags: [], image: '🥩', trackInventory: true, recipes: [], seoTitle: '', seoDescription: '', imageAlt: '', saleChannel: 'retail' })} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 transition-all">
+              <button onClick={() => setNewProductWizard({ classification: null, ingredientId: '', pricingMode: 'fixed_pack', packSize: '', productName: '', variantLabel: '' })} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 transition-all">
                 <Plus size={16}/> 上架新產品
               </button>
             </div>
@@ -5245,7 +5441,7 @@ const App: React.FC = () => {
                           setAiBatchProgress({ current: i + 1, total: BATCH_COUNT, label: `正在生成第 ${i + 1}/${BATCH_COUNT} 個食譜...` });
                           try {
                             const res = await fetch('/api/generate-recipe', {
-                              method: 'POST', headers: { 'Content-Type': 'application/json' },
+                              method: 'POST', headers: buildAdminHeaders(adminUser),
                               body: JSON.stringify({ action: 'single-recipe', payload: { title: '', linkedProductNames: [], categoryIds: catMap.map(c => c.id), categoryMap: catMap, existingTitles: allTitles, userInstruction: instruction || undefined } }),
                             });
                             const json = await res.json();
@@ -5562,7 +5758,7 @@ const App: React.FC = () => {
             <div className="flex flex-col items-center justify-center py-24 text-slate-400">
               <ShieldCheck size={48} className="mb-4 opacity-30" />
               <p className="font-black text-lg">權限不足</p>
-              <p className="text-sm mt-1">只有超級管理員才能管理管理員帳戶</p>
+              <p className="text-sm mt-1">只有超級管理員才能管理員工帳戶</p>
             </div>
           );
         }
@@ -5571,99 +5767,190 @@ const App: React.FC = () => {
             {/* Header */}
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-slate-500 text-sm font-bold mt-1">管理可登入後台的帳戶及其功能權限</p>
+                <p className="text-slate-500 text-sm font-bold mt-1">管理可登入後台的帳戶、角色及功能權限</p>
               </div>
-              <button
-                onClick={() => setEditingAdminAccount({ isNew: true, newPhone: '', role: 'admin', permissions: { ...DEFAULT_ADMIN_PERMISSIONS } })}
-                className="flex items-center gap-2 bg-blue-600 text-white px-5 py-3 rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all"
-              >
-                <Plus size={16}/> 新增管理員
+            </div>
+
+            {/* Tab bar */}
+            <div className="flex gap-2">
+              <button onClick={() => setStaffMgmtTab('staff')} className={`px-5 py-2.5 rounded-2xl font-black text-sm transition-all ${staffMgmtTab === 'staff' ? 'bg-blue-600 text-white shadow-xl' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                <Users size={14} className="inline mr-1.5 -mt-0.5"/> 員工帳戶
+              </button>
+              <button onClick={() => { setStaffMgmtTab('roles'); loadStaffRoles(); }} className={`px-5 py-2.5 rounded-2xl font-black text-sm transition-all ${staffMgmtTab === 'roles' ? 'bg-blue-600 text-white shadow-xl' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                <ShieldCheck size={14} className="inline mr-1.5 -mt-0.5"/> 角色管理
               </button>
             </div>
 
             {/* Role legend */}
-            <div className="flex items-center gap-4 text-xs font-bold text-slate-500">
-              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-violet-500 inline-block"/><span>超級管理員 — 全部權限</span></span>
-              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block"/><span>管理員 — 自訂權限</span></span>
+            <div className="flex flex-wrap items-center gap-3 text-xs font-bold text-slate-500">
+              {ALL_STAFF_ROLES.map(role => (
+                <span key={role} className="flex items-center gap-1.5">
+                  <span className="text-sm">{ADMIN_ROLE_ICONS[role]}</span>
+                  <span className={`${ADMIN_ROLE_COLORS[role].text} font-black`}>{ADMIN_ROLE_LABELS[role]}</span>
+                </span>
+              ))}
             </div>
 
-            {/* Admin list */}
-            {adminAccounts.length === 0 ? (
-              <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm p-16 text-center text-slate-400">
-                <ShieldCheck size={40} className="mx-auto mb-3 opacity-30" />
-                <p className="font-black">尚無管理員帳戶</p>
-                <p className="text-sm mt-1">點擊「新增管理員」開始設置</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                {adminAccounts.map(acc => (
-                  <div key={acc.id} className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm p-6 space-y-4">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-lg flex-shrink-0 ${acc.role === 'super_admin' ? 'bg-violet-600' : 'bg-blue-600'}`}>
-                          {acc.name.charAt(0)}
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <p className="font-black text-slate-900">{acc.name}</p>
-                            {acc.id === adminUser?.id && <span className="text-[10px] font-black bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">本人</span>}
-                          </div>
-                          <p className="text-xs text-slate-400 font-bold">{acc.phone}</p>
-                          <span className={`inline-block mt-1 text-[10px] font-black px-2 py-0.5 rounded-full ${acc.role === 'super_admin' ? 'bg-violet-100 text-violet-700' : 'bg-blue-100 text-blue-700'}`}>
-                            {acc.role === 'super_admin' ? '超級管理員' : '管理員'}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setEditingAdminAccount({ ...acc, isNew: false })}
-                          className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all"
-                          title="編輯權限"
-                        >
-                          <Pencil size={16}/>
-                        </button>
-                        {acc.id !== adminUser?.id && (
-                          <button
-                            onClick={() => revokeAdminAccess(acc.id, acc.name)}
-                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all"
-                            title="撤銷管理員"
-                          >
-                            <Trash2 size={16}/>
-                          </button>
-                        )}
-                      </div>
-                    </div>
+            {/* ═══ Staff Tab ═══ */}
+            {staffMgmtTab === 'staff' && (
+              <>
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => setEditingAdminAccount({ isNew: true, newPhone: '', role: 'admin', permissions: { ...DEFAULT_ADMIN_PERMISSIONS } })}
+                    className="flex items-center gap-2 bg-blue-600 text-white px-5 py-3 rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all"
+                  >
+                    <Plus size={16}/> 新增員工
+                  </button>
+                </div>
 
-                    {/* Permissions grid */}
-                    <div>
-                      <p className="text-[10px] font-black text-slate-400 uppercase mb-2">功能權限</p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {(Object.keys(ADMIN_PERMISSION_LABELS) as (keyof AdminPermissions)[]).map(key => {
-                          const allowed = acc.role === 'super_admin' || acc.permissions[key];
-                          return (
-                            <span key={key} className={`text-[10px] font-bold px-2 py-1 rounded-lg ${allowed ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-300 line-through'}`}>
-                              {ADMIN_PERMISSION_LABELS[key]}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    </div>
+                {adminAccounts.length === 0 ? (
+                  <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm p-16 text-center text-slate-400">
+                    <ShieldCheck size={40} className="mx-auto mb-3 opacity-30" />
+                    <p className="font-black">尚無員工帳戶</p>
+                    <p className="text-sm mt-1">點擊「新增員工」開始設置</p>
                   </div>
-                ))}
-              </div>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                    {adminAccounts.map(acc => {
+                      const rc = ADMIN_ROLE_COLORS[acc.role] || ADMIN_ROLE_COLORS.admin;
+                      const icon = ADMIN_ROLE_ICONS[acc.role] || '👤';
+                      return (
+                        <div key={acc.id} className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm p-6 space-y-4">
+                          <div className="flex items-start justify-between">
+                            <div className="flex items-center gap-3">
+                              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-2xl flex-shrink-0 ${rc.bg}`}>
+                                {icon}
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <p className="font-black text-slate-900">{acc.name}</p>
+                                  {acc.id === adminUser?.id && <span className="text-[10px] font-black bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">本人</span>}
+                                </div>
+                                <p className="text-xs text-slate-400 font-bold">{acc.phone}</p>
+                                <span className={`inline-block mt-1 text-[10px] font-black px-2 py-0.5 rounded-full ${rc.bg} ${rc.text}`}>
+                                  {ADMIN_ROLE_LABELS[acc.role] || acc.role}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => setEditingAdminAccount({ ...acc, isNew: false })}
+                                className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all"
+                                title="編輯權限"
+                              >
+                                <Pencil size={16}/>
+                              </button>
+                              {acc.id !== adminUser?.id && (
+                                <button
+                                  onClick={() => revokeAdminAccess(acc.id, acc.name)}
+                                  className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all"
+                                  title="撤銷權限"
+                                >
+                                  <Trash2 size={16}/>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Permissions grid */}
+                          <div>
+                            <p className="text-[10px] font-black text-slate-400 uppercase mb-2">功能權限</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {(Object.keys(ADMIN_PERMISSION_LABELS) as (keyof AdminPermissions)[]).map(key => {
+                                const allowed = acc.role === 'super_admin' || acc.permissions[key];
+                                if (!allowed) return null;
+                                return (
+                                  <span key={key} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700">
+                                    {ADMIN_PERMISSION_LABELS[key]}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
             )}
 
-            {/* Edit / Add Admin Modal */}
+            {/* ═══ Roles Tab ═══ */}
+            {staffMgmtTab === 'roles' && (
+              <>
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => setEditingStaffRole({
+                      isNew: true,
+                      name: '',
+                      displayName: '',
+                      isSystem: false,
+                      modulePermissions: { ...DEFAULT_ADMIN_PERMISSIONS },
+                      sortOrder: staffRoles.length,
+                    })}
+                    className="flex items-center gap-2 bg-blue-600 text-white px-5 py-3 rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all"
+                  >
+                    <Plus size={16}/> 新增角色
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  {staffRoles.map(role => {
+                    const rc = ADMIN_ROLE_COLORS[role.name as AdminRole] || { bg: 'bg-slate-100', text: 'text-slate-700' };
+                    const icon = ADMIN_ROLE_ICONS[role.name as AdminRole] || '👤';
+                    const enabledModules = Object.entries(role.modulePermissions).filter(([, v]) => v).map(([k]) => k);
+                    return (
+                      <div key={role.id} className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm p-6 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <span className="text-2xl">{icon}</span>
+                            <div>
+                              <p className="font-black text-slate-900">{role.displayName}</p>
+                              <p className="text-[10px] text-slate-400 font-bold">{role.name} {role.isSystem && '（系統角色）'}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => setEditingStaffRole({ ...role, isNew: false })}
+                              className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all"
+                            >
+                              <Pencil size={16}/>
+                            </button>
+                            {!role.isSystem && (
+                              <button
+                                onClick={() => deleteStaffRole(role.id, role.displayName)}
+                                className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all"
+                              >
+                                <Trash2 size={16}/>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {enabledModules.map(key => (
+                            <span key={key} className={`text-[10px] font-bold px-2 py-1 rounded-lg ${rc.bg} ${rc.text}`}>
+                              {ADMIN_PERMISSION_LABELS[key as keyof AdminPermissions] || key}
+                            </span>
+                          ))}
+                          {enabledModules.length === 0 && <span className="text-[10px] text-slate-300 font-bold">無權限</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {/* ═══ Edit / Add Staff Modal ═══ */}
             {editingAdminAccount && (
               <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+                <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto">
                   <div className="p-8 space-y-6">
                     <div className="flex items-center justify-between">
-                      <h3 className="text-xl font-black">{editingAdminAccount.isNew ? '新增管理員' : '編輯管理員'}</h3>
+                      <h3 className="text-xl font-black">{editingAdminAccount.isNew ? '新增員工' : '編輯員工'}</h3>
                       <button onClick={() => setEditingAdminAccount(null)} className="p-2 text-slate-400 hover:text-slate-600 rounded-xl"><X size={20}/></button>
                     </div>
 
-                    {/* Phone (new admin only) */}
                     {editingAdminAccount.isNew && (
                       <div className="space-y-1">
                         <label className="text-[10px] font-black text-slate-400 uppercase">會員電話號碼</label>
@@ -5678,7 +5965,6 @@ const App: React.FC = () => {
                       </div>
                     )}
 
-                    {/* Name & phone display for existing */}
                     {!editingAdminAccount.isNew && (
                       <div className="bg-slate-50 rounded-2xl p-4 flex items-center gap-3">
                         <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white font-black">{(editingAdminAccount.name || '?').charAt(0)}</div>
@@ -5690,66 +5976,96 @@ const App: React.FC = () => {
                     )}
 
                     {/* Role selector */}
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-black text-slate-400 uppercase">管理員角色</label>
-                      <select
-                        value={editingAdminAccount.role || 'admin'}
-                        onChange={e => {
-                          const newRole = e.target.value as AdminRole;
-                          setEditingAdminAccount(prev => prev ? {
-                            ...prev,
-                            role: newRole,
-                            permissions: newRole === 'super_admin'
-                              ? { ...DEFAULT_ADMIN_PERMISSIONS, admin_management: true }
-                              : { ...DEFAULT_ADMIN_PERMISSIONS, admin_management: false }
-                          } : null);
-                        }}
-                        className="w-full p-4 bg-slate-50 rounded-2xl font-bold border border-transparent focus:ring-2 focus:ring-blue-100 transition-all"
-                      >
-                        <option value="admin">管理員（自訂權限）</option>
-                        <option value="super_admin">超級管理員（全部權限）</option>
-                      </select>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase">角色</label>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        {ALL_STAFF_ROLES.map(role => {
+                          const selected = editingAdminAccount.role === role;
+                          const rc = ADMIN_ROLE_COLORS[role];
+                          const icon = ADMIN_ROLE_ICONS[role];
+                          return (
+                            <button
+                              key={role}
+                              onClick={() => {
+                                const matchedTemplate = staffRoles.find(r => r.name === role);
+                                const templatePerms = matchedTemplate?.modulePermissions;
+                                const newPerms = role === 'super_admin'
+                                  ? (() => { const all: any = {}; Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => all[k] = true); return all as AdminPermissions; })()
+                                  : templatePerms
+                                    ? { ...templatePerms }
+                                    : { ...DEFAULT_ADMIN_PERMISSIONS, admin_management: false };
+                                setEditingAdminAccount(prev => prev ? { ...prev, role, permissions: newPerms } : null);
+                              }}
+                              className={`p-3 rounded-2xl border-2 text-left transition-all ${
+                                selected ? `${rc.bg} ${rc.text} border-current shadow-lg` : 'bg-slate-50 text-slate-500 border-transparent hover:border-slate-200'
+                              }`}
+                            >
+                              <span className="text-lg">{icon}</span>
+                              <p className="text-xs font-black mt-1">{ADMIN_ROLE_LABELS[role]}</p>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
 
-                    {/* Permissions toggles (only for admin role) */}
-                    {(editingAdminAccount.role || 'admin') !== 'super_admin' && (
-                      <div className="space-y-3">
-                        <label className="text-[10px] font-black text-slate-400 uppercase">功能模組權限</label>
-                        <div className="grid grid-cols-1 gap-2">
-                          {(Object.keys(ADMIN_PERMISSION_LABELS) as (keyof AdminPermissions)[])
-                            .filter(key => key !== 'admin_management')
-                            .map(key => (
-                              <label key={key} className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl cursor-pointer hover:bg-slate-100 transition-all">
-                                <span className="font-bold text-sm text-slate-700">{ADMIN_PERMISSION_LABELS[key]}</span>
-                                <input
-                                  type="checkbox"
-                                  checked={editingAdminAccount.permissions?.[key] ?? false}
-                                  onChange={e => setEditingAdminAccount(prev => prev ? {
-                                    ...prev,
-                                    permissions: { ...(prev.permissions || DEFAULT_ADMIN_PERMISSIONS), [key]: e.target.checked }
-                                  } : null)}
-                                  className="w-5 h-5 rounded-lg accent-blue-600"
-                                />
-                              </label>
-                            ))}
+                    {/* Permissions tick matrix (not for super_admin) */}
+                    {editingAdminAccount.role !== 'super_admin' && (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] font-black text-slate-400 uppercase">功能模組權限</label>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => setEditingAdminAccount(prev => {
+                                if (!prev) return null;
+                                const all: any = {};
+                                Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => all[k] = k !== 'admin_management');
+                                return { ...prev, permissions: all };
+                              })}
+                              className="text-[10px] font-black text-blue-600 hover:underline"
+                            >全選</button>
+                            <button
+                              onClick={() => setEditingAdminAccount(prev => {
+                                if (!prev) return null;
+                                const none: any = {};
+                                Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => none[k] = false);
+                                return { ...prev, permissions: none };
+                              })}
+                              className="text-[10px] font-black text-slate-400 hover:underline"
+                            >全不選</button>
+                          </div>
                         </div>
+                        {PERMISSION_GROUPS.map(group => (
+                          <div key={group.label}>
+                            <p className="text-[10px] font-black text-slate-300 uppercase mb-1.5">{group.label}</p>
+                            <div className="grid grid-cols-1 gap-1.5">
+                              {group.keys.filter(k => k !== 'admin_management').map(key => (
+                                <label key={key} className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl cursor-pointer hover:bg-slate-100 transition-all">
+                                  <span className="font-bold text-sm text-slate-700">{ADMIN_PERMISSION_LABELS[key]}</span>
+                                  <input
+                                    type="checkbox"
+                                    checked={editingAdminAccount.permissions?.[key] ?? false}
+                                    onChange={e => setEditingAdminAccount(prev => prev ? {
+                                      ...prev,
+                                      permissions: { ...(prev.permissions || DEFAULT_ADMIN_PERMISSIONS), [key]: e.target.checked }
+                                    } : null)}
+                                    className="w-5 h-5 rounded-lg accent-blue-600"
+                                  />
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     )}
 
-                    {(editingAdminAccount.role || 'admin') === 'super_admin' && (
+                    {editingAdminAccount.role === 'super_admin' && (
                       <div className="bg-violet-50 rounded-2xl p-4 text-center text-sm text-violet-700 font-bold">
-                        超級管理員擁有全部功能的存取權，包括管理員管理
+                        👑 超級管理員擁有全部功能的存取權，包括員工與權限管理
                       </div>
                     )}
 
-                    {/* Action buttons */}
                     <div className="flex gap-3 pt-2">
-                      <button
-                        onClick={() => setEditingAdminAccount(null)}
-                        className="flex-1 py-4 bg-slate-100 text-slate-700 rounded-2xl font-black text-sm active:scale-95 transition-all"
-                      >
-                        取消
-                      </button>
+                      <button onClick={() => setEditingAdminAccount(null)} className="flex-1 py-4 bg-slate-100 text-slate-700 rounded-2xl font-black text-sm active:scale-95 transition-all">取消</button>
                       <button
                         onClick={async () => {
                           const perms = editingAdminAccount.permissions as AdminPermissions || DEFAULT_ADMIN_PERMISSIONS;
@@ -5763,6 +6079,103 @@ const App: React.FC = () => {
                         className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2"
                       >
                         <Save size={16}/> {editingAdminAccount.isNew ? '確認授權' : '儲存更改'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ═══ Edit / Add Role Modal ═══ */}
+            {editingStaffRole && (
+              <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto">
+                  <div className="p-8 space-y-6">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xl font-black">{editingStaffRole.isNew ? '新增角色' : '編輯角色'}</h3>
+                      <button onClick={() => setEditingStaffRole(null)} className="p-2 text-slate-400 hover:text-slate-600 rounded-xl"><X size={20}/></button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-black text-slate-400 uppercase">角色代碼（英文）</label>
+                        <input
+                          type="text"
+                          value={editingStaffRole.name || ''}
+                          onChange={e => setEditingStaffRole(prev => prev ? { ...prev, name: e.target.value.toLowerCase().replace(/\s/g, '_') } : null)}
+                          placeholder="e.g. driver"
+                          disabled={!!editingStaffRole.isSystem}
+                          className="w-full p-4 bg-slate-50 rounded-2xl font-bold focus:ring-2 focus:ring-blue-100 border border-transparent transition-all disabled:opacity-50"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-black text-slate-400 uppercase">顯示名稱</label>
+                        <input
+                          type="text"
+                          value={editingStaffRole.displayName || ''}
+                          onChange={e => setEditingStaffRole(prev => prev ? { ...prev, displayName: e.target.value } : null)}
+                          placeholder="e.g. 司機"
+                          className="w-full p-4 bg-slate-50 rounded-2xl font-bold focus:ring-2 focus:ring-blue-100 border border-transparent transition-all"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Permission tick matrix grouped */}
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[10px] font-black text-slate-400 uppercase">模組權限</label>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => setEditingStaffRole(prev => {
+                              if (!prev) return null;
+                              const all: any = {};
+                              Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => all[k] = true);
+                              return { ...prev, modulePermissions: all };
+                            })}
+                            className="text-[10px] font-black text-blue-600 hover:underline"
+                          >全選</button>
+                          <button
+                            onClick={() => setEditingStaffRole(prev => {
+                              if (!prev) return null;
+                              const none: any = {};
+                              Object.keys(DEFAULT_ADMIN_PERMISSIONS).forEach(k => none[k] = false);
+                              return { ...prev, modulePermissions: none };
+                            })}
+                            className="text-[10px] font-black text-slate-400 hover:underline"
+                          >全不選</button>
+                        </div>
+                      </div>
+                      {PERMISSION_GROUPS.map(group => (
+                        <div key={group.label}>
+                          <p className="text-[10px] font-black text-slate-300 uppercase mb-1.5">{group.label}</p>
+                          <div className="grid grid-cols-1 gap-1.5">
+                            {group.keys.map(key => (
+                              <label key={key} className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl cursor-pointer hover:bg-slate-100 transition-all">
+                                <span className="font-bold text-sm text-slate-700">{ADMIN_PERMISSION_LABELS[key]}</span>
+                                <input
+                                  type="checkbox"
+                                  checked={editingStaffRole.modulePermissions?.[key] ?? false}
+                                  onChange={e => setEditingStaffRole(prev => prev ? {
+                                    ...prev,
+                                    modulePermissions: { ...(prev.modulePermissions || DEFAULT_ADMIN_PERMISSIONS), [key]: e.target.checked }
+                                  } : null)}
+                                  className="w-5 h-5 rounded-lg accent-blue-600"
+                                />
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex gap-3 pt-2">
+                      <button onClick={() => setEditingStaffRole(null)} className="flex-1 py-4 bg-slate-100 text-slate-700 rounded-2xl font-black text-sm active:scale-95 transition-all">取消</button>
+                      <button
+                        onClick={() => saveStaffRole(editingStaffRole)}
+                        disabled={!editingStaffRole.name || !editingStaffRole.displayName}
+                        className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                      >
+                        <Save size={16}/> {editingStaffRole.isNew ? '建立角色' : '儲存更改'}
                       </button>
                     </div>
                   </div>
@@ -6277,6 +6690,162 @@ const App: React.FC = () => {
                     <option value="wholesale">僅批發</option>
                   </select>
                 </div>
+                {/* ── Product Group & Variant Info ── */}
+                {(() => {
+                  const group = editingProduct.groupId ? productGroups.find(g => g.id === editingProduct.groupId) : null;
+                  const siblings = editingProduct.groupId ? products.filter(p => p.groupId === editingProduct.groupId && p.id !== editingProduct.id) : [];
+                  const classLabel = group?.classification === 'raw_material' ? '🥩 原材料' : group?.classification === 'third_party' ? '📦 第三方產品' : group?.classification === 'in_house' ? '🏭 自製產品' : null;
+                  return (
+                <div className="space-y-3 md:col-span-2 p-4 bg-gradient-to-r from-violet-50/60 to-purple-50/60 rounded-2xl border border-violet-100/60">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Package size={14} className="text-violet-600" />
+                    <label className="text-[10px] font-bold text-violet-700 uppercase tracking-widest">產品類型 / 規格設定</label>
+                  </div>
+
+                  {group ? (
+                    <>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="px-2.5 py-1 bg-violet-100 text-violet-700 rounded-lg text-[10px] font-black">{classLabel}</span>
+                        <span className="text-xs font-bold text-slate-700">{group.name}</span>
+                        {editingProduct.variantLabel && <span className="px-2 py-0.5 bg-white border border-violet-200 text-violet-600 rounded-md text-[10px] font-bold">規格: {editingProduct.variantLabel}</span>}
+                      </div>
+                      {siblings.length > 0 && (
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[9px] font-bold text-slate-400">同組規格:</span>
+                          {siblings.map(s => (
+                            <button key={s.id} onClick={() => setEditingProduct(s)} className="px-2 py-0.5 bg-white border border-slate-200 text-slate-600 rounded-md text-[10px] font-bold hover:border-violet-300 hover:text-violet-600 transition-colors">
+                              {s.variantLabel || s.name}
+                            </button>
+                          ))}
+                          <button onClick={async () => {
+                            if (!group) return;
+                            const newVariant: Product = {
+                              id: 'P-' + Date.now(),
+                              name: group.name,
+                              categories: editingProduct.categories,
+                              price: 0,
+                              memberPrice: 0,
+                              stock: 0,
+                              trackInventory: true,
+                              tags: editingProduct.tags,
+                              image: editingProduct.image,
+                              saleChannel: editingProduct.saleChannel,
+                              productType: editingProduct.productType,
+                              groupId: group.id,
+                              parentIngredientId: editingProduct.parentIngredientId,
+                              ingredientId: editingProduct.ingredientId,
+                              variantLabel: group.classification === 'raw_material' ? '' : '',
+                              pricingMode: 'fixed_pack',
+                            };
+                            setEditingProduct(newVariant);
+                          }} className="px-2 py-0.5 bg-violet-50 border border-dashed border-violet-300 text-violet-500 rounded-md text-[10px] font-bold hover:bg-violet-100 transition-colors flex items-center gap-0.5">
+                            <Plus size={10} /> 新增規格
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold text-slate-500 ml-1">產品類型</label>
+                        <select value={editingProduct.productType || 'standalone'} onChange={e => setEditingProduct({ ...editingProduct, productType: e.target.value as ProductType })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100">
+                          <option value="standalone">獨立成品</option>
+                          <option value="third_party">第三方產品</option>
+                          <option value="raw_material">原材料</option>
+                          <option value="in_house">自製產品</option>
+                        </select>
+                      </div>
+                      {(editingProduct.productType === 'processed' || editingProduct.productType === 'raw_material') && (
+                        <div className="space-y-1">
+                          <label className="text-[9px] font-bold text-slate-500 ml-1">來源原材料</label>
+                          <select value={editingProduct.parentIngredientId || ''} onChange={e => {
+                            const val = e.target.value || undefined;
+                            setEditingProduct({ ...editingProduct, parentIngredientId: val, ingredientId: val });
+                          }} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100">
+                            <option value="">— 選擇原材料 —</option>
+                            {ingredientCategories.map(cat => {
+                              const catIngs = ingredients.filter(i => i.category === cat);
+                              if (catIngs.length === 0) return null;
+                              return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>;
+                            })}
+                            {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Variant-specific fields */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">規格標籤</label>
+                      <input value={editingProduct.variantLabel || ''} onChange={e => setEditingProduct({ ...editingProduct, variantLabel: e.target.value })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" placeholder={group?.classification === 'third_party' ? '例: 1kg, 500g' : '例: 原件, 切粒'} />
+                    </div>
+                    {(group?.classification === 'raw_material' || editingProduct.productType === 'raw_material' || editingProduct.productType === 'processed') && (
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold text-slate-500 ml-1">加工方式</label>
+                        <select value={editingProduct.processingTypeId || ''} onChange={e => {
+                          const ptId = e.target.value || undefined;
+                          const pt = processingTypes.find(p => p.id === ptId);
+                          const parentIng = ingredients.find(i => i.id === editingProduct.parentIngredientId);
+                          const ingCategory = parentIng?.category?.toLowerCase() || '';
+                          const isBLS = ingCategory.includes('牛') || ingCategory.includes('羊') || ingCategory.includes('海鮮');
+                          const autoSurcharge = pt ? (isBLS ? pt.surchargeBeefLambSeafood : pt.surchargePorkChicken) : 0;
+                          setEditingProduct({
+                            ...editingProduct,
+                            processingTypeId: ptId,
+                            processingCost: autoSurcharge,
+                            variantLabel: pt?.name || editingProduct.variantLabel,
+                            packSize: pt?.requiresRepackaging && pt.defaultPackWeightLb ? `${pt.defaultPackWeightLb}磅/包` : editingProduct.packSize,
+                            packWeightLb: pt?.defaultPackWeightLb ?? editingProduct.packWeightLb,
+                          });
+                        }} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100">
+                          <option value="">原件（不加工）</option>
+                          {processingTypes.filter(pt => pt.code !== 'whole').map(pt => (
+                            <option key={pt.id} value={pt.id}>{pt.name}{pt.spec ? ` (${pt.spec})` : ''}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    {(group?.classification === 'raw_material' || editingProduct.productType === 'raw_material' || editingProduct.productType === 'processed') && (
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold text-slate-500 ml-1">計價方式</label>
+                        <select value={editingProduct.pricingMode || 'fixed_pack'} onChange={e => setEditingProduct({ ...editingProduct, pricingMode: e.target.value as PricingMode })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100">
+                          <option value="fixed_pack">定裝 (固定包裝)</option>
+                          <option value="by_piece">抄碼 (按件計價)</option>
+                        </select>
+                      </div>
+                    )}
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">包裝規格</label>
+                      <input value={editingProduct.packSize || ''} onChange={e => setEditingProduct({ ...editingProduct, packSize: e.target.value })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" placeholder="例: 5磅/包" />
+                    </div>
+                  </div>
+
+                  {/* Cost preview for raw material variants */}
+                  {editingProduct.parentIngredientId && editingProduct.processingTypeId && (() => {
+                    const parentIng = ingredients.find(i => i.id === editingProduct.parentIngredientId);
+                    const pt = processingTypes.find(p => p.id === editingProduct.processingTypeId);
+                    if (!parentIng || !pt) return null;
+                    const ingCategory = parentIng.category?.toLowerCase() || '';
+                    const isBLS = ingCategory.includes('牛') || ingCategory.includes('羊') || ingCategory.includes('海鮮');
+                    const surcharge = isBLS ? pt.surchargeBeefLambSeafood : pt.surchargePorkChicken;
+                    const yr = editingProduct.yieldRate || 1;
+                    const suggestedCost = (parentIng.baseCostPerLb / yr) + surcharge + (editingProduct.packagingCost || 0);
+                    return (
+                      <div className="mt-2 p-3 bg-white rounded-xl border border-violet-100 text-xs space-y-1">
+                        <div className="flex justify-between"><span className="text-slate-400">原材料成本</span><span className="font-bold">${parentIng.baseCostPerLb.toFixed(1)}/{parentIng.unit}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-400">加工費 ({pt.name})</span><span className="font-bold text-violet-600">+${surcharge.toFixed(1)}/磅</span></div>
+                        {yr < 1 && <div className="flex justify-between"><span className="text-slate-400">出成率</span><span className="font-bold">{(yr * 100).toFixed(0)}%</span></div>}
+                        <div className="flex justify-between border-t border-slate-100 pt-1 mt-1"><span className="text-slate-500 font-bold">建議成本</span><span className="font-black text-amber-700">${suggestedCost.toFixed(1)}/磅</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500 font-bold">當前售價</span><span className="font-black text-blue-600">${editingProduct.price}/磅</span></div>
+                      </div>
+                    );
+                  })()}
+                </div>
+                  );
+                })()}
+
                 {/* ── Cost Section ── */}
                 <div className="space-y-3 md:col-span-2 p-4 bg-gradient-to-r from-amber-50/60 to-orange-50/60 rounded-2xl border border-amber-100/60">
                   <div className="flex items-center gap-2 mb-1">
@@ -6508,7 +7077,7 @@ const App: React.FC = () => {
                           setAiDescLoading(true);
                           try {
                             const res = await fetch('/api/generate-recipe', {
-                              method: 'POST', headers: { 'Content-Type': 'application/json' },
+                              method: 'POST', headers: buildAdminHeaders(adminUser),
                               body: JSON.stringify({ action: 'single-product-desc', payload: { productName: editingProduct.name, userInstruction: instruction || undefined } }),
                             });
                             const json = await res.json();
@@ -6562,6 +7131,200 @@ const App: React.FC = () => {
                 upsertProduct(editingProduct);
                 setEditingProduct(null);
               }} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs">保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── New Product Wizard (classification picker + setup) ── */}
+      {newProductWizard && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[6000] flex items-center justify-center p-6 animate-fade-in">
+          <div className="bg-white w-full max-w-2xl rounded-[3rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-scale-up">
+            <div className="p-8 border-b border-slate-50 flex justify-between items-center bg-slate-900 text-white">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center"><Plus size={22}/></div>
+                <div>
+                  <h4 className="text-2xl font-black tracking-tight">新增產品</h4>
+                  <p className="text-[10px] font-bold text-white/40 uppercase tracking-[0.2em]">選擇產品類型</p>
+                </div>
+              </div>
+              <button onClick={() => setNewProductWizard(null)} className="p-3 bg-white/10 rounded-full hover:bg-white/20 transition-all text-white"><X size={20}/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-10 space-y-6">
+              {/* Classification picker */}
+              <div className="grid grid-cols-3 gap-4">
+                {([
+                  { key: 'raw_material' as ProductClassification, icon: '🥩', label: '原材料', desc: '肉類、海鮮等，可設定加工方式（原件/切粒/切條…）' },
+                  { key: 'third_party' as ProductClassification, icon: '📦', label: '第三方產品', desc: '外購品牌（如丸類），按包裝規格分規格' },
+                  { key: 'in_house' as ProductClassification, icon: '🏭', label: '自製產品', desc: '自家醃製、醬料等' },
+                ]).map(opt => (
+                  <button
+                    key={opt.key}
+                    onClick={() => setNewProductWizard(w => w ? { ...w, classification: opt.key } : w)}
+                    className={`p-5 rounded-2xl border-2 text-left transition-all ${
+                      newProductWizard.classification === opt.key
+                        ? 'border-violet-500 bg-violet-50 shadow-lg shadow-violet-100'
+                        : 'border-slate-200 bg-white hover:border-violet-300 hover:bg-violet-50/30'
+                    }`}
+                  >
+                    <div className="text-3xl mb-2">{opt.icon}</div>
+                    <div className="text-sm font-black text-slate-800">{opt.label}</div>
+                    <div className="text-[10px] text-slate-400 font-bold mt-1 leading-relaxed">{opt.desc}</div>
+                  </button>
+                ))}
+              </div>
+
+              {/* Classification-specific fields */}
+              {newProductWizard.classification === 'raw_material' && (
+                <div className="space-y-4 p-5 bg-orange-50/50 rounded-2xl border border-orange-100">
+                  <h5 className="text-xs font-black text-orange-700">原材料設定</h5>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1 col-span-2">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">選擇原材料 *</label>
+                      <select value={newProductWizard.ingredientId} onChange={e => setNewProductWizard(w => w ? { ...w, ingredientId: e.target.value, productName: ingredients.find(i => i.id === e.target.value)?.name || '' } : w)} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-200">
+                        <option value="">— 選擇原材料 —</option>
+                        {ingredientCategories.map(cat => {
+                          const catIngs = ingredients.filter(i => i.category === cat);
+                          if (catIngs.length === 0) return null;
+                          return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>;
+                        })}
+                        {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">計價方式</label>
+                      <div className="flex gap-2">
+                        <button onClick={() => setNewProductWizard(w => w ? { ...w, pricingMode: 'fixed_pack' } : w)} className={`flex-1 p-2.5 rounded-xl text-xs font-black border-2 transition-all ${newProductWizard.pricingMode === 'fixed_pack' ? 'border-orange-500 bg-orange-100 text-orange-700' : 'border-slate-200 bg-white text-slate-500'}`}>
+                          📦 定裝
+                        </button>
+                        <button onClick={() => setNewProductWizard(w => w ? { ...w, pricingMode: 'by_piece', variantLabel: '原件' } : w)} className={`flex-1 p-2.5 rounded-xl text-xs font-black border-2 transition-all ${newProductWizard.pricingMode === 'by_piece' ? 'border-orange-500 bg-orange-100 text-orange-700' : 'border-slate-200 bg-white text-slate-500'}`}>
+                          🏷️ 抄碼
+                        </button>
+                      </div>
+                      <p className="text-[8px] text-slate-400 font-bold">抄碼 = 按件稱重計價，默認「原件」</p>
+                    </div>
+                    {newProductWizard.pricingMode === 'fixed_pack' && (
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold text-slate-500 ml-1">包裝規格</label>
+                        <input value={newProductWizard.packSize} onChange={e => setNewProductWizard(w => w ? { ...w, packSize: e.target.value } : w)} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-200" placeholder="例: 5磅" />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {newProductWizard.classification === 'third_party' && (
+                <div className="space-y-4 p-5 bg-blue-50/50 rounded-2xl border border-blue-100">
+                  <h5 className="text-xs font-black text-blue-700">第三方產品設定</h5>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">產品名稱 *</label>
+                      <input value={newProductWizard.productName} onChange={e => setNewProductWizard(w => w ? { ...w, productName: e.target.value } : w)} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-200" placeholder="例: 四海牛丸" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">第一個規格 (包裝大小) *</label>
+                      <input value={newProductWizard.variantLabel} onChange={e => setNewProductWizard(w => w ? { ...w, variantLabel: e.target.value } : w)} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-200" placeholder="例: 1kg" />
+                      <p className="text-[8px] text-slate-400 font-bold">之後可在產品詳情新增更多規格（如 500g, 250g）</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {newProductWizard.classification === 'in_house' && (
+                <div className="space-y-4 p-5 bg-emerald-50/50 rounded-2xl border border-emerald-100">
+                  <h5 className="text-xs font-black text-emerald-700">自製產品設定</h5>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-500 ml-1">產品名稱 *</label>
+                    <input value={newProductWizard.productName} onChange={e => setNewProductWizard(w => w ? { ...w, productName: e.target.value } : w)} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-200" placeholder="例: 秘製醃豬扒" />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-8 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+              <button onClick={() => setNewProductWizard(null)} className="px-6 py-3 bg-white border border-slate-200 rounded-2xl font-black text-xs">取消</button>
+              <button
+                disabled={
+                  !newProductWizard.classification ||
+                  (newProductWizard.classification === 'raw_material' && !newProductWizard.ingredientId) ||
+                  (newProductWizard.classification === 'third_party' && (!newProductWizard.productName.trim() || !newProductWizard.variantLabel.trim())) ||
+                  (newProductWizard.classification === 'in_house' && !newProductWizard.productName.trim())
+                }
+                onClick={async () => {
+                  const wiz = newProductWizard;
+                  if (!wiz.classification) return;
+
+                  let groupName = '';
+                  let ingId: string | undefined;
+                  let varLabel = '';
+                  let prodName = '';
+                  let prodType: ProductType = 'standalone';
+                  let parentIngId: string | undefined;
+                  let pMode: PricingMode = 'fixed_pack';
+                  let pSize = '';
+
+                  if (wiz.classification === 'raw_material') {
+                    const ing = ingredients.find(i => i.id === wiz.ingredientId);
+                    if (!ing) return;
+                    groupName = ing.name;
+                    ingId = ing.id;
+                    parentIngId = ing.id;
+                    pMode = wiz.pricingMode;
+                    pSize = wiz.packSize;
+                    varLabel = wiz.pricingMode === 'by_piece' ? '原件' : (wiz.variantLabel || '原件');
+                    prodName = pSize ? `${ing.name} (${pSize})` : ing.name;
+                    prodType = 'raw_material';
+                  } else if (wiz.classification === 'third_party') {
+                    groupName = wiz.productName;
+                    varLabel = wiz.variantLabel;
+                    prodName = `${wiz.productName} ${wiz.variantLabel}`;
+                    prodType = 'third_party';
+                  } else {
+                    groupName = wiz.productName;
+                    varLabel = '標準';
+                    prodName = wiz.productName;
+                    prodType = 'in_house';
+                  }
+
+                  const newGroup: ProductGroup = {
+                    id: crypto.randomUUID(),
+                    name: groupName,
+                    classification: wiz.classification,
+                    ingredientId: ingId,
+                    isActive: true,
+                  };
+                  const savedGroup = await upsertProductGroup(newGroup);
+                  if (!savedGroup) return;
+
+                  const newProduct: Product = {
+                    id: 'P-' + Date.now(),
+                    name: prodName,
+                    categories: [],
+                    price: 0,
+                    memberPrice: 0,
+                    stock: 0,
+                    trackInventory: true,
+                    tags: [],
+                    image: wiz.classification === 'raw_material' ? '🥩' : wiz.classification === 'in_house' ? '🏭' : '📦',
+                    saleChannel: 'wholesale',
+                    productType: prodType,
+                    groupId: savedGroup.id,
+                    parentIngredientId: parentIngId,
+                    ingredientId: ingId,
+                    variantLabel: varLabel,
+                    pricingMode: pMode,
+                    packSize: pSize || undefined,
+                  };
+
+                  setNewProductWizard(null);
+                  setEditingProduct(newProduct);
+                  showToast(`已建立群組「${groupName}」，請填寫產品詳情`);
+                }}
+                className="px-6 py-3 bg-violet-600 text-white rounded-2xl font-black text-xs disabled:opacity-30 transition-all hover:bg-violet-700 flex items-center gap-2"
+              >
+                下一步 → 編輯詳情 <ChevronRight size={14} />
+              </button>
             </div>
           </div>
         </div>
@@ -7881,7 +8644,7 @@ const App: React.FC = () => {
         cart={cart}
         setCart={setCart}
         user={user}
-        orders={orders.filter(o => (o.orderType || 'retail') === 'wholesale')}
+        orders={orders.filter(o => (o.orderType || 'retail') === 'wholesale' && (user ? (o.memberId === user.id || o.customerName === user.name) : false))}
         ingredients={ingredients}
         costItems={costItems}
         wholesaleRules={siteConfig.wholesalePricingRules!}
@@ -7893,10 +8656,11 @@ const App: React.FC = () => {
         onLogin={async (form) => {
           const input = form.email.trim();
           if (!input || !form.password) { showToast('請輸入電話及密碼', 'error'); return; }
+          const ghLoginCols = 'id, name, email, password_hash, phone_number, points, wallet_balance, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses';
           const isEmail = input.includes('@');
           const { data, error } = isEmail
-            ? await supabase.from('members').select('*').eq('email', input.toLowerCase()).maybeSingle()
-            : await supabase.from('members').select('*').eq('phone_number', input).maybeSingle();
+            ? await supabase.from('members').select(ghLoginCols).eq('email', input.toLowerCase()).maybeSingle()
+            : await supabase.from('members').select(ghLoginCols).eq('phone_number', input).maybeSingle();
           if (error) { showToast(error.message || '登入失敗', 'error'); return; }
           if (!data) { showToast('找不到此帳戶', 'error'); return; }
           const row = data as SupabaseMemberRow;
@@ -7904,13 +8668,19 @@ const App: React.FC = () => {
           if (!ok) { showToast('密碼錯誤', 'error'); return; }
           const u = mapMemberRowToUser(row);
           setUser(u);
-          try { localStorage.setItem('coolfood_member_id', u.id); } catch { /* ignore */ }
+          try {
+            localStorage.setItem('coolfood_member_id', u.id);
+            const sessionToken = await generateSessionToken(u.id, row.password_hash);
+            localStorage.setItem('coolfood_session_token', sessionToken);
+          } catch { /* ignore */ }
           showToast('歡迎回來！');
         }}
         onSubmitOrder={handleSubmitOrder}
         logoUrl={siteConfig.logoUrl}
         logoIcon={site.logoIcon}
         logoText={site.brandName}
+        processingTypes={processingTypes}
+        productGroups={productGroups}
       />
     );
   }
@@ -8007,15 +8777,19 @@ const App: React.FC = () => {
               onRefreshOrders={fetchOrders}
             />
           )}
-          {view === 'orders' && (
+          {view === 'orders' && (() => {
+            const myOrders = user
+              ? orders.filter(o => o.memberId === user.id || (o.orderType || 'retail') === 'retail' && o.customerName === user.name)
+              : [];
+            return (
              <div className="flex-1 bg-slate-50 p-6 space-y-4 overflow-y-auto pb-24">
                 <h2 className="text-2xl font-black text-slate-900 mb-6 tracking-tight">{t.orders.myOrders}</h2>
-                {orders.length === 0 && (
+                {myOrders.length === 0 && (
                    <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm text-center text-slate-400 font-bold">
                       {t.orders.noOrders}
                    </div>
                 )}
-                {orders.map(o => (
+                {myOrders.map(o => (
                    <div
                      key={o.id}
                      className={`bg-white p-6 rounded-3xl border shadow-sm space-y-4 hover:shadow-md transition-all duration-300 ${highlightOrderId === o.id ? 'border-emerald-400 ring-2 ring-emerald-200 shadow-lg animate-order-pop' : 'border-slate-100'}`}
@@ -8062,7 +8836,8 @@ const App: React.FC = () => {
                    </div>
                 ))}
              </div>
-          )}
+            );
+          })()}
           {view === 'profile' && !user && (
              <div className="flex-1 bg-slate-50 p-6 overflow-y-auto pb-24 animate-fade-in">
                 <div className="max-w-md mx-auto pt-4">
@@ -8148,7 +8923,7 @@ const App: React.FC = () => {
                   </div>
                   {/* Admin access: navigate to yoursite.com/#admin */}
                 </div>
-                <button onClick={() => { setUser(null); try { localStorage.removeItem('coolfood_member_id'); } catch { /* ignore */ } setView('store'); showToast(t.profile.loggedOut); }} className="w-full py-5 bg-white text-rose-500 rounded-[2rem] font-black border border-rose-50 shadow-sm active:scale-95 transition-all hover:bg-rose-50">{t.profile.logout}</button>
+                <button onClick={() => { setUser(null); try { localStorage.removeItem('coolfood_member_id'); localStorage.removeItem('coolfood_session_token'); } catch { /* ignore */ } setView('store'); showToast(t.profile.loggedOut); }} className="w-full py-5 bg-white text-rose-500 rounded-[2rem] font-black border border-rose-50 shadow-sm active:scale-95 transition-all hover:bg-rose-50">{t.profile.logout}</button>
              </div>
           )}
           {!isAdminRoute && (

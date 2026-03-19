@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
-import { Search, ShoppingCart, X, Plus, Minus, Trash2, ChevronDown, Send, LogOut, Phone, Truck, Clock, DollarSign, Package, User, Coins, ChevronRight, Check } from 'lucide-react';
-import type { Product, CartItem, User as UserType, Category, Order, OrderStatus, OrderLineItem, Ingredient, CostItem, WholesalePricingRules } from './types';
+import { Search, ShoppingCart, X, Plus, Minus, Trash2, ChevronDown, Send, LogOut, Phone, Truck, Clock, DollarSign, Package, User, Coins, ChevronRight, Check, Scissors } from 'lucide-react';
+import type { Product, CartItem, User as UserType, Category, Order, OrderStatus, OrderLineItem, Ingredient, CostItem, WholesalePricingRules, ProcessingType, ProductGroup } from './types';
 
 interface GHFoodsStorefrontProps {
   products: Product[];
@@ -20,6 +20,8 @@ interface GHFoodsStorefrontProps {
   logoUrl?: string;
   logoIcon: string;
   logoText: string;
+  processingTypes?: ProcessingType[];
+  productGroups?: ProductGroup[];
 }
 
 type GHView = 'order' | 'cart' | 'history' | 'login';
@@ -28,6 +30,8 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
   products, categories, cart, setCart, user, orders,
   ingredients, costItems, wholesaleRules, wholesalePriceOverrides,
   getPrice, onLogin, onSubmitOrder, logoUrl, logoIcon, logoText,
+  processingTypes = [],
+  productGroups = [],
 }) => {
   const [view, setView] = useState<GHView>(user ? 'order' : 'login');
   const [search, setSearch] = useState('');
@@ -77,6 +81,37 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
   }, [cart, getPrice]);
 
   const cartCount = cart.reduce((s, i) => s + i.qty, 0);
+
+  const [expandedIngredient, setExpandedIngredient] = useState<string | null>(null);
+
+  const processingTypeMap = useMemo(() => {
+    const m = new Map<string, ProcessingType>();
+    processingTypes.forEach(pt => m.set(pt.id, pt));
+    return m;
+  }, [processingTypes]);
+
+  const productVariantGroups = useMemo(() => {
+    const groups = new Map<string, { parentName: string; variants: Product[] }>();
+    for (const p of filteredProducts) {
+      const groupKey = p.groupId || (p.parentIngredientId && (p.productType === 'processed' || p.productType === 'raw_material') ? `ing-${p.parentIngredientId}` : null);
+      if (!groupKey) continue;
+      const existing = groups.get(groupKey);
+      if (existing) {
+        existing.variants.push(p);
+      } else {
+        let parentName = '';
+        if (p.groupId) {
+          const grp = productGroups.find(g => g.id === p.groupId);
+          parentName = grp?.name || p.name;
+        } else if (p.parentIngredientId) {
+          const ing = ingredients.find(i => i.id === p.parentIngredientId);
+          parentName = ing?.name || p.name;
+        }
+        groups.set(groupKey, { parentName, variants: [p] });
+      }
+    }
+    return groups;
+  }, [filteredProducts, ingredients, productGroups]);
 
   const addToCart = useCallback((product: Product, qty: number = 1) => {
     setCart(prev => {
@@ -270,7 +305,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                     <th className="text-left px-3 py-2.5 font-bold text-slate-500 text-xs w-10">#</th>
                     <th className="text-left px-3 py-2.5 font-bold text-slate-500 text-xs">產品</th>
                     <th className="text-left px-3 py-2.5 font-bold text-slate-500 text-xs hidden sm:table-cell">編號</th>
-                    <th className="text-left px-3 py-2.5 font-bold text-slate-500 text-xs hidden md:table-cell">產地</th>
+                    <th className="text-left px-3 py-2.5 font-bold text-slate-500 text-xs hidden md:table-cell">加工</th>
                     <th className="text-right px-3 py-2.5 font-bold text-slate-500 text-xs">單價</th>
                     <th className="text-center px-3 py-2.5 font-bold text-slate-500 text-xs w-36">數量</th>
                     <th className="text-right px-3 py-2.5 font-bold text-slate-500 text-xs w-24">小計</th>
@@ -289,11 +324,20 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                     const qty = inCart?.qty || 0;
                     const price = getPrice(p, qty || 1);
                     const outOfStock = p.trackInventory && p.stock <= 0;
+                    const pt = p.processingTypeId ? processingTypeMap.get(p.processingTypeId) : null;
+                    const groupKey = p.groupId || (p.parentIngredientId && (p.productType === 'processed' || p.productType === 'raw_material') ? `ing-${p.parentIngredientId}` : null);
+                    const variantGroup = groupKey ? productVariantGroups.get(groupKey) : null;
+                    const hasVariantGroup = variantGroup && variantGroup.variants.length > 1;
+                    const isFirstOfGroup = variantGroup && variantGroup.variants[0]?.id === p.id;
+                    const isExpanded = expandedIngredient === groupKey;
+                    const isSubsequentVariant = variantGroup && variantGroup.variants.length > 1 && !isFirstOfGroup;
+
+                    if (isSubsequentVariant && !isExpanded) return null;
 
                     return (
+                      <React.Fragment key={p.id}>
                       <tr
-                        key={p.id}
-                        className={`border-b border-slate-100 transition-colors ${qty > 0 ? 'bg-amber-50/40' : 'hover:bg-slate-50'} ${outOfStock ? 'opacity-40' : ''}`}
+                        className={`border-b border-slate-100 transition-colors ${qty > 0 ? 'bg-amber-50/40' : 'hover:bg-slate-50'} ${outOfStock ? 'opacity-40' : ''} ${isSubsequentVariant ? 'bg-violet-50/30' : ''}`}
                       >
                         <td className="px-3 py-2 text-slate-400 text-xs">{idx + 1}</td>
                         <td className="px-3 py-2">
@@ -302,16 +346,43 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                               <img src={p.image} alt="" className="w-8 h-8 rounded object-cover bg-slate-100 flex-shrink-0" />
                             )}
                             <div className="min-w-0">
-                              <p className="font-bold text-slate-800 truncate">{p.name}</p>
-                              {p.weight && <p className="text-[10px] text-slate-400">{p.weight}</p>}
+                              <div className="flex items-center gap-1.5">
+                                <p className="font-bold text-slate-800 truncate">{p.name}</p>
+                                {hasVariantGroup && isFirstOfGroup && (
+                                  <button
+                                    onClick={() => setExpandedIngredient(isExpanded ? null : groupKey!)}
+                                    className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors ${isExpanded ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500 hover:bg-violet-50 hover:text-violet-600'}`}
+                                  >
+                                    <Scissors size={10} />
+                                    {variantGroup!.variants.length}款規格
+                                    <ChevronDown size={10} className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                                  </button>
+                                )}
+                              </div>
+                              {p.packSize && <p className="text-[10px] text-slate-400">{p.packSize}</p>}
+                              {!p.packSize && p.weight && <p className="text-[10px] text-slate-400">{p.weight}</p>}
                             </div>
                           </div>
                         </td>
                         <td className="px-3 py-2 text-slate-500 text-xs hidden sm:table-cell font-mono">
                           {p.legacyId || p.id.slice(0, 8)}
                         </td>
-                        <td className="px-3 py-2 text-slate-500 text-xs hidden md:table-cell">
-                          {p.origin || '—'}
+                        <td className="px-3 py-2 text-xs hidden md:table-cell">
+                          {p.variantLabel ? (
+                            <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded font-bold text-[10px] ${
+                              p.variantLabel === '原件' ? 'bg-slate-100 text-slate-500' : 'bg-violet-50 text-violet-600'
+                            }`}>
+                              {p.variantLabel !== '原件' && <Scissors size={9} />}
+                              {p.variantLabel}
+                            </span>
+                          ) : pt ? (
+                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-violet-50 text-violet-600 rounded font-bold text-[10px]">
+                              <Scissors size={9} />{pt.name}
+                              {pt.spec && <span className="text-violet-400 ml-0.5">{pt.spec}</span>}
+                            </span>
+                          ) : p.productType === 'raw_material' ? (
+                            <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded text-[10px] font-bold">原件</span>
+                          ) : '—'}
                         </td>
                         <td className="px-3 py-2 text-right font-bold text-slate-800">
                           ${price}
@@ -362,6 +433,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                           {qty > 0 ? `$${price * qty}` : '—'}
                         </td>
                       </tr>
+                      </React.Fragment>
                     );
                   })}
                 </tbody>

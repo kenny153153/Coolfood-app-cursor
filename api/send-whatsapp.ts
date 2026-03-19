@@ -58,13 +58,17 @@ export async function sendWhatsAppMessage(
 
 // Vercel serverless handler (optional direct endpoint)
 export default async function handler(
-  req: { method?: string; body?: { phone?: string; body?: string } },
+  req: { method?: string; body?: { phone?: string; body?: string }; headers?: Record<string, string | string[] | undefined> },
   res: { setHeader: (k: string, v: string) => void; status: (n: number) => { json: (o: object) => void }; json: (o: object) => void },
 ) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  const { verifyAdminRequest } = await import('./_adminAuth');
+  const authResult = await verifyAdminRequest(req);
+  if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
   const { phone, body } = req.body ?? {};
   if (!phone || !body) {

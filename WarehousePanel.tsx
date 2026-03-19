@@ -4,20 +4,23 @@ import {
   Layers, Plus, Edit, Trash2, Save, X, RefreshCw, Search,
   Tag, Filter, ShoppingCart, Lock, Upload, FileText, BarChart3,
   ChevronDown, ChevronRight, AlertTriangle, Check, Star,
-  MessageSquare, Building2, Phone, MapPin, Clock, Mail,
+  MessageSquare, Building2, Phone, MapPin, Clock, Mail, Scissors,
+  PackageCheck, ClipboardCheck, ArrowDownToLine, History,
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import type {
   Ingredient, IngredientCategory, SaleChannel, Supplier,
   RawMaterialCatalog, SupplierQuote, QuoteLineItem,
   ComparisonRow, PurchaseDecision, JustificationCategory,
+  ProcessingType, GoodsReceipt, StockMovement,
 } from './types';
+import { mapProcessingTypeRow } from './supabaseMappers';
 
 interface Props {
   showToast: (msg: string, type?: 'success' | 'error') => void;
 }
 
-type SubTab = 'ingredients' | 'suppliers' | 'quote_compare' | 'purchase_orders' | 'units';
+type SubTab = 'ingredients' | 'suppliers' | 'quote_compare' | 'purchase_orders' | 'goods_receiving' | 'units' | 'processing_types';
 
 const SALE_CHANNELS: { value: SaleChannel; label: string }[] = [
   { value: 'both', label: '全部' },
@@ -45,6 +48,20 @@ const PAYMENT_STATUS_MAP: Record<string, { label: string; color: string }> = {
   unpaid: { label: '未付', color: 'bg-rose-50 text-rose-500' },
   partial: { label: '部份付', color: 'bg-amber-50 text-amber-600' },
   paid: { label: '已付', color: 'bg-emerald-50 text-emerald-600' },
+};
+
+const GRN_STATUS_MAP: Record<string, { label: string; color: string }> = {
+  draft: { label: '草稿', color: 'bg-slate-100 text-slate-600' },
+  confirmed: { label: '已確認', color: 'bg-emerald-50 text-emerald-600' },
+  cancelled: { label: '已取消', color: 'bg-rose-50 text-rose-500' },
+};
+
+const MOVEMENT_TYPE_MAP: Record<string, { label: string; color: string }> = {
+  receive: { label: '收貨入倉', color: 'text-emerald-600' },
+  production_out: { label: '生產出倉', color: 'text-amber-600' },
+  adjustment: { label: '人工調整', color: 'text-blue-600' },
+  wastage: { label: '損耗', color: 'text-rose-600' },
+  return: { label: '退貨', color: 'text-purple-600' },
 };
 
 const JUSTIFICATION_OPTIONS: { value: JustificationCategory; label: string }[] = [
@@ -130,6 +147,36 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
   const [editingSupplier, setEditingSupplier] = useState<(Partial<Supplier> & { isNew?: boolean }) | null>(null);
   const [supplierSaving, setSupplierSaving] = useState(false);
 
+  // ── Processing Types state ──
+  const [processingTypes, setProcessingTypes] = useState<ProcessingType[]>([]);
+  const [ptLoading, setPtLoading] = useState(false);
+  const [editingPT, setEditingPT] = useState<(Partial<ProcessingType> & { isNew?: boolean }) | null>(null);
+  const [ptSaving, setPtSaving] = useState(false);
+
+  // ── Goods Receiving state ──
+  const [goodsReceipts, setGoodsReceipts] = useState<GoodsReceipt[]>([]);
+  const [grnLoading, setGrnLoading] = useState(false);
+  const [grnSearch, setGrnSearch] = useState('');
+  const [grnStatusFilter, setGrnStatusFilter] = useState('all');
+  const [receivingPO, setReceivingPO] = useState<PurchaseOrder | null>(null);
+  const [receivingItems, setReceivingItems] = useState<{
+    ingredientId?: string;
+    productName: string;
+    orderedQty: number;
+    receivedQty: number;
+    rejectedQty: number;
+    unit: string;
+    unitCost: number;
+    storageLocation: string;
+    notes: string;
+  }[]>([]);
+  const [receivingMeta, setReceivingMeta] = useState({ deliveryNoteNumber: '', receivedBy: '', notes: '' });
+  const [grnSaving, setGrnSaving] = useState(false);
+  const [grnView, setGrnView] = useState<'list' | 'receive'>('list');
+  const [stockMovements, setStockMovements] = useState<StockMovement[]>([]);
+  const [showMovements, setShowMovements] = useState(false);
+  const [movementsIngredientId, setMovementsIngredientId] = useState<string | null>(null);
+
   // ── Quote Comparison state ──
   const [quotes, setQuotes] = useState<SupplierQuote[]>([]);
   const [quoteLineItems, setQuoteLineItems] = useState<QuoteLineItem[]>([]);
@@ -187,7 +234,9 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
         baseCostPerLb: r.base_cost_per_lb, supplier: r.supplier,
         marketBenchmark: r.market_benchmark, unit: r.unit, category: r.category,
         saleChannel: r.sale_channel as SaleChannel | undefined,
-        notes: r.notes, createdAt: r.created_at, updatedAt: r.updated_at,
+        notes: r.notes, stockQty: r.stock_qty || 0, stockUnit: r.stock_unit,
+        minStockAlert: r.min_stock_alert,
+        createdAt: r.created_at, updatedAt: r.updated_at,
       })));
     }
     if (categoriesRes.data) {
@@ -262,6 +311,43 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
       })));
     }
     setSuppliersLoading(false);
+  }, []);
+
+  const loadProcessingTypes = useCallback(async () => {
+    setPtLoading(true);
+    const { data } = await supabase.from('processing_types').select('*').order('sort_order');
+    if (data) setProcessingTypes(data.map((r: any) => mapProcessingTypeRow(r)));
+    setPtLoading(false);
+  }, []);
+
+  const loadGoodsReceipts = useCallback(async () => {
+    setGrnLoading(true);
+    const { data } = await supabase.from('goods_receipts').select('*').order('received_at', { ascending: false });
+    if (data) {
+      const receipts: GoodsReceipt[] = data.map((r: any) => ({
+        id: r.id, grnNumber: r.grn_number, purchaseOrderId: r.purchase_order_id,
+        poNumber: r.po_number, supplierName: r.supplier_name,
+        receivedBy: r.received_by, receivedAt: r.received_at,
+        deliveryNoteNumber: r.delivery_note_number, status: r.status,
+        notes: r.notes, createdAt: r.created_at, updatedAt: r.updated_at,
+      }));
+      setGoodsReceipts(receipts);
+    }
+    setGrnLoading(false);
+  }, []);
+
+  const loadStockMovements = useCallback(async (ingredientId?: string) => {
+    let query = supabase.from('stock_movements').select('*').order('performed_at', { ascending: false }).limit(100);
+    if (ingredientId) query = query.eq('ingredient_id', ingredientId);
+    const { data } = await query;
+    if (data) {
+      setStockMovements(data.map((r: any) => ({
+        id: r.id, ingredientId: r.ingredient_id, productId: r.product_id,
+        movementType: r.movement_type, quantity: r.quantity, unit: r.unit,
+        referenceType: r.reference_type, referenceId: r.reference_id,
+        performedBy: r.performed_by, performedAt: r.performed_at, notes: r.notes,
+      })));
+    }
   }, []);
 
   const loadQuotesAndCatalog = useCallback(async () => {
@@ -373,7 +459,9 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
     if (subTab === 'purchase_orders') loadPurchaseOrders();
     if (subTab === 'suppliers') loadSuppliers();
     if (subTab === 'quote_compare') { loadSuppliers(); loadQuotesAndCatalog(); }
-  }, [subTab, loadPurchaseOrders, loadSuppliers, loadQuotesAndCatalog]);
+    if (subTab === 'processing_types') loadProcessingTypes();
+    if (subTab === 'goods_receiving') { loadGoodsReceipts(); loadPurchaseOrders(); }
+  }, [subTab, loadPurchaseOrders, loadSuppliers, loadQuotesAndCatalog, loadProcessingTypes, loadGoodsReceipts]);
 
   // ── Ingredients CRUD ──
   const filtered = ingredients.filter(i => {
@@ -518,6 +606,143 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
 
   const poSubtotal = (editingPO?.lineItems || []).reduce((s, l) => s + (l.lineTotal || 0), 0);
 
+  // ── Goods Receiving ──
+  const generateGRNNumber = () => {
+    const d = new Date();
+    const prefix = `GRN-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const seq = String(goodsReceipts.filter(g => g.grnNumber.startsWith(prefix)).length + 1).padStart(3, '0');
+    return `${prefix}-${seq}`;
+  };
+
+  const receivablePOs = purchaseOrders.filter(po => po.status === 'submitted' || po.status === 'partial');
+
+  const filteredGRNs = goodsReceipts.filter(grn => {
+    if (grnStatusFilter !== 'all' && grn.status !== grnStatusFilter) return false;
+    if (grnSearch) {
+      const q = grnSearch.toLowerCase();
+      return grn.grnNumber.toLowerCase().includes(q) ||
+        grn.supplierName.toLowerCase().includes(q) ||
+        (grn.poNumber || '').toLowerCase().includes(q);
+    }
+    return true;
+  });
+
+  const startReceiving = (po: PurchaseOrder) => {
+    setReceivingPO(po);
+    setReceivingItems(po.lineItems.map(li => ({
+      ingredientId: li.ingredientId,
+      productName: li.productName,
+      orderedQty: li.qty,
+      receivedQty: li.qty - (li.receivedQty || 0),
+      rejectedQty: 0,
+      unit: li.unit,
+      unitCost: li.unitCost,
+      storageLocation: '',
+      notes: '',
+    })));
+    setReceivingMeta({ deliveryNoteNumber: '', receivedBy: '', notes: '' });
+    setGrnView('receive');
+  };
+
+  const handleConfirmReceipt = async () => {
+    if (!receivingPO) return;
+    const validItems = receivingItems.filter(i => i.receivedQty > 0);
+    if (validItems.length === 0) { showToast('請填寫至少一項收貨數量', 'error'); return; }
+    setGrnSaving(true);
+
+    try {
+      const grnNumber = generateGRNNumber();
+      const { data: grn, error: grnErr } = await supabase.from('goods_receipts').insert({
+        grn_number: grnNumber,
+        purchase_order_id: receivingPO.id,
+        po_number: receivingPO.poNumber,
+        supplier_name: receivingPO.supplierName,
+        received_by: receivingMeta.receivedBy || null,
+        delivery_note_number: receivingMeta.deliveryNoteNumber || null,
+        status: 'confirmed',
+        notes: receivingMeta.notes || null,
+      }).select().single();
+
+      if (grnErr) throw grnErr;
+
+      const itemPayloads = validItems.map(item => ({
+        goods_receipt_id: grn.id,
+        ingredient_id: item.ingredientId || null,
+        product_name: item.productName,
+        ordered_qty: item.orderedQty,
+        received_qty: item.receivedQty,
+        rejected_qty: item.rejectedQty,
+        unit: item.unit,
+        unit_cost: item.unitCost,
+        line_total: item.receivedQty * item.unitCost,
+        storage_location: item.storageLocation || null,
+        notes: item.notes || null,
+      }));
+      const { error: itemsErr } = await supabase.from('goods_receipt_items').insert(itemPayloads);
+      if (itemsErr) throw itemsErr;
+
+      // Update ingredient stock
+      for (const item of validItems) {
+        if (item.ingredientId) {
+          const { error: stockErr } = await supabase.rpc('increment_ingredient_stock', {
+            p_ingredient_id: item.ingredientId,
+            p_qty: item.receivedQty,
+          });
+          if (stockErr) {
+            // Fallback: manual increment if RPC doesn't exist
+            const { data: curr } = await supabase.from('ingredients').select('stock_qty').eq('id', item.ingredientId).single();
+            const newQty = (curr?.stock_qty || 0) + item.receivedQty;
+            await supabase.from('ingredients').update({ stock_qty: newQty }).eq('id', item.ingredientId);
+          }
+
+          // Insert stock movement
+          await supabase.from('stock_movements').insert({
+            ingredient_id: item.ingredientId,
+            movement_type: 'receive',
+            quantity: item.receivedQty,
+            unit: item.unit,
+            reference_type: 'goods_receipt',
+            reference_id: grn.id,
+            performed_by: receivingMeta.receivedBy || null,
+            notes: `收貨單 ${grnNumber} — ${item.productName}`,
+          });
+        }
+      }
+
+      // Update PO line_items received_qty and status
+      const updatedLines = receivingPO.lineItems.map(li => {
+        const match = validItems.find(vi => vi.productName === li.productName && vi.ingredientId === li.ingredientId);
+        const addedQty = match ? match.receivedQty : 0;
+        return {
+          ingredient_id: li.ingredientId || null,
+          product_name: li.productName,
+          qty: li.qty, unit: li.unit, unit_cost: li.unitCost,
+          line_total: li.lineTotal,
+          received_qty: (li.receivedQty || 0) + addedQty,
+          notes: li.notes,
+        };
+      });
+      const allReceived = updatedLines.every(l => l.received_qty >= l.qty);
+      const someReceived = updatedLines.some(l => l.received_qty > 0);
+      const newPOStatus = allReceived ? 'received' : someReceived ? 'partial' : receivingPO.status;
+
+      await supabase.from('purchase_orders').update({
+        line_items: updatedLines,
+        status: newPOStatus,
+      }).eq('id', receivingPO.id);
+
+      showToast(`收貨單 ${grnNumber} 已確認，庫存已更新`);
+      setReceivingPO(null);
+      setGrnView('list');
+      loadGoodsReceipts();
+      loadPurchaseOrders();
+      loadIngredients();
+    } catch (err: any) {
+      showToast(`收貨失敗：${err.message}`, 'error');
+    }
+    setGrnSaving(false);
+  };
+
   // ── Suppliers CRUD ──
   const filteredSuppliers = suppliers.filter(s =>
     !supplierSearch ||
@@ -562,6 +787,48 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
     if (!confirm('確定刪除此供應商？')) return;
     await supabase.from('suppliers').delete().eq('id', id);
     showToast('已刪除'); loadSuppliers();
+  };
+
+  // ── Processing Types CRUD ──
+  const handleSaveProcessingType = async () => {
+    if (!editingPT || !editingPT.name?.trim() || !editingPT.code?.trim()) {
+      showToast('請輸入代碼和名稱', 'error'); return;
+    }
+    setPtSaving(true);
+    try {
+      const row = {
+        ...(editingPT.isNew ? {} : { id: editingPT.id }),
+        code: editingPT.code!.trim(),
+        name: editingPT.name!.trim(),
+        name_en: editingPT.nameEn || null,
+        spec: editingPT.spec || null,
+        surcharge_pork_chicken: editingPT.surchargePorkChicken ?? 0,
+        surcharge_beef_lamb_seafood: editingPT.surchargeBeefLambSeafood ?? 0,
+        requires_repackaging: editingPT.requiresRepackaging ?? true,
+        default_pack_weight_lb: editingPT.defaultPackWeightLb ?? null,
+        sort_order: editingPT.sortOrder ?? processingTypes.length,
+        is_active: editingPT.isActive ?? true,
+      };
+      const { error } = await supabase.from('processing_types').upsert(row);
+      if (error) throw error;
+      showToast(editingPT.isNew ? '已新增加工方式' : '已更新');
+      setEditingPT(null);
+      loadProcessingTypes();
+    } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
+    setPtSaving(false);
+  };
+
+  const handleDeleteProcessingType = async (pt: ProcessingType) => {
+    const { count } = await supabase.from('products').select('id', { count: 'exact', head: true }).eq('processing_type_id', pt.id);
+    if (count && count > 0) {
+      showToast(`無法刪除「${pt.name}」— 目前有 ${count} 個產品使用此加工方式`, 'error');
+      return;
+    }
+    if (!confirm(`確定刪除「${pt.name}」？`)) return;
+    const { error } = await supabase.from('processing_types').delete().eq('id', pt.id);
+    if (error) { showToast(`刪除失敗：${error.message}`, 'error'); return; }
+    showToast('已刪除');
+    loadProcessingTypes();
   };
 
   // ── File helpers ──
@@ -634,9 +901,14 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
             content = entry.text;
           }
 
+          const whAdminHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+          try {
+            const session = JSON.parse(localStorage.getItem('coolfood_admin_session') || '{}');
+            if (session?.id) { whAdminHeaders['x-admin-id'] = session.id; whAdminHeaders['x-admin-role'] = session.role || ''; }
+          } catch { /* ignore */ }
           const response = await fetch('/api/parse-supplier-quote', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: whAdminHeaders,
             body: JSON.stringify({
               ...(pdfBase64 ? { pdfBase64 } : { content }),
               sourceType: entry.sourceType,
@@ -1008,6 +1280,8 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
           { id: 'suppliers' as SubTab, label: '供應商', icon: <Building2 size={16} /> },
           { id: 'quote_compare' as SubTab, label: '報價比較', icon: <BarChart3 size={16} /> },
           { id: 'purchase_orders' as SubTab, label: '購買訂單', icon: <ShoppingCart size={16} /> },
+          { id: 'goods_receiving' as SubTab, label: '收貨入倉', icon: <PackageCheck size={16} /> },
+          { id: 'processing_types' as SubTab, label: '加工方式', icon: <Scissors size={16} /> },
           { id: 'units' as SubTab, label: '單位管理', icon: <Filter size={16} /> },
         ]).map(tab => (
           <button
@@ -1015,7 +1289,9 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
             onClick={() => setSubTab(tab.id)}
             className={`px-5 py-2.5 rounded-xl text-sm font-black transition-all flex items-center gap-2 ${
               subTab === tab.id
-                ? tab.id === 'quote_compare' ? 'bg-indigo-600 text-white shadow-lg' : 'bg-blue-600 text-white shadow-lg'
+                ? tab.id === 'quote_compare' ? 'bg-indigo-600 text-white shadow-lg'
+                  : tab.id === 'goods_receiving' ? 'bg-emerald-600 text-white shadow-lg'
+                  : 'bg-blue-600 text-white shadow-lg'
                 : 'bg-white text-slate-500 border border-slate-200 hover:border-blue-300'
             }`}
           >
@@ -1067,6 +1343,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
                     <th className="px-5 py-3 text-left">名稱</th>
                     <th className="px-4 py-3 text-left">類別</th>
                     <th className="px-4 py-3 text-center">單位</th>
+                    <th className="px-4 py-3 text-right">庫存</th>
                     <th className="px-4 py-3 text-right">成本/單位</th>
                     <th className="px-4 py-3 text-left">供應商</th>
                     <th className="px-4 py-3 text-center">渠道</th>
@@ -1084,6 +1361,17 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
                         </td>
                         <td className="px-4 py-3 text-xs font-bold text-slate-500">{cat ? `${cat.emoji} ${cat.name}` : ing.category || '—'}</td>
                         <td className="px-4 py-3 text-center text-xs font-bold text-slate-500">{ing.unit}</td>
+                        <td className="px-4 py-3 text-right">
+                          <span className={`font-black text-xs ${
+                            (ing.stockQty || 0) <= 0 ? 'text-slate-300' :
+                            ing.minStockAlert && (ing.stockQty || 0) <= ing.minStockAlert ? 'text-amber-600' : 'text-emerald-600'
+                          }`}>
+                            {(ing.stockQty || 0).toFixed(1)}
+                          </span>
+                          {ing.minStockAlert && (ing.stockQty || 0) <= ing.minStockAlert && (ing.stockQty || 0) > 0 && (
+                            <AlertTriangle size={10} className="inline ml-1 text-amber-500" />
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-right font-black text-slate-800">${ing.baseCostPerLb.toFixed(2)}</td>
                         <td className="px-4 py-3 text-xs font-bold text-slate-500">{ing.supplier || '—'}</td>
                         <td className="px-4 py-3 text-center">
@@ -1449,6 +1737,453 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
               <div className="px-5 py-3 border-t border-slate-100 text-[10px] font-bold text-slate-400">共 {filteredPOs.length} 筆訂單</div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {/* ── TAB: 收貨入倉 ── */}
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {subTab === 'goods_receiving' && (
+        <div className="space-y-4">
+          {grnView === 'list' ? (
+            <>
+              {/* Header */}
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="relative">
+                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input value={grnSearch} onChange={e => setGrnSearch(e.target.value)} placeholder="搜尋收貨單/供應商..." className="pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-blue-300 w-52" />
+                  </div>
+                  <select value={grnStatusFilter} onChange={e => setGrnStatusFilter(e.target.value)} className="px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold">
+                    <option value="all">所有狀態</option>
+                    {Object.entries(GRN_STATUS_MAP).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* Receivable POs section */}
+              {receivablePOs.length > 0 && (
+                <div className="bg-gradient-to-br from-blue-50 to-indigo-50 p-5 rounded-2xl border border-blue-100">
+                  <div className="flex items-center gap-2 mb-3">
+                    <ArrowDownToLine size={16} className="text-blue-600" />
+                    <h4 className="font-black text-sm text-blue-900">待收貨訂單</h4>
+                    <span className="px-2 py-0.5 bg-blue-600 text-white rounded-lg text-[10px] font-black">{receivablePOs.length}</span>
+                  </div>
+                  <div className="space-y-2">
+                    {receivablePOs.map(po => {
+                      const totalOrdered = po.lineItems.reduce((s, l) => s + l.qty, 0);
+                      const totalReceived = po.lineItems.reduce((s, l) => s + (l.receivedQty || 0), 0);
+                      const pct = totalOrdered > 0 ? Math.round((totalReceived / totalOrdered) * 100) : 0;
+                      return (
+                        <div key={po.id} className="bg-white rounded-xl p-4 flex items-center justify-between gap-4 shadow-sm border border-blue-50">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-black text-blue-600 text-xs">{po.poNumber}</span>
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-black ${PO_STATUS_MAP[po.status]?.color || ''}`}>
+                                {PO_STATUS_MAP[po.status]?.label || po.status}
+                              </span>
+                            </div>
+                            <p className="text-xs font-bold text-slate-600 mt-0.5">{po.supplierName}</p>
+                            <div className="flex items-center gap-3 mt-1.5">
+                              <span className="text-[10px] text-slate-400 font-bold">{po.lineItems.length} 項</span>
+                              <span className="text-[10px] text-slate-400 font-bold">預計 {po.expectedDelivery || '未定'}</span>
+                              <span className="text-[10px] text-slate-400 font-bold">${po.total.toFixed(2)}</span>
+                            </div>
+                            {pct > 0 && (
+                              <div className="mt-2 flex items-center gap-2">
+                                <div className="flex-1 bg-slate-100 rounded-full h-1.5">
+                                  <div className="bg-emerald-500 h-1.5 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                                </div>
+                                <span className="text-[10px] font-black text-slate-400">{pct}%</span>
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => startReceiving(po)}
+                            className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-black hover:bg-emerald-700 shadow-lg shrink-0"
+                          >
+                            <ClipboardCheck size={14} /> 點貨收貨
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* GRN history */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <History size={16} className="text-slate-400" />
+                  <h4 className="font-black text-sm text-slate-700">收貨記錄</h4>
+                </div>
+                {grnLoading ? (
+                  <div className="flex items-center justify-center py-20"><RefreshCw size={24} className="animate-spin text-slate-300" /></div>
+                ) : filteredGRNs.length === 0 ? (
+                  <div className="bg-white p-12 rounded-[2rem] border border-slate-100 shadow-sm text-center">
+                    <PackageCheck size={32} className="text-slate-200 mx-auto mb-3" />
+                    <p className="text-slate-400 font-bold">暫無收貨記錄</p>
+                    <p className="text-[10px] text-slate-300 mt-1">選擇上方待收貨訂單開始點貨</p>
+                  </div>
+                ) : (
+                  <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                          <th className="px-5 py-3 text-left">收貨單號</th>
+                          <th className="px-4 py-3 text-left">採購單</th>
+                          <th className="px-4 py-3 text-left">供應商</th>
+                          <th className="px-4 py-3 text-center">收貨日期</th>
+                          <th className="px-4 py-3 text-left">送貨單號</th>
+                          <th className="px-4 py-3 text-left">收貨人</th>
+                          <th className="px-4 py-3 text-center">狀態</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredGRNs.map(grn => (
+                          <tr key={grn.id} className="border-t border-slate-50 hover:bg-slate-50/50">
+                            <td className="px-5 py-3 font-black text-emerald-600 text-xs">{grn.grnNumber}</td>
+                            <td className="px-4 py-3 text-xs font-bold text-blue-600">{grn.poNumber || '—'}</td>
+                            <td className="px-4 py-3 text-xs font-bold text-slate-700">{grn.supplierName}</td>
+                            <td className="px-4 py-3 text-center text-xs font-bold text-slate-500">
+                              {grn.receivedAt ? new Date(grn.receivedAt).toLocaleDateString('zh-HK') : '—'}
+                            </td>
+                            <td className="px-4 py-3 text-xs font-bold text-slate-500">{grn.deliveryNoteNumber || '—'}</td>
+                            <td className="px-4 py-3 text-xs font-bold text-slate-500">{grn.receivedBy || '—'}</td>
+                            <td className="px-4 py-3 text-center">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-black ${GRN_STATUS_MAP[grn.status]?.color || 'bg-slate-100 text-slate-500'}`}>
+                                {GRN_STATUS_MAP[grn.status]?.label || grn.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div className="px-5 py-3 border-t border-slate-100 text-[10px] font-bold text-slate-400">共 {filteredGRNs.length} 筆記錄</div>
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            /* ── Receiving form (點貨) ── */
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <button onClick={() => { setGrnView('list'); setReceivingPO(null); }} className="p-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-400">
+                    <X size={16} />
+                  </button>
+                  <div>
+                    <h3 className="font-black text-lg">點貨收貨</h3>
+                    <p className="text-[10px] text-slate-400 font-bold">
+                      採購單 <span className="text-blue-600">{receivingPO?.poNumber}</span> — {receivingPO?.supplierName}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Receiving metadata */}
+              <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">供應商送貨單號</label>
+                    <input
+                      value={receivingMeta.deliveryNoteNumber}
+                      onChange={e => setReceivingMeta({ ...receivingMeta, deliveryNoteNumber: e.target.value })}
+                      placeholder="例：DN-2026-001"
+                      className="w-full px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-xs font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">收貨人</label>
+                    <input
+                      value={receivingMeta.receivedBy}
+                      onChange={e => setReceivingMeta({ ...receivingMeta, receivedBy: e.target.value })}
+                      placeholder="姓名"
+                      className="w-full px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-xs font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">備註</label>
+                    <input
+                      value={receivingMeta.notes}
+                      onChange={e => setReceivingMeta({ ...receivingMeta, notes: e.target.value })}
+                      placeholder="任何附加說明"
+                      className="w-full px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-xs font-bold"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Line items */}
+              <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                      <th className="px-5 py-3 text-left">品名</th>
+                      <th className="px-4 py-3 text-center">訂購量</th>
+                      <th className="px-4 py-3 text-center">已收量</th>
+                      <th className="px-4 py-3 text-center w-28">本次收貨</th>
+                      <th className="px-4 py-3 text-center w-24">退回數量</th>
+                      <th className="px-4 py-3 text-center">單位</th>
+                      <th className="px-4 py-3 text-right">單價</th>
+                      <th className="px-4 py-3 text-right">小計</th>
+                      <th className="px-4 py-3 text-left w-32">存放位置</th>
+                      <th className="px-4 py-3 text-left w-32">備註</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {receivingItems.map((item, idx) => {
+                      const poLine = receivingPO?.lineItems[idx];
+                      const prevReceived = poLine?.receivedQty || 0;
+                      const remaining = item.orderedQty - prevReceived;
+                      return (
+                        <tr key={idx} className="border-t border-slate-50">
+                          <td className="px-5 py-3">
+                            <p className="font-bold text-slate-800 text-xs">{item.productName}</p>
+                            {item.ingredientId && <p className="text-[10px] text-slate-400">ID: {item.ingredientId.slice(0, 8)}</p>}
+                          </td>
+                          <td className="px-4 py-3 text-center text-xs font-bold text-slate-500">{item.orderedQty}</td>
+                          <td className="px-4 py-3 text-center text-xs font-bold text-slate-400">{prevReceived}</td>
+                          <td className="px-4 py-3 text-center">
+                            <input
+                              type="number" min={0} max={remaining}
+                              value={item.receivedQty}
+                              onChange={e => {
+                                const val = Math.max(0, Number(e.target.value));
+                                const items = [...receivingItems];
+                                items[idx] = { ...items[idx], receivedQty: val };
+                                setReceivingItems(items);
+                              }}
+                              className={`w-20 px-2 py-1.5 text-center rounded-lg border text-xs font-black ${
+                                item.receivedQty > 0 ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50'
+                              }`}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <input
+                              type="number" min={0}
+                              value={item.rejectedQty}
+                              onChange={e => {
+                                const val = Math.max(0, Number(e.target.value));
+                                const items = [...receivingItems];
+                                items[idx] = { ...items[idx], rejectedQty: val };
+                                setReceivingItems(items);
+                              }}
+                              className={`w-16 px-2 py-1.5 text-center rounded-lg border text-xs font-black ${
+                                item.rejectedQty > 0 ? 'border-rose-300 bg-rose-50 text-rose-600' : 'border-slate-200 bg-slate-50'
+                              }`}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-center text-xs font-bold text-slate-500">{item.unit}</td>
+                          <td className="px-4 py-3 text-right text-xs font-bold text-slate-600">${item.unitCost.toFixed(2)}</td>
+                          <td className="px-4 py-3 text-right text-xs font-black text-slate-800">${(item.receivedQty * item.unitCost).toFixed(2)}</td>
+                          <td className="px-4 py-3">
+                            <input
+                              value={item.storageLocation}
+                              onChange={e => {
+                                const items = [...receivingItems];
+                                items[idx] = { ...items[idx], storageLocation: e.target.value };
+                                setReceivingItems(items);
+                              }}
+                              placeholder="倉位"
+                              className="w-full px-2 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs font-bold"
+                            />
+                          </td>
+                          <td className="px-4 py-3">
+                            <input
+                              value={item.notes}
+                              onChange={e => {
+                                const items = [...receivingItems];
+                                items[idx] = { ...items[idx], notes: e.target.value };
+                                setReceivingItems(items);
+                              }}
+                              placeholder="備註"
+                              className="w-full px-2 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs font-bold"
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div className="px-5 py-3 border-t border-slate-100 flex items-center justify-between">
+                  <div className="text-xs font-bold text-slate-500">
+                    合計：<span className="font-black text-slate-800">${receivingItems.reduce((s, i) => s + i.receivedQty * i.unitCost, 0).toFixed(2)}</span>
+                  </div>
+                  <div className="text-[10px] text-slate-400 font-bold">
+                    {receivingItems.filter(i => i.rejectedQty > 0).length > 0 && (
+                      <span className="text-rose-500">
+                        有 {receivingItems.filter(i => i.rejectedQty > 0).length} 項退回
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={() => { setGrnView('list'); setReceivingPO(null); }}
+                  className="px-6 py-2.5 border border-slate-200 rounded-xl text-sm font-black text-slate-500 hover:bg-slate-50"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleConfirmReceipt}
+                  disabled={grnSaving}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-black hover:bg-emerald-700 shadow-lg disabled:opacity-50"
+                >
+                  {grnSaving ? <RefreshCw size={14} className="animate-spin" /> : <Check size={14} />}
+                  確認收貨入倉
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {/* ── TAB: 加工方式 ── */}
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {subTab === 'processing_types' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-violet-50 text-violet-600 rounded-xl"><Scissors size={18} /></div>
+              <div>
+                <h4 className="font-black text-lg">加工方式管理</h4>
+                <p className="text-[10px] text-slate-400 font-bold">定義切片、切粒、切絲等加工方式及收費標準</p>
+              </div>
+            </div>
+            <button onClick={() => setEditingPT({ isNew: true, code: '', name: '', surchargePorkChicken: 1.5, surchargeBeefLambSeafood: 2.0, requiresRepackaging: true, defaultPackWeightLb: 5, sortOrder: processingTypes.length, isActive: true })} className="flex items-center gap-1.5 px-5 py-2.5 bg-violet-600 text-white rounded-xl text-sm font-black shadow-lg active:scale-95 transition-all">
+              <Plus size={16} /> 新增加工方式
+            </button>
+          </div>
+
+          <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+            {ptLoading ? (
+              <div className="flex items-center justify-center py-20"><RefreshCw size={20} className="animate-spin text-slate-300" /></div>
+            ) : processingTypes.length === 0 ? (
+              <div className="text-center py-20 text-slate-300 font-bold text-sm">尚未建立加工方式</div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
+                    <th className="text-left px-5 py-3">代碼</th>
+                    <th className="text-left px-4 py-3">名稱</th>
+                    <th className="text-left px-4 py-3">英文</th>
+                    <th className="text-left px-4 py-3">規格</th>
+                    <th className="text-right px-4 py-3">豬雞費/磅</th>
+                    <th className="text-right px-4 py-3">牛羊海鮮費/磅</th>
+                    <th className="text-center px-4 py-3">重包裝</th>
+                    <th className="text-right px-4 py-3">預設包裝(磅)</th>
+                    <th className="text-center px-4 py-3">狀態</th>
+                    <th className="text-right px-4 py-3 w-24">操作</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {processingTypes.map(pt => (
+                    <tr key={pt.id} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="px-5 py-3 font-mono text-xs font-bold text-violet-600">{pt.code}</td>
+                      <td className="px-4 py-3 font-black text-slate-800">{pt.name}</td>
+                      <td className="px-4 py-3 text-slate-500 text-xs">{pt.nameEn || '—'}</td>
+                      <td className="px-4 py-3 text-slate-500 text-xs">{pt.spec || '—'}</td>
+                      <td className="px-4 py-3 text-right font-bold text-amber-600">${pt.surchargePorkChicken.toFixed(1)}</td>
+                      <td className="px-4 py-3 text-right font-bold text-rose-600">${pt.surchargeBeefLambSeafood.toFixed(1)}</td>
+                      <td className="px-4 py-3 text-center">{pt.requiresRepackaging ? <Check size={14} className="text-emerald-500 mx-auto" /> : <span className="text-slate-300">—</span>}</td>
+                      <td className="px-4 py-3 text-right text-xs">{pt.defaultPackWeightLb ? `${pt.defaultPackWeightLb}磅` : '—'}</td>
+                      <td className="px-4 py-3 text-center">
+                        <span className={`px-2 py-0.5 rounded-md text-[10px] font-black ${pt.isActive ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>{pt.isActive ? '啟用' : '停用'}</span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <button onClick={() => setEditingPT({ ...pt, isNew: false })} className="p-1.5 text-slate-400 hover:bg-blue-50 hover:text-blue-600 rounded-lg transition-colors"><Edit size={14} /></button>
+                          <button onClick={() => handleDeleteProcessingType(pt)} className="p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-500 rounded-lg transition-colors"><Trash2 size={14} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="bg-violet-50/50 border border-violet-100 rounded-2xl p-4">
+            <p className="text-[10px] font-bold text-violet-500">
+              標準規格參考：扒 3分/4分厚 | 絲 6MM | 片 2MM / 4MM | 丁 6分×6分 | 粒 1吋×1吋
+            </p>
+            <p className="text-[10px] font-bold text-violet-400 mt-1">
+              加工費標準：豬雞 +$1.5/磅 | 牛羊海鮮 +$2.0/磅（可按需自訂）
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {/* ── MODAL: 編輯加工方式 ── */}
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {editingPT && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[9000] flex items-center justify-center p-4" onClick={() => setEditingPT(null)}>
+          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-lg max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-6 border-b border-slate-100">
+              <h3 className="text-lg font-black text-slate-900">{editingPT.isNew ? '新增加工方式' : '編輯加工方式'}</h3>
+              <button onClick={() => setEditingPT(null)} className="p-2 hover:bg-slate-100 rounded-xl"><X size={18} /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">代碼 (英文) *</label>
+                  <input value={editingPT.code || ''} onChange={e => setEditingPT({ ...editingPT, code: e.target.value.replace(/\s/g, '').toLowerCase() })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm font-mono" placeholder="例: slice" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">名稱 (中文) *</label>
+                  <input value={editingPT.name || ''} onChange={e => setEditingPT({ ...editingPT, name: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm" placeholder="例: 切片" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">英文名稱</label>
+                  <input value={editingPT.nameEn || ''} onChange={e => setEditingPT({ ...editingPT, nameEn: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm" placeholder="例: Sliced" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">規格描述</label>
+                  <input value={editingPT.spec || ''} onChange={e => setEditingPT({ ...editingPT, spec: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm" placeholder="例: 2MM / 4MM" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">豬雞 加工費/磅</label>
+                  <input type="number" step="0.1" min="0" value={editingPT.surchargePorkChicken ?? ''} onChange={e => setEditingPT({ ...editingPT, surchargePorkChicken: parseFloat(e.target.value) || 0 })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">牛羊海鮮 加工費/磅</label>
+                  <input type="number" step="0.1" min="0" value={editingPT.surchargeBeefLambSeafood ?? ''} onChange={e => setEditingPT({ ...editingPT, surchargeBeefLambSeafood: parseFloat(e.target.value) || 0 })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">預設包裝重量 (磅)</label>
+                  <input type="number" step="0.5" min="0" value={editingPT.defaultPackWeightLb ?? ''} onChange={e => setEditingPT({ ...editingPT, defaultPackWeightLb: parseFloat(e.target.value) || undefined })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm" placeholder="例: 5" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">排序</label>
+                  <input type="number" min="0" value={editingPT.sortOrder ?? 0} onChange={e => setEditingPT({ ...editingPT, sortOrder: parseInt(e.target.value) || 0 })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={editingPT.requiresRepackaging ?? true} onChange={e => setEditingPT({ ...editingPT, requiresRepackaging: e.target.checked })} className="w-4 h-4 rounded" />
+                    <span className="text-xs font-bold text-slate-600">需要重新包裝</span>
+                  </label>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={editingPT.isActive ?? true} onChange={e => setEditingPT({ ...editingPT, isActive: e.target.checked })} className="w-4 h-4 rounded" />
+                    <span className="text-xs font-bold text-slate-600">啟用</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 p-6 border-t border-slate-100">
+              <button onClick={() => setEditingPT(null)} className="px-6 py-2.5 border border-slate-200 rounded-xl text-sm font-black text-slate-500 hover:bg-slate-50">取消</button>
+              <button onClick={handleSaveProcessingType} disabled={ptSaving} className="flex items-center gap-2 px-6 py-2.5 bg-violet-600 text-white rounded-xl text-sm font-black hover:bg-violet-700 disabled:opacity-50">
+                {ptSaving ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />} 儲存
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

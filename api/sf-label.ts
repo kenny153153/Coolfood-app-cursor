@@ -89,13 +89,17 @@ async function callSfService(serviceCode: string, msgDataObj: object): Promise<{
 }
 
 export default async function handler(
-  req: { method?: string; body?: LabelPayload },
+  req: { method?: string; body?: LabelPayload; headers?: Record<string, string | string[] | undefined> },
   res: { setHeader: (k: string, v: string) => void; status: (n: number) => { json: (o: object) => void }; json: (o: object) => void }
 ) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  const { verifyAdminRequest } = await import('./_adminAuth');
+  const authResult = await verifyAdminRequest(req);
+  if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
   const body = req.body as LabelPayload;
   const orderId = body?.orderId;
