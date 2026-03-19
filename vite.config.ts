@@ -49,12 +49,14 @@ function localApiPlugin(envVars: Record<string, string>): Plugin {
 
         const vercelReq = { method: req.method, body, headers: req.headers };
         let responded = false;
+        const extraHeaders: Record<string, string> = {};
         const vercelRes = {
+          setHeader: (k: string, v: string) => { extraHeaders[k] = v; },
           status: (code: number) => ({
             json: (obj: any) => {
               if (responded) return;
               responded = true;
-              res.writeHead(code, { 'Content-Type': 'application/json' });
+              res.writeHead(code, { 'Content-Type': 'application/json', ...extraHeaders });
               res.end(JSON.stringify(obj));
             },
           }),

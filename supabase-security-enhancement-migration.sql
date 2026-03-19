@@ -1,10 +1,13 @@
 -- ============================================================
 -- Security Enhancement Migration
--- Inspired by C-F Enterprise Security System (Appendix F)
+-- ============================================================
+-- Prerequisites: admin-login, admin-session, admin-change-password
+-- API routes must be deployed BEFORE running this migration.
 -- ============================================================
 -- 1. Add security_level and must_change_password to members
--- 2. Lock down members table RLS
--- 3. Migrate boolean permissions to CRUD ModulePermission format
+-- 2. Lock down members table RLS (phased approach)
+-- 3. Create members_safe view for non-auth client reads
+-- 4. Migrate boolean permissions to CRUD ModulePermission format
 -- ============================================================
 
 -- ─── 1. Add new security columns to members ─────────────────
@@ -14,58 +17,66 @@ ALTER TABLE members
   ADD COLUMN IF NOT EXISTS must_change_password boolean DEFAULT false;
 
 COMMENT ON COLUMN members.security_level IS
-  'Staff hierarchy level (min 1). Higher-level staff can view lower-level staff records. Same-level cannot see each other.';
+  'Staff hierarchy level (min 1). Higher-level staff can view lower-level staff records.';
 COMMENT ON COLUMN members.must_change_password IS
   'When true, admin must change password on next login before accessing any module.';
 
--- Set super_admin to highest security level
 UPDATE members SET security_level = 10 WHERE role = 'super_admin' AND security_level = 1;
 UPDATE members SET security_level = 5  WHERE role = 'admin' AND security_level = 1;
 UPDATE members SET security_level = 3  WHERE role IN ('accountant', 'buyer') AND security_level = 1;
 UPDATE members SET security_level = 2  WHERE role NOT IN ('customer', 'super_admin', 'admin', 'accountant', 'buyer') AND role != 'customer' AND security_level = 1;
 
 -- ─── 2. Lock down members table RLS ─────────────────────────
+--
+-- Phase 1 (this migration):
+--   Admin login/session/password-change are now handled server-side
+--   via /api/admin-login, /api/admin-session, /api/admin-change-password
+--   which use the service_role key and bypass RLS.
+--
+--   Customer login and admin member-management still use the anon key
+--   client-side, so we keep SELECT/INSERT/UPDATE open for now but
+--   block DELETE to prevent accidental data loss.
+--
+-- Phase 2 (future):
+--   Move customer auth + admin member-management to server-side APIs,
+--   then restrict SELECT/UPDATE to own-row-only (see commented policies below).
 
--- Drop the overly permissive existing policy
 DROP POLICY IF EXISTS "Allow anonymous read and write" ON members;
+DROP POLICY IF EXISTS "members_self_read" ON members;
+DROP POLICY IF EXISTS "members_self_update" ON members;
+DROP POLICY IF EXISTS "members_service_insert" ON members;
+DROP POLICY IF EXISTS "members_no_delete" ON members;
 
--- Customers can only read/update their own record
-CREATE POLICY "members_self_read" ON members
-  FOR SELECT USING (
-    -- Service role bypasses (used by API routes)
-    auth.role() = 'service_role'
-    -- Anonymous/authenticated users can only see their own row
-    OR id::text = coalesce(
-      current_setting('request.headers', true)::json->>'x-member-id',
-      ''
-    )
-  );
+-- Allow reads (needed for customer login-by-phone, admin member listing)
+CREATE POLICY "members_select" ON members
+  FOR SELECT USING (true);
 
-CREATE POLICY "members_self_update" ON members
-  FOR UPDATE USING (
-    auth.role() = 'service_role'
-    OR id::text = coalesce(
-      current_setting('request.headers', true)::json->>'x-member-id',
-      ''
-    )
-  ) WITH CHECK (
-    auth.role() = 'service_role'
-    OR id::text = coalesce(
-      current_setting('request.headers', true)::json->>'x-member-id',
-      ''
-    )
-  );
+-- Allow inserts (needed for customer self-registration)
+CREATE POLICY "members_insert" ON members
+  FOR INSERT WITH CHECK (true);
 
--- Only service role can insert (registration goes through API)
-CREATE POLICY "members_service_insert" ON members
-  FOR INSERT WITH CHECK (
-    auth.role() = 'service_role'
-    OR true  -- Allow anon insert for self-registration
-  );
+-- Allow updates (needed for admin member-management via anon key)
+CREATE POLICY "members_update" ON members
+  FOR UPDATE USING (true) WITH CHECK (true);
 
--- Block all client-side deletes
+-- Block all client-side deletes — only service_role can delete
 CREATE POLICY "members_no_delete" ON members
   FOR DELETE USING (auth.role() = 'service_role');
+
+-- ── Phase 2 policies (uncomment after migrating customer auth server-side) ──
+-- CREATE POLICY "members_select_strict" ON members
+--   FOR SELECT USING (
+--     auth.role() = 'service_role'
+--     OR id::text = coalesce(current_setting('request.headers', true)::json->>'x-member-id', '')
+--   );
+-- CREATE POLICY "members_update_strict" ON members
+--   FOR UPDATE USING (
+--     auth.role() = 'service_role'
+--     OR id::text = coalesce(current_setting('request.headers', true)::json->>'x-member-id', '')
+--   ) WITH CHECK (
+--     auth.role() = 'service_role'
+--     OR id::text = coalesce(current_setting('request.headers', true)::json->>'x-member-id', '')
+--   );
 
 -- ─── 3. Create a view that hides sensitive fields from client ─
 
@@ -77,7 +88,7 @@ CREATE OR REPLACE VIEW members_safe AS
   FROM members;
 
 COMMENT ON VIEW members_safe IS
-  'Public-safe view of members that excludes password_hash, admin_permissions, and must_change_password.';
+  'Public-safe view of members — excludes password_hash, admin_permissions, must_change_password.';
 
 -- ─── 4. Migrate legacy boolean permissions to CRUD format ────
 -- This converts existing admin_permissions from:

@@ -79,6 +79,8 @@ export interface SupabaseRecipeProductLinkRow {
 
 export type SaleChannel = 'retail' | 'wholesale' | 'both';
 
+export type MaterialType = 'meat' | 'third_party';
+
 // ─── CRUD-level permission per module (Enterprise Security) ─────
 export type CrudOp = 'read' | 'create' | 'update' | 'delete' | 'export';
 
@@ -183,7 +185,8 @@ export interface Ingredient {
   marketBenchmark?: number; // 市場參考價
   unit: string;             // 'lb' | 'kg' | 'pc' etc.
   category?: string;        // 類別（如 牛肉、豬肉、海鮮）
-  saleChannel?: SaleChannel; // 渠道：retail / wholesale / both
+  materialType?: MaterialType; // 原材料分類: meat=肉類原材料, third_party=第三方產品
+  saleChannel?: SaleChannel; // @deprecated — 渠道由產品規格決定
   notes?: string;
   stockQty?: number;        // 庫存數量
   stockUnit?: string;       // 庫存單位（預設同 unit）
@@ -213,6 +216,7 @@ export interface SupabaseIngredientRow {
   market_benchmark?: number | null;
   unit: string;
   category?: string | null;
+  material_type?: string | null;
   sale_channel?: string | null;
   notes?: string | null;
   stock_qty?: number;
@@ -261,6 +265,7 @@ export interface Product {
   groupId?: string;           // FK → product_groups.id
   variantLabel?: string;      // 規格標籤 e.g. '原件', '切粒', '1kg'
   pricingMode?: PricingMode;  // 'fixed_pack' | 'by_piece' (抄碼)
+  processingSpec?: string;    // 選中的加工規格 e.g. '2MM', '500g'
 }
 
 export interface CartItem extends Product {
@@ -407,6 +412,7 @@ export interface SupabaseProductRow {
   group_id?: string | null;
   variant_label?: string | null;
   pricing_mode?: string | null;
+  processing_spec?: string | null;
 }
 
 /** Supabase public.categories table – column names must match (snake_case). */
@@ -890,11 +896,16 @@ export interface JournalEntryLine {
 export interface WholesaleOrderLine {
   productId?: string;
   productName: string;
+  groupId?: string;
+  groupName?: string;
+  specId?: string;
   qty: number;
   unit: string;
   unitPrice: number;
   discount: number;
   lineTotal: number;
+  pricingMode?: PricingMode;
+  actualWeight?: number;
   processingTypeId?: string;
   processingTypeName?: string;
   processingSpec?: string;

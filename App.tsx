@@ -890,6 +890,16 @@ const App: React.FC = () => {
 
   // Product Groups (產品群組)
   const [productGroups, setProductGroups] = useState<ProductGroup[]>([]);
+
+  interface WizardSpec {
+    variantLabel: string;
+    pricingMode: PricingMode;
+    processingTypeId?: string;
+    processingSpec?: string;
+    packSize: string;
+    price: number;
+  }
+
   const [newProductWizard, setNewProductWizard] = useState<{
     classification: ProductClassification | null;
     ingredientId: string;
@@ -897,6 +907,7 @@ const App: React.FC = () => {
     packSize: string;
     productName: string;
     variantLabel: string;
+    specs: WizardSpec[];
   } | null>(null);
   const [customUnits, setCustomUnits] = useState<{ id: string; label: string; value: string }[]>([]);
   const [selectedIngredientIds, setSelectedIngredientIds] = useState<Set<string>>(new Set());
@@ -1312,32 +1323,38 @@ const App: React.FC = () => {
     restoreUser();
   }, []);
 
-  // Load staff roles on admin route, then restore admin session
+  // Load staff roles on admin route, then restore admin session via server-side verification
   useEffect(() => {
     if (!isAdminRoute) return;
     const init = async () => {
       await loadStaffRoles();
       try {
         const saved = localStorage.getItem('coolfood_admin_session');
-        if (!saved) return;
+        const sessionToken = localStorage.getItem('coolfood_admin_session_token');
+        if (!saved || !sessionToken) return;
         const session = JSON.parse(saved) as AdminAccount;
         if (!session?.id || !session?.role) return;
-        const { data } = await supabase
-          .from('members')
-          .select('id, name, phone_number, role, admin_permissions, must_change_password')
-          .eq('id', session.id)
-          .neq('role', 'customer')
-          .maybeSingle();
-        if (!data) {
-          try { localStorage.removeItem('coolfood_admin_session'); } catch { /* ignore */ }
+        const res = await fetch('/api/admin-session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ adminId: session.id, sessionToken }),
+        });
+        if (!res.ok) {
+          try { localStorage.removeItem('coolfood_admin_session'); localStorage.removeItem('coolfood_admin_session_token'); } catch { /* ignore */ }
           return;
         }
-        const permissions = buildAdminPermissions(data.role, data.admin_permissions as Record<string, boolean | ModulePermission> | null);
-        const roleLabel = ADMIN_ROLE_LABELS[data.role as AdminRole] || data.role;
-        const admin: AdminAccount = { id: data.id, name: data.name, phone: data.phone_number, role: data.role as AdminRole, roleDisplayName: roleLabel, permissions, isActive: true };
+        const json = await res.json();
+        const serverAdmin = json.admin;
+        if (!serverAdmin) {
+          try { localStorage.removeItem('coolfood_admin_session'); localStorage.removeItem('coolfood_admin_session_token'); } catch { /* ignore */ }
+          return;
+        }
+        const permissions = buildAdminPermissions(serverAdmin.role, serverAdmin.permissions as Record<string, boolean | ModulePermission> | null);
+        const roleLabel = ADMIN_ROLE_LABELS[serverAdmin.role as AdminRole] || serverAdmin.role;
+        const admin: AdminAccount = { id: serverAdmin.id, name: serverAdmin.name, phone: serverAdmin.phone, role: serverAdmin.role as AdminRole, roleDisplayName: roleLabel, permissions, isActive: true };
         setAdminUser(admin);
         setIsAdminAuthenticated(true);
-        if ((data as any).must_change_password) setMustChangePassword(true);
+        if (serverAdmin.mustChangePassword) setMustChangePassword(true);
         try { localStorage.setItem('coolfood_admin_session', JSON.stringify(admin)); } catch { /* ignore */ }
       } catch { /* ignore */ }
     };
@@ -1501,32 +1518,37 @@ const App: React.FC = () => {
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const { data, error } = await supabase
-        .from('members')
-        .select('id, name, email, password_hash, phone_number, points, wallet_balance, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses, must_change_password')
-        .eq('phone_number', adminLoginForm.username)
-        .neq('role', 'customer')
-        .single();
-      if (error || !data) { showToast('帳號或密碼錯誤', 'error'); return; }
-      const ok = await verifyPassword(adminLoginForm.password, data.password_hash || '');
-      if (!ok) { showToast('帳號或密碼錯誤', 'error'); return; }
-      const permissions = buildAdminPermissions(data.role, data.admin_permissions as Record<string, boolean | ModulePermission> | null);
-      const roleLabel = ADMIN_ROLE_LABELS[data.role as AdminRole] || data.role;
+      const res = await fetch('/api/admin-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: adminLoginForm.username, password: adminLoginForm.password }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.admin) {
+        showToast(json.error || '帳號或密碼錯誤', 'error');
+        return;
+      }
+      const { admin: serverAdmin, sessionToken } = json;
+      const permissions = buildAdminPermissions(serverAdmin.role, serverAdmin.permissions as Record<string, boolean | ModulePermission> | null);
+      const roleLabel = ADMIN_ROLE_LABELS[serverAdmin.role as AdminRole] || serverAdmin.role;
       const admin: AdminAccount = {
-        id: data.id,
-        name: data.name,
-        phone: data.phone_number,
-        role: data.role as AdminRole,
+        id: serverAdmin.id,
+        name: serverAdmin.name,
+        phone: serverAdmin.phone,
+        role: serverAdmin.role as AdminRole,
         roleDisplayName: roleLabel,
         permissions,
         isActive: true,
       };
       setAdminUser(admin);
       setIsAdminAuthenticated(true);
-      if ((data as any).must_change_password) {
+      if (serverAdmin.mustChangePassword) {
         setMustChangePassword(true);
       }
-      try { localStorage.setItem('coolfood_admin_session', JSON.stringify(admin)); } catch { /* ignore */ }
+      try {
+        localStorage.setItem('coolfood_admin_session', JSON.stringify(admin));
+        localStorage.setItem('coolfood_admin_session_token', sessionToken);
+      } catch { /* ignore */ }
       showToast(`歡迎回來，${admin.name}！`);
     } catch {
       showToast('登入失敗，請稍後再試', 'error');
@@ -1542,12 +1564,17 @@ const App: React.FC = () => {
       showToast('兩次輸入的密碼不一致', 'error'); return;
     }
     try {
-      const newHash = await hashPassword(passwordChangeForm.newPassword);
-      const { error } = await supabase
-        .from('members')
-        .update({ password_hash: newHash, must_change_password: false })
-        .eq('id', adminUser.id);
-      if (error) { showToast(`更改密碼失敗：${error.message}`, 'error'); return; }
+      const sessionToken = localStorage.getItem('coolfood_admin_session_token') || '';
+      const res = await fetch('/api/admin-change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminId: adminUser.id, sessionToken, newPassword: passwordChangeForm.newPassword }),
+      });
+      const json = await res.json();
+      if (!res.ok) { showToast(json.error || '更改密碼失敗', 'error'); return; }
+      if (json.sessionToken) {
+        try { localStorage.setItem('coolfood_admin_session_token', json.sessionToken); } catch { /* ignore */ }
+      }
       setMustChangePassword(false);
       setPasswordChangeForm({ newPassword: '', confirmPassword: '' });
       showToast('密碼已更新！');
@@ -3428,63 +3455,38 @@ const App: React.FC = () => {
   };
 
   const downloadCSVTemplate = () => {
-    const headers = ['id', 'legacyId', 'name', 'nameEn', 'price', 'memberPrice', 'stock', 'saleChannel', 'productType', 'categories', 'tags', 'trackInventory', 'description', 'origin', 'weight', 'packSize', 'packWeightLb', 'costPrice', 'image', 'imageAlt', 'seoTitle', 'seoDescription'];
-    const sample1 = ['', 'OLD-101', '澳洲M5和牛肉眼', 'AU M5 Wagyu Ribeye', '350', '298', '10', 'both', 'raw_material', 'beef|wagyu', '急凍|牛扒', 'true', '頂級和牛肉眼扒', '澳洲', '300g', '', '', '280', '', '', '', ''];
-    const sample2 = ['', 'OLD-102', '安格斯牛扒（原塊）', 'Angus Steak Whole', '0', '', '20', 'wholesale', 'raw_material', 'beef', '牛扒|安格斯', 'true', '原塊安格斯牛扒', '美國', '', '5磅/包', '5', '95', '', '', '', ''];
-    const sample3 = ['', 'OLD-103', '急凍三文魚柳', 'Frozen Salmon Fillet', '0', '', '50', 'wholesale', 'standalone', 'fish', '三文魚|批發', 'true', '整件批發三文魚柳', '挪威', '1kg', '2磅/包', '2', '60', '', '', '', ''];
-    const sample4 = ['', 'OLD-104', '西冷牛扒（切片）', 'Sirloin Steak Sliced', '0', '', '', 'wholesale', 'processed', 'beef', '牛扒|切片', 'true', '切片西冷', '美國', '', '3磅/包', '3', '', '', '', '', ''];
+    const headers = ['groupName', 'variantLabel', 'pricingMode', 'price', 'saleChannel', 'productType', 'packSize', 'packWeightLb', 'categories', 'description', 'origin'];
+    const sample1 = ['牛柳頭', '原件抄碼', 'by_piece', '68', 'wholesale', 'raw_material', '', '', 'beef', '原件按磅計價', '澳洲'];
+    const sample2 = ['牛柳頭', '切絲 2MM 5kg', 'fixed_pack', '380', 'wholesale', 'raw_material', '5kg/包', '11', 'beef', '', ''];
+    const sample3 = ['牛柳頭', '切粒 300g', 'fixed_pack', '58', 'wholesale', 'raw_material', '300g/包', '0.66', 'beef', '', ''];
+    const sample4 = ['四海牛丸', '原包', 'fixed_pack', '45', 'wholesale', 'third_party', '1包', '', '', '第三方產品原包出售', ''];
+    const sample5 = ['四海牛丸', '分裝 500g', 'fixed_pack', '28', 'wholesale', 'third_party', '500g', '', '', '', ''];
     const instructions = [
       '# ═══════════════════════════════════════════════',
-      '# 產品批量上傳範本 — 使用說明',
+      '# 產品批量上傳範本 (新結構：產品→規格)',
       '# ═══════════════════════════════════════════════',
       '#',
-      '# ★ 必填欄位：name（名稱）',
-      '# ★ 售價可先填 0，之後由同事在系統內設定',
+      '# ★ 必填：groupName（產品名稱）、variantLabel（規格名稱）',
       '#',
-      '# ─── 各欄位說明 ───',
-      '# id            : 留空則自動生成（推薦新產品留空）；填寫則覆蓋更新同一 ID 的產品',
-      '# legacyId      : 舊系統產品編號（選填），方便對照舊系統',
-      '# name          : 產品名稱（必填）',
-      '# nameEn        : 英文名稱（選填）',
-      '# price         : 售價，數字，例如 350（可先填 0，之後再改）',
-      '# memberPrice   : 折扣價，留空或填 0 = 不設折扣',
-      '# stock         : 庫存數量，必須為整數（例如 10），trackInventory=false 時可留空',
-      '#',
-      '# saleChannel   : 銷售渠道（重要！）',
-      '#                  both     = 零售 + 批發',
-      '#                  retail   = 僅零售網店顯示',
-      '#                  wholesale= 僅批發網店顯示（進興批發用此值）',
-      '#',
-      '# productType   : 產品類型',
-      '#                  standalone   = 獨立商品（預設，兼容舊數據）',
-      '#                  raw_material = 原材料（原件/加工品）',
-      '#                  third_party  = 第三方產品（外購品牌）',
-      '#                  in_house     = 自製產品（醃製/醬料）',
-      '#                  processed    = 加工品（舊值，兼容用）',
-      '#',
-      '# categories    : 產品分類，多個用 | 分隔，例如: beef|wagyu',
-      '#                  可填分類名稱或分類 ID，系統會自動對應',
-      '# tags          : 搜尋標籤，多個用 | 分隔，例如: 牛扒|急凍',
-      '# trackInventory: 是否追蹤庫存，填 true 或 false（預設 true）',
-      '# description   : 產品描述文字（選填）',
-      '# origin        : 產地，例如：澳洲、美國、挪威（選填）',
-      '# weight        : 重量規格，例如：300g、1kg（選填）',
-      '# packSize      : 包裝規格描述，例如：5磅/包、10磅/箱（選填）',
-      '# packWeightLb  : 包裝重量（磅），數字，例如：5（選填）',
-      '# costPrice     : 買入成本/每磅成本，數字（選填，之後可改）',
-      '# image         : 產品圖片 URL（選填），留空則顯示預設 emoji',
-      '# imageAlt      : 圖片替代文字，有助 SEO（選填）',
-      '# seoTitle      : SEO 標題（選填）',
-      '# seoDescription: SEO 描述（選填）',
+      '# groupName     : 產品名稱，同名的行會自動歸入同一產品群組',
+      '# variantLabel   : 規格名稱，例如：原件抄碼、切絲 2MM 5kg、原包',
+      '# pricingMode   : fixed_pack=定裝（固定包裝） / by_piece=抄碼（按重量）',
+      '# price         : 售價（定裝=包裝價 / 抄碼=每磅/kg 價錢）',
+      '# saleChannel   : both=零售+批發 / retail=零售 / wholesale=批發',
+      '# productType   : raw_material=原材料 / third_party=第三方 / in_house=自製',
+      '# packSize      : 包裝規格，例如：5kg/包、300g、原箱',
+      '# packWeightLb  : 包裝重量（磅），數字',
+      '# categories    : 分類（多個用 | 分隔）',
+      '# description   : 描述（選填）',
+      '# origin        : 產地（選填）',
       '#',
       '# ─── 注意事項 ───',
       '# • 以 # 開頭的行為說明，匯入時會自動跳過',
-      '# • 相同 id 的產品會覆蓋更新（Upsert）',
-      '# • 加工方式 / 出成率 / 加工費等可之後在系統「產品詳情」內設定',
-      '# • 用 Excel 或 Google Sheets 開啟後，請存成 CSV 格式再上傳',
+      '# • 同一 groupName 的多行 = 同一產品的不同規格',
+      '# • 用 Excel / Google Sheets 開啟後，請存成 CSV 格式再上傳',
       '# ═══════════════════════════════════════════════',
     ];
-    const csvContent = [instructions.join('\n'), headers.join(','), sample1.join(','), sample2.join(','), sample3.join(','), sample4.join(',')].join('\n');
+    const csvContent = [instructions.join('\n'), headers.join(','), sample1.join(','), sample2.join(','), sample3.join(','), sample4.join(','), sample5.join(',')].join('\n');
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -3503,7 +3505,7 @@ const App: React.FC = () => {
         if (lines.length < 2) { showToast('CSV 格式錯誤：缺少標題列或資料列', 'error'); return; }
         const headers = lines[0].split(',').map(h => h.trim());
         const existingIds = new Set(products.map(p => p.id));
-        const numericFields = new Set(['price', 'memberPrice', 'costPrice', 'yieldRate', 'processingCost', 'packagingCost', 'miscCost', 'packWeightLb', 'purchaseLimit']);
+
         const catLookup = new Map<string, string>();
         categories.forEach(c => {
           catLookup.set(c.id.toLowerCase(), c.id);
@@ -3513,45 +3515,107 @@ const App: React.FC = () => {
           const lower = raw.toLowerCase();
           return catLookup.get(lower) || raw;
         };
-        const newProducts: Product[] = lines.slice(1).map(line => {
-          const values = line.split(',').map(v => v.trim());
-          const p: any = { tags: [], image: '🥩', recipes: [], categories: [], trackInventory: true, memberPrice: 0, stock: 0, price: 0 };
-          headers.forEach((h, i) => {
-            const val = values[i] || '';
-            if (h === 'categories') p.categories = val ? val.split('|').map((v: string) => resolveCategory(v.trim())).filter(Boolean) : [];
-            else if (h === 'tags') p.tags = val ? val.split('|').map((v: string) => v.trim()).filter(Boolean) : [];
-            else if (h === 'stock') p.stock = Math.round(Number(val) || 0);
-            else if (numericFields.has(h)) { if (val) p[h] = Number(val) || 0; }
-            else if (h === 'trackInventory') p[h] = val ? val.toLowerCase() === 'true' : true;
-            else if (h === 'costItemIds' || h === 'cost_item_ids') p.costItemIds = val ? val.split('|').map((v: string) => v.trim()).filter(Boolean) : [];
-            else if (h === 'legacyId' || h === 'legacy_id') { if (val) p.legacyId = val; }
-            else if (h === 'saleChannel' || h === 'sale_channel') {
-              const ch = val.toLowerCase();
-              p.saleChannel = (['retail', 'wholesale', 'both'].includes(ch) ? ch as SaleChannel : 'retail');
+
+        const isNewFormat = headers.includes('groupName');
+
+        if (isNewFormat) {
+          const groupMap = new Map<string, { group: ProductGroup; specs: Product[] }>();
+
+          for (let li = 1; li < lines.length; li++) {
+            const values = lines[li].split(',').map(v => v.trim());
+            const get = (h: string) => values[headers.indexOf(h)] || '';
+            const groupName = get('groupName');
+            if (!groupName) continue;
+
+            if (!groupMap.has(groupName)) {
+              const classification = (get('productType') || 'raw_material') as ProductClassification;
+              const existingGroup = productGroups.find(g => g.name === groupName);
+              const group: ProductGroup = existingGroup || {
+                id: crypto.randomUUID(),
+                name: groupName,
+                classification,
+                isActive: true,
+              };
+              groupMap.set(groupName, { group, specs: [] });
             }
-            else if (h === 'productType' || h === 'product_type') {
-              const pt = val.toLowerCase();
-              if (['standalone', 'processed', 'raw_material', 'in_house', 'third_party'].includes(pt)) p.productType = pt;
-            }
-            else if (h === 'nameEn' || h === 'name_en') { if (val) p.nameEn = val; }
-            else if (val) p[h] = val;
-          });
-          if (!p.id || p.id === '') {
+
+            const entry = groupMap.get(groupName)!;
             let autoId = 'P-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
             while (existingIds.has(autoId)) autoId = 'P-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
-            p.id = autoId;
             existingIds.add(autoId);
+
+            const varLabel = get('variantLabel') || '原件';
+            const ch = get('saleChannel').toLowerCase();
+            const cats = get('categories') ? get('categories').split('|').map(c => resolveCategory(c.trim())).filter(Boolean) : [];
+
+            const spec: Product = {
+              id: autoId,
+              name: `${groupName} ${varLabel}`,
+              categories: cats,
+              price: Number(get('price')) || 0,
+              memberPrice: 0,
+              stock: 0,
+              trackInventory: true,
+              tags: [],
+              image: entry.group.classification === 'third_party' ? '📦' : '🥩',
+              saleChannel: (['retail', 'wholesale', 'both'].includes(ch) ? ch : 'wholesale') as SaleChannel,
+              productType: (get('productType') || 'raw_material') as ProductType,
+              groupId: entry.group.id,
+              variantLabel: varLabel,
+              pricingMode: (get('pricingMode') === 'by_piece' ? 'by_piece' : 'fixed_pack') as PricingMode,
+              packSize: get('packSize') || undefined,
+              packWeightLb: Number(get('packWeightLb')) || undefined,
+              description: get('description') || undefined,
+              origin: get('origin') || undefined,
+            };
+            entry.specs.push(spec);
           }
-          return p as Product;
-        });
-        const unmatchedCats = new Set<string>();
-        newProducts.forEach(p => p.categories.forEach(c => {
-          if (!categories.some(cat => cat.id === c)) unmatchedCats.add(c);
-        }));
-        const success = await upsertProducts(newProducts);
-        if (success) {
-          const warn = unmatchedCats.size > 0 ? `\n⚠️ 未匹配分類：${[...unmatchedCats].join(', ')}` : '';
-          showToast(`成功批量上傳 ${newProducts.length} 個產品${warn}`);
+
+          let groupCount = 0;
+          let specCount = 0;
+          for (const { group, specs } of groupMap.values()) {
+            const existingGroup = productGroups.find(g => g.id === group.id);
+            if (!existingGroup) {
+              await upsertProductGroup(group);
+            }
+            groupCount++;
+            const success = await upsertProducts(specs);
+            if (success) specCount += specs.length;
+          }
+          showToast(`成功匯入 ${groupCount} 個產品、${specCount} 款規格`);
+        } else {
+          const numericFields = new Set(['price', 'memberPrice', 'costPrice', 'yieldRate', 'processingCost', 'packagingCost', 'miscCost', 'packWeightLb', 'purchaseLimit']);
+          const newProducts: Product[] = lines.slice(1).map(line => {
+            const values = line.split(',').map(v => v.trim());
+            const p: any = { tags: [], image: '🥩', recipes: [], categories: [], trackInventory: true, memberPrice: 0, stock: 0, price: 0 };
+            headers.forEach((h, i) => {
+              const val = values[i] || '';
+              if (h === 'categories') p.categories = val ? val.split('|').map((v: string) => resolveCategory(v.trim())).filter(Boolean) : [];
+              else if (h === 'tags') p.tags = val ? val.split('|').map((v: string) => v.trim()).filter(Boolean) : [];
+              else if (h === 'stock') p.stock = Math.round(Number(val) || 0);
+              else if (numericFields.has(h)) { if (val) p[h] = Number(val) || 0; }
+              else if (h === 'trackInventory') p[h] = val ? val.toLowerCase() === 'true' : true;
+              else if (h === 'saleChannel' || h === 'sale_channel') {
+                const ch = val.toLowerCase();
+                p.saleChannel = (['retail', 'wholesale', 'both'].includes(ch) ? ch as SaleChannel : 'retail');
+              }
+              else if (h === 'productType' || h === 'product_type') {
+                const pt = val.toLowerCase();
+                if (['standalone', 'processed', 'raw_material', 'in_house', 'third_party'].includes(pt)) p.productType = pt;
+              }
+              else if (h === 'nameEn' || h === 'name_en') { if (val) p.nameEn = val; }
+              else if (val) p[h] = val;
+            });
+            if (!p.id || p.id === '') {
+              let autoId = 'P-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+              while (existingIds.has(autoId)) autoId = 'P-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+              p.id = autoId;
+              existingIds.add(autoId);
+            }
+            return p as Product;
+          });
+          const success = await upsertProducts(newProducts);
+          if (success) showToast(`成功批量上傳 ${newProducts.length} 個產品（舊格式）`);
         }
       };
       reader.readAsText(file);
@@ -3587,6 +3651,47 @@ const App: React.FC = () => {
       return true;
     });
   }, [products, adminProductSearch, effectiveInventoryChannel]);
+
+  const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
+
+  interface GroupedProduct {
+    group: ProductGroup;
+    specs: Product[];
+    ingredientName?: string;
+  }
+
+  const groupedProducts = useMemo((): GroupedProduct[] => {
+    const grouped: GroupedProduct[] = [];
+    const usedProductIds = new Set<string>();
+
+    for (const g of productGroups) {
+      const specs = filteredAdminProducts.filter(p => p.groupId === g.id);
+      if (specs.length === 0) continue;
+      specs.forEach(s => usedProductIds.add(s.id));
+      const ing = g.ingredientId ? ingredients.find(i => i.id === g.ingredientId) : undefined;
+      grouped.push({ group: g, specs, ingredientName: ing?.name });
+    }
+
+    const ungrouped = filteredAdminProducts.filter(p => !usedProductIds.has(p.id));
+    if (ungrouped.length > 0) {
+      for (const p of ungrouped) {
+        grouped.push({
+          group: { id: `_ungrouped_${p.id}`, name: p.name, classification: (p.productType === 'third_party' ? 'third_party' : p.productType === 'in_house' ? 'in_house' : 'raw_material') as ProductClassification, isActive: true },
+          specs: [p],
+        });
+      }
+    }
+
+    return grouped;
+  }, [filteredAdminProducts, productGroups, ingredients]);
+
+  const toggleGroupExpand = (groupId: string) => {
+    setExpandedGroupIds(prev => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId); else next.add(groupId);
+      return next;
+    });
+  };
 
   const filteredStoreProducts = useMemo(() => {
     const channelFiltered = products.filter(p => {
@@ -3738,7 +3843,7 @@ const App: React.FC = () => {
               }} className="px-6 py-3 bg-purple-600 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-sm hover:bg-purple-700 transition-all disabled:opacity-50">
                 {aiDescLoading ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />} AI 批量寫描述
               </button>
-              <button onClick={() => setNewProductWizard({ classification: null, ingredientId: '', pricingMode: 'fixed_pack', packSize: '', productName: '', variantLabel: '' })} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 transition-all">
+              <button onClick={() => setNewProductWizard({ classification: null, ingredientId: '', pricingMode: 'fixed_pack', packSize: '', productName: '', variantLabel: '', specs: [] })} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 transition-all">
                 <Plus size={16}/> 上架新產品
               </button>
             </div>
@@ -3784,99 +3889,176 @@ const App: React.FC = () => {
                   <tr>
                     <th className="text-center px-3 py-4 w-10">
                       <button onClick={() => {
-                        if (selectedProductIds.size === filteredAdminProducts.length && filteredAdminProducts.length > 0) setSelectedProductIds(new Set());
-                        else setSelectedProductIds(new Set(filteredAdminProducts.map(p => p.id)));
+                        const allIds = filteredAdminProducts.map(p => p.id);
+                        if (selectedProductIds.size === allIds.length && allIds.length > 0) setSelectedProductIds(new Set());
+                        else setSelectedProductIds(new Set(allIds));
                       }} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${selectedProductIds.size === filteredAdminProducts.length && filteredAdminProducts.length > 0 ? 'border-blue-500 bg-blue-500 text-white' : 'border-slate-200 bg-white'}`}>
                         {selectedProductIds.size === filteredAdminProducts.length && filteredAdminProducts.length > 0 && <Check size={12} strokeWidth={3}/>}
                       </button>
                     </th>
-                    <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">產品</th>
-                    <th className="px-4 py-4 font-bold text-slate-400 uppercase text-[10px]">ID (舊)</th>
-                    <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">分類</th>
+                    <th className="px-3 py-4 w-8"></th>
+                    <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">產品 / 規格</th>
+                    <th className="px-4 py-4 font-bold text-slate-400 uppercase text-[10px]">原材料</th>
+                    <th className="px-4 py-4 font-bold text-slate-400 uppercase text-[10px]">規格數</th>
                     <th className="px-4 py-4 font-bold text-slate-400 uppercase text-[10px]">銷售渠道</th>
-                    <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">庫存</th>
                     <th className="px-6 py-4 font-bold text-slate-400 uppercase text-[10px]">操作</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
-                  {filteredAdminProducts.length === 0 && (
+                  {groupedProducts.length === 0 && (
                     <tr>
                       <td colSpan={7} className="px-6 py-10 text-center text-slate-400 font-bold">
                         尚未有產品
                       </td>
                     </tr>
                   )}
-                  {filteredAdminProducts.map(p => {
-                    const isSelected = selectedProductIds.has(p.id);
+                  {groupedProducts.map(({ group: g, specs, ingredientName }) => {
+                    const isExpanded = expandedGroupIds.has(g.id);
+                    const allSpecIds = specs.map(s => s.id);
+                    const allSelected = allSpecIds.every(id => selectedProductIds.has(id));
+                    const someSelected = allSpecIds.some(id => selectedProductIds.has(id));
+                    const classIcon = g.classification === 'raw_material' ? '🥩' : g.classification === 'third_party' ? '📦' : '🏭';
+                    const classLabel = g.classification === 'raw_material' ? '原材料' : g.classification === 'third_party' ? '第三方' : '自製';
+                    const firstSpec = specs[0];
                     return (
-                    <tr key={p.id} className={`hover:bg-slate-50 transition-colors ${isSelected ? 'bg-blue-50/40' : ''}`}>
-                      <td className="text-center px-3 py-4">
-                        <button onClick={() => setSelectedProductIds(prev => {
-                          const next = new Set(prev);
-                          if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
-                          return next;
-                        })} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${isSelected ? 'border-blue-500 bg-blue-500 text-white' : 'border-slate-200 bg-white'}`}>
-                          {isSelected && <Check size={12} strokeWidth={3}/>}
-                        </button>
-                      </td>
-                      <td className="px-6 py-4 flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-lg overflow-hidden flex items-center justify-center bg-slate-50 border border-slate-100">
-                          {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-xl">{p.image}</span>}
-                        </div>
-                        <div className="flex flex-col">
-                           <span className="font-bold text-slate-800">{p.name}</span>
-                           <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">${p.price}{p.memberPrice > 0 && p.memberPrice < p.price ? ` / 折扣: $${p.memberPrice}` : ''}</span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-4">
-                        {p.legacyId ? <span className="px-2 py-0.5 bg-amber-50 text-amber-700 rounded-md text-[9px] font-black font-mono">{p.legacyId}</span> : <span className="text-slate-200 text-[10px]">—</span>}
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex flex-wrap gap-1">
-                          {p.categories.map(cid => (
-                            <span key={cid} className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-md text-[9px] font-black uppercase">
-                              {categories.find(c => c.id === cid)?.name || cid}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="px-4 py-4">
-                        <select
-                          value={p.saleChannel || 'retail'}
-                          onChange={async e => {
-                            const ch = e.target.value as SaleChannel;
-                            const { error } = await supabase.from('products').update({ sale_channel: ch }).eq('id', p.id);
-                            if (error) { showToast(`更新失敗：${error.message}`, 'error'); return; }
-                            setProducts(prev => prev.map(x => x.id === p.id ? { ...x, saleChannel: ch } : x));
-                          }}
-                          className={`px-2.5 py-1 rounded-full text-[10px] font-bold border-0 cursor-pointer focus:ring-2 outline-none ${p.saleChannel === 'retail' ? 'bg-blue-50 text-blue-600 focus:ring-blue-300' : p.saleChannel === 'wholesale' ? 'bg-orange-50 text-orange-600 focus:ring-orange-300' : 'bg-emerald-50 text-emerald-600 focus:ring-emerald-300'}`}
-                        >
-                          <option value="both">零售+批發</option>
-                          <option value="retail">僅零售</option>
-                          <option value="wholesale">僅批發</option>
-                        </select>
-                      </td>
-                      <td className="px-6 py-4">
-                        {p.trackInventory ? (
-                          <span className={`px-2 py-1 rounded-full text-[10px] font-black ${p.stock < 10 ? 'bg-rose-50 text-rose-600' : 'bg-slate-100 text-slate-500'}`}>{p.stock} 件</span>
-                        ) : (
-                          <span className="text-slate-300 italic font-bold text-[10px]">無限量</span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 flex gap-2">
-                        <button onClick={() => setEditingProduct(p)} className="p-2 text-blue-500 hover:bg-blue-50 rounded-lg"><Edit size={16}/></button>
-                        <button
-                          onClick={() => setConfirmation({
-                            title: '刪除產品',
-                            message: `確定刪除 ${p.name} 嗎？此操作無法復原。`,
-                            onConfirm: () => deleteProduct(p.id)
-                          })}
-                          className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg"
-                        >
-                          <Trash2 size={16}/>
-                        </button>
-                      </td>
-                    </tr>
+                    <React.Fragment key={g.id}>
+                      <tr className={`hover:bg-slate-50/80 transition-colors cursor-pointer ${someSelected ? 'bg-blue-50/30' : ''}`} onClick={() => toggleGroupExpand(g.id)}>
+                        <td className="text-center px-3 py-4" onClick={e => e.stopPropagation()}>
+                          <button onClick={() => {
+                            setSelectedProductIds(prev => {
+                              const next = new Set(prev);
+                              if (allSelected) allSpecIds.forEach(id => next.delete(id));
+                              else allSpecIds.forEach(id => next.add(id));
+                              return next;
+                            });
+                          }} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${allSelected ? 'border-blue-500 bg-blue-500 text-white' : someSelected ? 'border-blue-300 bg-blue-100' : 'border-slate-200 bg-white'}`}>
+                            {allSelected && <Check size={12} strokeWidth={3}/>}
+                            {someSelected && !allSelected && <Minus size={10} strokeWidth={3} className="text-blue-500"/>}
+                          </button>
+                        </td>
+                        <td className="px-3 py-4">
+                          <ChevronRight size={14} className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-lg overflow-hidden flex items-center justify-center bg-slate-50 border border-slate-100">
+                              {g.image && isMediaUrl(g.image) ? <img src={g.image} className="w-full h-full object-cover" alt="" /> : firstSpec?.image && isMediaUrl(firstSpec.image) ? <img src={firstSpec.image} className="w-full h-full object-cover" alt="" /> : <span className="text-xl">{classIcon}</span>}
+                            </div>
+                            <div className="flex flex-col">
+                              <span className="font-black text-slate-800">{g.name}</span>
+                              <span className="text-[9px] font-bold text-slate-400 flex items-center gap-1">
+                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-black ${g.classification === 'raw_material' ? 'bg-rose-50 text-rose-600' : g.classification === 'third_party' ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-600'}`}>{classLabel}</span>
+                              </span>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-4">
+                          {ingredientName ? <span className="text-xs font-bold text-slate-600">{ingredientName}</span> : <span className="text-slate-200 text-[10px]">—</span>}
+                        </td>
+                        <td className="px-4 py-4">
+                          <span className="px-2.5 py-1 bg-violet-50 text-violet-600 rounded-full text-[10px] font-black">{specs.length} 款規格</span>
+                        </td>
+                        <td className="px-4 py-4">
+                          {(() => {
+                            const channels = new Set(specs.map(s => s.saleChannel || 'retail'));
+                            if (channels.has('both') || (channels.has('retail') && channels.has('wholesale'))) return <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded-full text-[10px] font-bold">零售+批發</span>;
+                            if (channels.has('wholesale')) return <span className="px-2 py-0.5 bg-orange-50 text-orange-600 rounded-full text-[10px] font-bold">批發</span>;
+                            return <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full text-[10px] font-bold">零售</span>;
+                          })()}
+                        </td>
+                        <td className="px-6 py-4" onClick={e => e.stopPropagation()}>
+                          <div className="flex gap-1">
+                            <button onClick={() => {
+                              const group = productGroups.find(pg => pg.id === g.id);
+                              if (!group) return;
+                              const newVariant: Product = {
+                                id: 'P-' + Date.now(),
+                                name: g.name,
+                                categories: firstSpec?.categories || [],
+                                price: 0, memberPrice: 0, stock: 0, trackInventory: true,
+                                tags: firstSpec?.tags || [], image: firstSpec?.image || classIcon,
+                                saleChannel: firstSpec?.saleChannel || 'wholesale',
+                                productType: firstSpec?.productType || 'raw_material',
+                                groupId: g.id,
+                                parentIngredientId: firstSpec?.parentIngredientId,
+                                ingredientId: firstSpec?.ingredientId,
+                                variantLabel: '', pricingMode: 'fixed_pack',
+                              };
+                              setEditingProduct(newVariant);
+                            }} className="p-1.5 text-violet-500 hover:bg-violet-50 rounded-lg" title="新增規格"><Plus size={14}/></button>
+                            <button onClick={() => { if (firstSpec) setEditingProduct(firstSpec); }} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded-lg" title="編輯"><Edit size={14}/></button>
+                            <button onClick={async () => {
+                              if (!confirm(`確定刪除「${g.name}」及其所有 ${specs.length} 款規格？此操作無法復原。`)) return;
+                              const ids = specs.map(s => s.id);
+                              try {
+                                const { error: pErr } = await supabase.from('products').delete().in('id', ids);
+                                if (pErr) throw pErr;
+                                if (!g.id.startsWith('_ungrouped_')) {
+                                  await supabase.from('product_groups').delete().eq('id', g.id);
+                                  setProductGroups(prev => prev.filter(pg => pg.id !== g.id));
+                                }
+                                setProducts(prev => prev.filter(p => !ids.includes(p.id)));
+                                showToast(`已刪除「${g.name}」及 ${ids.length} 款規格`);
+                              } catch (err: any) { showToast(`刪除失敗：${err.message}`, 'error'); }
+                            }} className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg" title="刪除全部"><Trash2 size={14}/></button>
+                          </div>
+                        </td>
+                      </tr>
+                      {isExpanded && specs.map(spec => {
+                        const isSelected = selectedProductIds.has(spec.id);
+                        const pt = spec.processingTypeId ? processingTypes.find(t => t.id === spec.processingTypeId) : null;
+                        const pricingLabel = spec.pricingMode === 'by_piece' ? '🏷️ 抄碼' : '📦 定裝';
+                        return (
+                          <tr key={spec.id} className={`bg-slate-50/40 hover:bg-slate-50 transition-colors ${isSelected ? 'bg-blue-50/40' : ''}`}>
+                            <td className="text-center px-3 py-3">
+                              <button onClick={() => setSelectedProductIds(prev => {
+                                const next = new Set(prev);
+                                if (next.has(spec.id)) next.delete(spec.id); else next.add(spec.id);
+                                return next;
+                              })} className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all mx-auto ${isSelected ? 'border-blue-500 bg-blue-500 text-white' : 'border-slate-200 bg-white'}`}>
+                                {isSelected && <Check size={10} strokeWidth={3}/>}
+                              </button>
+                            </td>
+                            <td className="px-3 py-3"><div className="w-px h-4 bg-slate-200 ml-1.5" /></td>
+                            <td className="px-6 py-3">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-slate-700">{spec.variantLabel || spec.name}</span>
+                                {pt && <span className="px-1.5 py-0.5 bg-violet-50 text-violet-600 rounded text-[9px] font-bold">{pt.name}</span>}
+                                {spec.processingSpec && <span className="px-1.5 py-0.5 bg-amber-50 text-amber-600 rounded text-[9px] font-bold">{spec.processingSpec}</span>}
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${spec.pricingMode === 'by_piece' ? 'bg-pink-50 text-pink-600' : 'bg-slate-100 text-slate-500'}`}>{pricingLabel}</span>
+                                {spec.packSize && <span className="text-[9px] text-slate-400 font-bold">{spec.packSize}</span>}
+                                <span className="text-[10px] font-black text-slate-800 ml-auto">${spec.price}{spec.pricingMode === 'by_piece' ? `/${spec.weight || '磅'}` : ''}</span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3"></td>
+                            <td className="px-4 py-3"></td>
+                            <td className="px-4 py-3">
+                              <select
+                                value={spec.saleChannel || 'retail'}
+                                onChange={async e => {
+                                  const ch = e.target.value as SaleChannel;
+                                  const { error } = await supabase.from('products').update({ sale_channel: ch }).eq('id', spec.id);
+                                  if (error) { showToast(`更新失敗：${error.message}`, 'error'); return; }
+                                  setProducts(prev => prev.map(x => x.id === spec.id ? { ...x, saleChannel: ch } : x));
+                                }}
+                                onClick={e => e.stopPropagation()}
+                                className={`px-2 py-0.5 rounded-full text-[9px] font-bold border-0 cursor-pointer outline-none ${spec.saleChannel === 'retail' ? 'bg-blue-50 text-blue-600' : spec.saleChannel === 'wholesale' ? 'bg-orange-50 text-orange-600' : 'bg-emerald-50 text-emerald-600'}`}
+                              >
+                                <option value="both">零售+批發</option>
+                                <option value="retail">僅零售</option>
+                                <option value="wholesale">僅批發</option>
+                              </select>
+                            </td>
+                            <td className="px-6 py-3">
+                              <div className="flex gap-1">
+                                <button onClick={() => setEditingProduct(spec)} className="p-1 text-blue-500 hover:bg-blue-50 rounded"><Edit size={13}/></button>
+                                <button onClick={() => setConfirmation({ title: '刪除規格', message: `確定刪除「${spec.variantLabel || spec.name}」？`, onConfirm: () => deleteProduct(spec.id) })} className="p-1 text-rose-500 hover:bg-rose-50 rounded"><Trash2 size={13}/></button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
                     );
                   })}
                 </tbody>
@@ -7361,107 +7543,148 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* ── New Product Wizard (classification picker + setup) ── */}
+      {/* ── New Product Wizard (classification picker + multi-spec setup) ── */}
       {newProductWizard && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[6000] flex items-center justify-center p-6 animate-fade-in">
-          <div className="bg-white w-full max-w-2xl rounded-[3rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-scale-up">
+          <div className="bg-white w-full max-w-3xl rounded-[3rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-scale-up">
             <div className="p-8 border-b border-slate-50 flex justify-between items-center bg-slate-900 text-white">
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center"><Plus size={22}/></div>
                 <div>
                   <h4 className="text-2xl font-black tracking-tight">新增產品</h4>
-                  <p className="text-[10px] font-bold text-white/40 uppercase tracking-[0.2em]">選擇產品類型</p>
+                  <p className="text-[10px] font-bold text-white/40 uppercase tracking-[0.2em]">產品 → 規格 (可多款)</p>
                 </div>
               </div>
               <button onClick={() => setNewProductWizard(null)} className="p-3 bg-white/10 rounded-full hover:bg-white/20 transition-all text-white"><X size={20}/></button>
             </div>
-            <div className="flex-1 overflow-y-auto p-10 space-y-6">
-              {/* Classification picker */}
+            <div className="flex-1 overflow-y-auto p-8 space-y-6">
+              {/* Step 1: Classification */}
               <div className="grid grid-cols-3 gap-4">
                 {([
-                  { key: 'raw_material' as ProductClassification, icon: '🥩', label: '原材料', desc: '肉類、海鮮等，可設定加工方式（原件/切粒/切條…）' },
-                  { key: 'third_party' as ProductClassification, icon: '📦', label: '第三方產品', desc: '外購品牌（如丸類），按包裝規格分規格' },
+                  { key: 'raw_material' as ProductClassification, icon: '🥩', label: '原材料', desc: '肉類、海鮮等，可設定加工方式' },
+                  { key: 'third_party' as ProductClassification, icon: '📦', label: '第三方產品', desc: '外購品牌（如丸類），可分裝' },
                   { key: 'in_house' as ProductClassification, icon: '🏭', label: '自製產品', desc: '自家醃製、醬料等' },
                 ]).map(opt => (
                   <button
                     key={opt.key}
-                    onClick={() => setNewProductWizard(w => w ? { ...w, classification: opt.key } : w)}
-                    className={`p-5 rounded-2xl border-2 text-left transition-all ${
-                      newProductWizard.classification === opt.key
-                        ? 'border-violet-500 bg-violet-50 shadow-lg shadow-violet-100'
-                        : 'border-slate-200 bg-white hover:border-violet-300 hover:bg-violet-50/30'
-                    }`}
+                    onClick={() => setNewProductWizard(w => w ? { ...w, classification: opt.key, specs: [] } : w)}
+                    className={`p-4 rounded-2xl border-2 text-left transition-all ${newProductWizard.classification === opt.key ? 'border-violet-500 bg-violet-50 shadow-lg shadow-violet-100' : 'border-slate-200 bg-white hover:border-violet-300'}`}
                   >
-                    <div className="text-3xl mb-2">{opt.icon}</div>
+                    <div className="text-2xl mb-1">{opt.icon}</div>
                     <div className="text-sm font-black text-slate-800">{opt.label}</div>
-                    <div className="text-[10px] text-slate-400 font-bold mt-1 leading-relaxed">{opt.desc}</div>
+                    <div className="text-[9px] text-slate-400 font-bold mt-0.5">{opt.desc}</div>
                   </button>
                 ))}
               </div>
 
-              {/* Classification-specific fields */}
-              {newProductWizard.classification === 'raw_material' && (
-                <div className="space-y-4 p-5 bg-orange-50/50 rounded-2xl border border-orange-100">
-                  <h5 className="text-xs font-black text-orange-700">原材料設定</h5>
+              {/* Step 2: Product name + raw material link */}
+              {newProductWizard.classification && (
+                <div className="space-y-4 p-5 bg-slate-50/80 rounded-2xl border border-slate-200">
+                  <h5 className="text-xs font-black text-slate-700">產品基本資料</h5>
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1 col-span-2">
-                      <label className="text-[9px] font-bold text-slate-500 ml-1">選擇原材料 *</label>
-                      <select value={newProductWizard.ingredientId} onChange={e => setNewProductWizard(w => w ? { ...w, ingredientId: e.target.value, productName: ingredients.find(i => i.id === e.target.value)?.name || '' } : w)} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-200">
-                        <option value="">— 選擇原材料 —</option>
-                        {ingredientCategories.map(cat => {
-                          const catIngs = ingredients.filter(i => i.category === cat);
-                          if (catIngs.length === 0) return null;
-                          return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>;
-                        })}
-                        {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>}
-                      </select>
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-slate-500 ml-1">計價方式</label>
-                      <div className="flex gap-2">
-                        <button onClick={() => setNewProductWizard(w => w ? { ...w, pricingMode: 'fixed_pack' } : w)} className={`flex-1 p-2.5 rounded-xl text-xs font-black border-2 transition-all ${newProductWizard.pricingMode === 'fixed_pack' ? 'border-orange-500 bg-orange-100 text-orange-700' : 'border-slate-200 bg-white text-slate-500'}`}>
-                          📦 定裝
-                        </button>
-                        <button onClick={() => setNewProductWizard(w => w ? { ...w, pricingMode: 'by_piece', variantLabel: '原件' } : w)} className={`flex-1 p-2.5 rounded-xl text-xs font-black border-2 transition-all ${newProductWizard.pricingMode === 'by_piece' ? 'border-orange-500 bg-orange-100 text-orange-700' : 'border-slate-200 bg-white text-slate-500'}`}>
-                          🏷️ 抄碼
-                        </button>
+                    {newProductWizard.classification === 'raw_material' ? (
+                      <div className="space-y-1 col-span-2">
+                        <label className="text-[9px] font-bold text-slate-500 ml-1">選擇原材料 *（產品名稱跟隨原材料）</label>
+                        <select value={newProductWizard.ingredientId} onChange={e => {
+                          const ing = ingredients.find(i => i.id === e.target.value);
+                          setNewProductWizard(w => w ? { ...w, ingredientId: e.target.value, productName: ing?.name || '' } : w);
+                        }} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-200">
+                          <option value="">— 選擇原材料 —</option>
+                          {ingredientCategories.map(cat => {
+                            const catIngs = ingredients.filter(i => i.category === cat);
+                            if (catIngs.length === 0) return null;
+                            return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>;
+                          })}
+                          {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>}
+                        </select>
                       </div>
-                      <p className="text-[8px] text-slate-400 font-bold">抄碼 = 按件稱重計價，默認「原件」</p>
-                    </div>
-                    {newProductWizard.pricingMode === 'fixed_pack' && (
-                      <div className="space-y-1">
-                        <label className="text-[9px] font-bold text-slate-500 ml-1">包裝規格</label>
-                        <input value={newProductWizard.packSize} onChange={e => setNewProductWizard(w => w ? { ...w, packSize: e.target.value } : w)} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-200" placeholder="例: 5磅" />
+                    ) : (
+                      <div className="space-y-1 col-span-2">
+                        <label className="text-[9px] font-bold text-slate-500 ml-1">產品名稱 *</label>
+                        <input value={newProductWizard.productName} onChange={e => setNewProductWizard(w => w ? { ...w, productName: e.target.value } : w)} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-200" placeholder={newProductWizard.classification === 'third_party' ? '例：四海牛丸' : '例：秘製醃豬扒'} />
                       </div>
                     )}
                   </div>
                 </div>
               )}
 
-              {newProductWizard.classification === 'third_party' && (
-                <div className="space-y-4 p-5 bg-blue-50/50 rounded-2xl border border-blue-100">
-                  <h5 className="text-xs font-black text-blue-700">第三方產品設定</h5>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-slate-500 ml-1">產品名稱 *</label>
-                      <input value={newProductWizard.productName} onChange={e => setNewProductWizard(w => w ? { ...w, productName: e.target.value } : w)} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-200" placeholder="例: 四海牛丸" />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-slate-500 ml-1">第一個規格 (包裝大小) *</label>
-                      <input value={newProductWizard.variantLabel} onChange={e => setNewProductWizard(w => w ? { ...w, variantLabel: e.target.value } : w)} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-200" placeholder="例: 1kg" />
-                      <p className="text-[8px] text-slate-400 font-bold">之後可在產品詳情新增更多規格（如 500g, 250g）</p>
-                    </div>
+              {/* Step 3: Add specs */}
+              {newProductWizard.classification && (newProductWizard.ingredientId || newProductWizard.productName) && (
+                <div className="space-y-4 p-5 bg-violet-50/50 rounded-2xl border border-violet-200">
+                  <div className="flex items-center justify-between">
+                    <h5 className="text-xs font-black text-violet-700">規格列表</h5>
+                    <button onClick={() => setNewProductWizard(w => w ? { ...w, specs: [...w.specs, { variantLabel: '', pricingMode: 'fixed_pack', packSize: '', price: 0 }] } : w)} className="flex items-center gap-1 px-3 py-1.5 bg-violet-600 text-white rounded-xl text-[10px] font-black hover:bg-violet-700">
+                      <Plus size={12}/> 新增規格
+                    </button>
                   </div>
-                </div>
-              )}
 
-              {newProductWizard.classification === 'in_house' && (
-                <div className="space-y-4 p-5 bg-emerald-50/50 rounded-2xl border border-emerald-100">
-                  <h5 className="text-xs font-black text-emerald-700">自製產品設定</h5>
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-slate-500 ml-1">產品名稱 *</label>
-                    <input value={newProductWizard.productName} onChange={e => setNewProductWizard(w => w ? { ...w, productName: e.target.value } : w)} className="w-full p-3 bg-white rounded-xl font-bold text-sm border border-slate-200" placeholder="例: 秘製醃豬扒" />
-                  </div>
+                  {newProductWizard.specs.length === 0 && (
+                    <p className="text-center text-slate-400 text-xs font-bold py-4">請點擊「新增規格」添加至少一款規格（如原件抄碼、切絲、切粒…）</p>
+                  )}
+
+                  {newProductWizard.specs.map((spec, si) => (
+                    <div key={si} className="bg-white rounded-xl p-4 border border-violet-100 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black text-violet-600">規格 #{si + 1}</span>
+                        <button onClick={() => setNewProductWizard(w => w ? { ...w, specs: w.specs.filter((_, i) => i !== si) } : w)} className="p-1 text-rose-400 hover:text-rose-600"><Trash2 size={12}/></button>
+                      </div>
+                      <div className="grid grid-cols-3 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-[8px] font-bold text-slate-400 ml-0.5">規格名稱 *</label>
+                          <input value={spec.variantLabel} onChange={e => {
+                            const next = [...newProductWizard.specs]; next[si] = { ...next[si], variantLabel: e.target.value };
+                            setNewProductWizard(w => w ? { ...w, specs: next } : w);
+                          }} className="w-full p-2.5 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100" placeholder="例：原件抄碼、切絲 5kg" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[8px] font-bold text-slate-400 ml-0.5">計價方式</label>
+                          <div className="flex gap-1">
+                            <button onClick={() => {
+                              const next = [...newProductWizard.specs]; next[si] = { ...next[si], pricingMode: 'fixed_pack' };
+                              setNewProductWizard(w => w ? { ...w, specs: next } : w);
+                            }} className={`flex-1 p-2 rounded-lg text-[10px] font-black border transition-all ${spec.pricingMode === 'fixed_pack' ? 'border-violet-500 bg-violet-100 text-violet-700' : 'border-slate-200 bg-white text-slate-500'}`}>📦 定裝</button>
+                            <button onClick={() => {
+                              const next = [...newProductWizard.specs]; next[si] = { ...next[si], pricingMode: 'by_piece' };
+                              setNewProductWizard(w => w ? { ...w, specs: next } : w);
+                            }} className={`flex-1 p-2 rounded-lg text-[10px] font-black border transition-all ${spec.pricingMode === 'by_piece' ? 'border-pink-500 bg-pink-100 text-pink-700' : 'border-slate-200 bg-white text-slate-500'}`}>🏷️ 抄碼</button>
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[8px] font-bold text-slate-400 ml-0.5">價錢 {spec.pricingMode === 'by_piece' ? '(每磅)' : '(每包)'}</label>
+                          <input type="number" value={spec.price || ''} onChange={e => {
+                            const next = [...newProductWizard.specs]; next[si] = { ...next[si], price: Number(e.target.value) || 0 };
+                            setNewProductWizard(w => w ? { ...w, specs: next } : w);
+                          }} className="w-full p-2.5 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100" placeholder="$0" min="0" step="0.1" />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        {newProductWizard.classification === 'raw_material' && (
+                          <div className="space-y-1">
+                            <label className="text-[8px] font-bold text-slate-400 ml-0.5">加工方式</label>
+                            <select value={spec.processingTypeId || ''} onChange={e => {
+                              const ptId = e.target.value || undefined;
+                              const pt = processingTypes.find(p => p.id === ptId);
+                              const next = [...newProductWizard.specs];
+                              next[si] = { ...next[si], processingTypeId: ptId, variantLabel: spec.variantLabel || pt?.name || '' };
+                              setNewProductWizard(w => w ? { ...w, specs: next } : w);
+                            }} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100">
+                              <option value="">原件（不加工）</option>
+                              {processingTypes.filter(pt => pt.code !== 'whole').map(pt => (
+                                <option key={pt.id} value={pt.id}>{pt.name}{pt.spec ? ` (${pt.spec})` : ''}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                        <div className="space-y-1">
+                          <label className="text-[8px] font-bold text-slate-400 ml-0.5">包裝規格</label>
+                          <input value={spec.packSize} onChange={e => {
+                            const next = [...newProductWizard.specs]; next[si] = { ...next[si], packSize: e.target.value };
+                            setNewProductWizard(w => w ? { ...w, specs: next } : w);
+                          }} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100" placeholder="例：5kg/包、300g" />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -7473,21 +7696,18 @@ const App: React.FC = () => {
                 disabled={
                   !newProductWizard.classification ||
                   (newProductWizard.classification === 'raw_material' && !newProductWizard.ingredientId) ||
-                  (newProductWizard.classification === 'third_party' && (!newProductWizard.productName.trim() || !newProductWizard.variantLabel.trim())) ||
-                  (newProductWizard.classification === 'in_house' && !newProductWizard.productName.trim())
+                  (newProductWizard.classification !== 'raw_material' && !newProductWizard.productName.trim()) ||
+                  newProductWizard.specs.length === 0 ||
+                  newProductWizard.specs.some(s => !s.variantLabel.trim())
                 }
                 onClick={async () => {
                   const wiz = newProductWizard;
-                  if (!wiz.classification) return;
+                  if (!wiz.classification || wiz.specs.length === 0) return;
 
                   let groupName = '';
                   let ingId: string | undefined;
-                  let varLabel = '';
-                  let prodName = '';
-                  let prodType: ProductType = 'standalone';
                   let parentIngId: string | undefined;
-                  let pMode: PricingMode = 'fixed_pack';
-                  let pSize = '';
+                  let prodType: ProductType = 'standalone';
 
                   if (wiz.classification === 'raw_material') {
                     const ing = ingredients.find(i => i.id === wiz.ingredientId);
@@ -7495,20 +7715,12 @@ const App: React.FC = () => {
                     groupName = ing.name;
                     ingId = ing.id;
                     parentIngId = ing.id;
-                    pMode = wiz.pricingMode;
-                    pSize = wiz.packSize;
-                    varLabel = wiz.pricingMode === 'by_piece' ? '原件' : (wiz.variantLabel || '原件');
-                    prodName = pSize ? `${ing.name} (${pSize})` : ing.name;
                     prodType = 'raw_material';
                   } else if (wiz.classification === 'third_party') {
                     groupName = wiz.productName;
-                    varLabel = wiz.variantLabel;
-                    prodName = `${wiz.productName} ${wiz.variantLabel}`;
                     prodType = 'third_party';
                   } else {
                     groupName = wiz.productName;
-                    varLabel = '標準';
-                    prodName = wiz.productName;
                     prodType = 'in_house';
                   }
 
@@ -7522,33 +7734,38 @@ const App: React.FC = () => {
                   const savedGroup = await upsertProductGroup(newGroup);
                   if (!savedGroup) return;
 
-                  const newProduct: Product = {
-                    id: 'P-' + Date.now(),
-                    name: prodName,
+                  const newProducts: Product[] = wiz.specs.map((spec, i) => ({
+                    id: 'P-' + Date.now() + '-' + i,
+                    name: `${groupName} ${spec.variantLabel}`,
                     categories: [],
-                    price: 0,
+                    price: spec.price || 0,
                     memberPrice: 0,
                     stock: 0,
                     trackInventory: true,
                     tags: [],
                     image: wiz.classification === 'raw_material' ? '🥩' : wiz.classification === 'in_house' ? '🏭' : '📦',
-                    saleChannel: 'wholesale',
+                    saleChannel: 'wholesale' as SaleChannel,
                     productType: prodType,
                     groupId: savedGroup.id,
                     parentIngredientId: parentIngId,
                     ingredientId: ingId,
-                    variantLabel: varLabel,
-                    pricingMode: pMode,
-                    packSize: pSize || undefined,
-                  };
+                    variantLabel: spec.variantLabel,
+                    pricingMode: spec.pricingMode,
+                    processingTypeId: spec.processingTypeId,
+                    processingSpec: spec.processingSpec,
+                    packSize: spec.packSize || undefined,
+                  }));
 
-                  setNewProductWizard(null);
-                  setEditingProduct(newProduct);
-                  showToast(`已建立群組「${groupName}」，請填寫產品詳情`);
+                  const success = await upsertProducts(newProducts);
+                  if (success) {
+                    setNewProductWizard(null);
+                    setExpandedGroupIds(prev => new Set([...prev, savedGroup.id]));
+                    showToast(`已建立「${groupName}」及 ${newProducts.length} 款規格`);
+                  }
                 }}
                 className="px-6 py-3 bg-violet-600 text-white rounded-2xl font-black text-xs disabled:opacity-30 transition-all hover:bg-violet-700 flex items-center gap-2"
               >
-                下一步 → 編輯詳情 <ChevronRight size={14} />
+                建立產品及規格 ({newProductWizard.specs.length} 款)
               </button>
             </div>
           </div>
@@ -8968,7 +9185,7 @@ const App: React.FC = () => {
             isOpen={isAdminSidebarOpen}
             setIsOpen={setIsAdminSidebarOpen}
             hasAdminPermission={hasAdminPermission}
-            onLogout={() => { setIsAdminAuthenticated(false); setAdminUser(null); try { localStorage.removeItem('coolfood_admin_session'); } catch { /* ignore */ } window.location.hash = ''; }}
+            onLogout={() => { setIsAdminAuthenticated(false); setAdminUser(null); try { localStorage.removeItem('coolfood_admin_session'); localStorage.removeItem('coolfood_admin_session_token'); } catch { /* ignore */ } window.location.hash = ''; }}
             t={t}
           />
           <main className="flex-1 min-w-0 p-6 md:p-10 overflow-y-auto bg-[#f8fafc] hide-scrollbar">

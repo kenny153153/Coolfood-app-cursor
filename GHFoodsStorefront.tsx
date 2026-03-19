@@ -83,6 +83,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
   const cartCount = cart.reduce((s, i) => s + i.qty, 0);
 
   const [expandedIngredient, setExpandedIngredient] = useState<string | null>(null);
+  const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
 
   const processingTypeMap = useMemo(() => {
     const m = new Map<string, ProcessingType>();
@@ -319,123 +320,145 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                       </td>
                     </tr>
                   )}
-                  {filteredProducts.map((p, idx) => {
-                    const inCart = cart.find(c => c.id === p.id);
-                    const qty = inCart?.qty || 0;
-                    const price = getPrice(p, qty || 1);
-                    const outOfStock = p.trackInventory && p.stock <= 0;
-                    const pt = p.processingTypeId ? processingTypeMap.get(p.processingTypeId) : null;
-                    const groupKey = p.groupId || (p.parentIngredientId && (p.productType === 'processed' || p.productType === 'raw_material') ? `ing-${p.parentIngredientId}` : null);
-                    const variantGroup = groupKey ? productVariantGroups.get(groupKey) : null;
-                    const hasVariantGroup = variantGroup && variantGroup.variants.length > 1;
-                    const isFirstOfGroup = variantGroup && variantGroup.variants[0]?.id === p.id;
-                    const isExpanded = expandedIngredient === groupKey;
-                    const isSubsequentVariant = variantGroup && variantGroup.variants.length > 1 && !isFirstOfGroup;
+                  {(() => {
+                    const rendered = new Set<string>();
+                    let rowIdx = 0;
+                    return filteredProducts.map(p => {
+                      const groupKey = p.groupId || `_solo_${p.id}`;
+                      const variantGroup = p.groupId ? productVariantGroups.get(p.groupId) : null;
+                      const hasMultiSpecs = variantGroup && variantGroup.variants.length > 1;
 
-                    if (isSubsequentVariant && !isExpanded) return null;
+                      if (hasMultiSpecs) {
+                        if (rendered.has(groupKey)) return null;
+                        rendered.add(groupKey);
+                        const isExpanded = expandedGroupId === groupKey;
+                        const groupCartCount = variantGroup!.variants.reduce((sum, v) => sum + (cart.find(c => c.id === v.id)?.qty || 0), 0);
+                        rowIdx++;
 
-                    return (
-                      <React.Fragment key={p.id}>
-                      <tr
-                        className={`border-b border-slate-100 transition-colors ${qty > 0 ? 'bg-amber-50/40' : 'hover:bg-slate-50'} ${outOfStock ? 'opacity-40' : ''} ${isSubsequentVariant ? 'bg-violet-50/30' : ''}`}
-                      >
-                        <td className="px-3 py-2 text-slate-400 text-xs">{idx + 1}</td>
-                        <td className="px-3 py-2">
-                          <div className="flex items-center gap-2">
-                            {p.image && (
-                              <img src={p.image} alt="" className="w-8 h-8 rounded object-cover bg-slate-100 flex-shrink-0" />
-                            )}
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-1.5">
+                        return (
+                          <React.Fragment key={`grp-${groupKey}`}>
+                            <tr className={`border-b border-slate-100 transition-colors cursor-pointer ${groupCartCount > 0 ? 'bg-amber-50/40' : 'hover:bg-slate-50'}`} onClick={() => setExpandedGroupId(isExpanded ? null : groupKey)}>
+                              <td className="px-3 py-2 text-slate-400 text-xs">{rowIdx}</td>
+                              <td className="px-3 py-2">
+                                <div className="flex items-center gap-2">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5">
+                                      <p className="font-bold text-slate-800">{variantGroup!.parentName}</p>
+                                      <span className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors ${isExpanded ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500'}`}>
+                                        <Scissors size={10} />
+                                        {variantGroup!.variants.length}款規格
+                                        <ChevronDown size={10} className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                                      </span>
+                                      {groupCartCount > 0 && <span className="px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded text-[10px] font-bold">{groupCartCount} 件</span>}
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 hidden sm:table-cell"></td>
+                              <td className="px-3 py-2 hidden md:table-cell">
+                                <span className="text-[10px] text-slate-400 font-bold">點擊展開選擇</span>
+                              </td>
+                              <td className="px-3 py-2 text-right text-slate-400 text-xs">多款</td>
+                              <td className="px-3 py-2"></td>
+                              <td className="px-3 py-2 text-right font-bold text-slate-800">
+                                {groupCartCount > 0 ? `$${variantGroup!.variants.reduce((sum, v) => { const c = cart.find(ci => ci.id === v.id); return sum + (c ? getPrice(v, c.qty) * c.qty : 0); }, 0)}` : '—'}
+                              </td>
+                            </tr>
+                            {isExpanded && variantGroup!.variants.map(spec => {
+                              const inCart = cart.find(c => c.id === spec.id);
+                              const qty = inCart?.qty || 0;
+                              const price = getPrice(spec, qty || 1);
+                              const outOfStock = spec.trackInventory && spec.stock <= 0;
+                              const isByPiece = spec.pricingMode === 'by_piece';
+                              return (
+                                <tr key={spec.id} className={`border-b border-slate-50 transition-colors bg-violet-50/20 ${qty > 0 ? 'bg-amber-50/30' : 'hover:bg-violet-50/40'} ${outOfStock ? 'opacity-40' : ''}`}>
+                                  <td className="px-3 py-2"><div className="w-px h-3 bg-violet-200 ml-2" /></td>
+                                  <td className="px-3 py-2 pl-6">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-xs font-bold text-slate-700">{spec.variantLabel || spec.name}</span>
+                                      {isByPiece && <span className="px-1 py-0.5 bg-pink-50 text-pink-600 rounded text-[8px] font-black">抄碼</span>}
+                                      {spec.packSize && <span className="text-[9px] text-slate-400">{spec.packSize}</span>}
+                                    </div>
+                                  </td>
+                                  <td className="px-3 py-2 text-slate-500 text-xs hidden sm:table-cell font-mono">{spec.legacyId || ''}</td>
+                                  <td className="px-3 py-2 hidden md:table-cell"></td>
+                                  <td className="px-3 py-2 text-right font-bold text-slate-800">${price}{isByPiece ? '/磅' : ''}</td>
+                                  <td className="px-3 py-2">
+                                    {outOfStock ? (
+                                      <span className="text-xs text-red-400 font-bold block text-center">缺貨</span>
+                                    ) : (
+                                      <div className="flex items-center justify-center gap-1">
+                                        {qty > 0 ? (
+                                          <>
+                                            <button onClick={() => updateQty(spec.id, qty - 1)} className="w-7 h-7 rounded bg-slate-200 text-slate-600 flex items-center justify-center hover:bg-slate-300"><Minus size={12} /></button>
+                                            <input type="number" value={qty} onChange={e => { const v = parseInt(e.target.value) || 0; if (v > 0) updateQty(spec.id, v); else removeFromCart(spec.id); }} className="w-14 text-center py-1 border border-slate-200 rounded text-sm font-bold focus:border-amber-400 outline-none" min={0} />
+                                            <button onClick={() => updateQty(spec.id, qty + 1)} className="w-7 h-7 rounded bg-amber-500 text-white flex items-center justify-center hover:bg-amber-600"><Plus size={12} /></button>
+                                          </>
+                                        ) : (
+                                          <button onClick={() => addToCart(spec)} className="px-4 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded text-xs font-bold hover:bg-amber-100">+ 加入</button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-2 text-right font-bold text-slate-800">{qty > 0 ? `$${price * qty}` : '—'}</td>
+                                </tr>
+                              );
+                            })}
+                          </React.Fragment>
+                        );
+                      }
+
+                      const inCart = cart.find(c => c.id === p.id);
+                      const qty = inCart?.qty || 0;
+                      const price = getPrice(p, qty || 1);
+                      const outOfStock = p.trackInventory && p.stock <= 0;
+                      const isByPiece = p.pricingMode === 'by_piece';
+                      rowIdx++;
+
+                      return (
+                        <tr key={p.id} className={`border-b border-slate-100 transition-colors ${qty > 0 ? 'bg-amber-50/40' : 'hover:bg-slate-50'} ${outOfStock ? 'opacity-40' : ''}`}>
+                          <td className="px-3 py-2 text-slate-400 text-xs">{rowIdx}</td>
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-2">
+                              {p.image && <img src={p.image} alt="" className="w-8 h-8 rounded object-cover bg-slate-100 flex-shrink-0" />}
+                              <div className="min-w-0">
                                 <p className="font-bold text-slate-800 truncate">{p.name}</p>
-                                {hasVariantGroup && isFirstOfGroup && (
-                                  <button
-                                    onClick={() => setExpandedIngredient(isExpanded ? null : groupKey!)}
-                                    className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors ${isExpanded ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500 hover:bg-violet-50 hover:text-violet-600'}`}
-                                  >
-                                    <Scissors size={10} />
-                                    {variantGroup!.variants.length}款規格
-                                    <ChevronDown size={10} className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-                                  </button>
+                                {p.packSize && <p className="text-[10px] text-slate-400">{p.packSize}</p>}
+                                {!p.packSize && p.weight && <p className="text-[10px] text-slate-400">{p.weight}</p>}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 text-slate-500 text-xs hidden sm:table-cell font-mono">{p.legacyId || p.id.slice(0, 8)}</td>
+                          <td className="px-3 py-2 text-xs hidden md:table-cell">
+                            {p.variantLabel && p.variantLabel !== '原件' ? (
+                              <span className="px-1.5 py-0.5 bg-violet-50 text-violet-600 rounded font-bold text-[10px]">{p.variantLabel}</span>
+                            ) : isByPiece ? (
+                              <span className="px-1.5 py-0.5 bg-pink-50 text-pink-600 rounded font-bold text-[10px]">抄碼</span>
+                            ) : '—'}
+                          </td>
+                          <td className="px-3 py-2 text-right font-bold text-slate-800">${price}{isByPiece ? '/磅' : ''}</td>
+                          <td className="px-3 py-2">
+                            {outOfStock ? (
+                              <span className="text-xs text-red-400 font-bold block text-center">缺貨</span>
+                            ) : (
+                              <div className="flex items-center justify-center gap-1">
+                                {qty > 0 ? (
+                                  <>
+                                    <button onClick={() => updateQty(p.id, qty - 1)} className="w-7 h-7 rounded bg-slate-200 text-slate-600 flex items-center justify-center hover:bg-slate-300"><Minus size={12} /></button>
+                                    <input type="number" value={qty} onChange={e => { const v = parseInt(e.target.value) || 0; if (v > 0) updateQty(p.id, v); else removeFromCart(p.id); }} className="w-14 text-center py-1 border border-slate-200 rounded text-sm font-bold focus:border-amber-400 outline-none" min={0} />
+                                    <button onClick={() => updateQty(p.id, qty + 1)} className="w-7 h-7 rounded bg-amber-500 text-white flex items-center justify-center hover:bg-amber-600"><Plus size={12} /></button>
+                                  </>
+                                ) : (
+                                  <button onClick={() => addToCart(p)} className="px-4 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded text-xs font-bold hover:bg-amber-100">+ 加入</button>
                                 )}
                               </div>
-                              {p.packSize && <p className="text-[10px] text-slate-400">{p.packSize}</p>}
-                              {!p.packSize && p.weight && <p className="text-[10px] text-slate-400">{p.weight}</p>}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-3 py-2 text-slate-500 text-xs hidden sm:table-cell font-mono">
-                          {p.legacyId || p.id.slice(0, 8)}
-                        </td>
-                        <td className="px-3 py-2 text-xs hidden md:table-cell">
-                          {p.variantLabel ? (
-                            <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded font-bold text-[10px] ${
-                              p.variantLabel === '原件' ? 'bg-slate-100 text-slate-500' : 'bg-violet-50 text-violet-600'
-                            }`}>
-                              {p.variantLabel !== '原件' && <Scissors size={9} />}
-                              {p.variantLabel}
-                            </span>
-                          ) : pt ? (
-                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-violet-50 text-violet-600 rounded font-bold text-[10px]">
-                              <Scissors size={9} />{pt.name}
-                              {pt.spec && <span className="text-violet-400 ml-0.5">{pt.spec}</span>}
-                            </span>
-                          ) : p.productType === 'raw_material' ? (
-                            <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded text-[10px] font-bold">原件</span>
-                          ) : '—'}
-                        </td>
-                        <td className="px-3 py-2 text-right font-bold text-slate-800">
-                          ${price}
-                        </td>
-                        <td className="px-3 py-2">
-                          {outOfStock ? (
-                            <span className="text-xs text-red-400 font-bold block text-center">缺貨</span>
-                          ) : (
-                            <div className="flex items-center justify-center gap-1">
-                              {qty > 0 ? (
-                                <>
-                                  <button
-                                    onClick={() => updateQty(p.id, qty - 1)}
-                                    className="w-7 h-7 rounded bg-slate-200 text-slate-600 flex items-center justify-center hover:bg-slate-300 transition-colors"
-                                  >
-                                    <Minus size={12} />
-                                  </button>
-                                  <input
-                                    type="number"
-                                    value={qty}
-                                    onChange={e => {
-                                      const val = parseInt(e.target.value) || 0;
-                                      if (val > 0) updateQty(p.id, val);
-                                      else removeFromCart(p.id);
-                                    }}
-                                    className="w-14 text-center py-1 border border-slate-200 rounded text-sm font-bold focus:border-amber-400 outline-none"
-                                    min={0}
-                                  />
-                                  <button
-                                    onClick={() => updateQty(p.id, qty + 1)}
-                                    className="w-7 h-7 rounded bg-amber-500 text-white flex items-center justify-center hover:bg-amber-600 transition-colors"
-                                  >
-                                    <Plus size={12} />
-                                  </button>
-                                </>
-                              ) : (
-                                <button
-                                  onClick={() => addToCart(p)}
-                                  className="px-4 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded text-xs font-bold hover:bg-amber-100 transition-colors"
-                                >
-                                  + 加入
-                                </button>
-                              )}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-right font-bold text-slate-800">
-                          {qty > 0 ? `$${price * qty}` : '—'}
-                        </td>
-                      </tr>
-                      </React.Fragment>
-                    );
-                  })}
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-right font-bold text-slate-800">{qty > 0 ? `$${price * qty}` : '—'}</td>
+                        </tr>
+                      );
+                    });
+                  })()}
                 </tbody>
               </table>
             </div>

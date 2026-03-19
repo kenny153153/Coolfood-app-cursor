@@ -44,6 +44,15 @@ interface ProductOption {
   parentIngredientId?: string;
   groupId?: string;
   variantLabel?: string;
+  pricingMode?: string;
+}
+
+interface ProductGroupOption {
+  id: string;
+  name: string;
+  classification: string;
+  ingredientId?: string;
+  specs: ProductOption[];
 }
 
 interface ProcessingTypeOption {
@@ -125,6 +134,7 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
   // Product search per row
   const [activeProductRow, setActiveProductRow] = useState<number | null>(null);
   const [productSearch, setProductSearch] = useState('');
+  const [specPickerRow, setSpecPickerRow] = useState<{ idx: number; group: ProductGroupOption } | null>(null);
 
   // Processing types & matrix
   const [processingTypes, setProcessingTypes] = useState<ProcessingTypeOption[]>([]);
@@ -170,15 +180,18 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
     return merged;
   }, [customUnitLabels]);
 
+  const [productGroupOptions, setProductGroupOptions] = useState<ProductGroupOption[]>([]);
+
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [clientsRes, productsRes, correctionsRes, unitsRes, ptRes, matrixRes] = await Promise.all([
+    const [clientsRes, productsRes, correctionsRes, unitsRes, ptRes, matrixRes, groupsRes] = await Promise.all([
       supabase.from('wholesale_clients').select('id, company_name, contact_name, phone, address, brand, price_tier, route_id, client_code').eq('is_active', true),
-      supabase.from('products').select('id, name, name_en, price, weight, categories, sale_channel, product_type, processing_type_id, pack_size, processing_types(name), ingredient_id, parent_ingredient_id, group_id, variant_label').order('name'),
+      supabase.from('products').select('id, name, name_en, price, weight, categories, sale_channel, product_type, processing_type_id, pack_size, processing_types(name), ingredient_id, parent_ingredient_id, group_id, variant_label, pricing_mode').order('name'),
       supabase.from('parsing_corrections').select('original_text, corrected_product_name, corrected_qty, corrected_unit').order('created_at', { ascending: false }).limit(40),
       supabase.from('site_config').select('value').eq('id', 'custom_units').single(),
       supabase.from('processing_types').select('id, code, name, name_en, spec, sort_order').eq('is_active', true).order('sort_order'),
       supabase.from('material_processing_matrix').select('ingredient_id, processing_type_id').eq('is_available', true),
+      supabase.from('product_groups').select('id, name, classification, ingredient_id').eq('is_active', true).order('name'),
     ]);
     if (clientsRes.data) {
       setClients(clientsRes.data.map((c: any) => ({
@@ -187,8 +200,9 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
         priceTier: c.price_tier || 'P0', routeId: c.route_id, clientCode: c.client_code || '',
       })));
     }
+    const allProducts: ProductOption[] = [];
     if (productsRes.data) {
-      setProducts(productsRes.data
+      const mapped = productsRes.data
         .filter((p: any) => {
           const ch = p.sale_channel || 'retail';
           return ch === 'wholesale' || ch === 'both';
@@ -206,8 +220,25 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
           parentIngredientId: p.parent_ingredient_id || undefined,
           groupId: p.group_id || undefined,
           variantLabel: p.variant_label || undefined,
-        }))
-      );
+          pricingMode: p.pricing_mode || undefined,
+        }));
+      allProducts.push(...mapped);
+      setProducts(mapped);
+    }
+    if (groupsRes.data && allProducts.length > 0) {
+      const groups: ProductGroupOption[] = [];
+      for (const g of groupsRes.data as any[]) {
+        const specs = allProducts.filter(p => p.groupId === g.id);
+        if (specs.length > 0) {
+          groups.push({ id: g.id, name: g.name, classification: g.classification, ingredientId: g.ingredient_id || undefined, specs });
+        }
+      }
+      const groupedIds = new Set(groups.flatMap(g => g.specs.map(s => s.id)));
+      const ungrouped = allProducts.filter(p => !groupedIds.has(p.id));
+      for (const p of ungrouped) {
+        groups.push({ id: `_ug_${p.id}`, name: p.name, classification: 'raw_material', specs: [p] });
+      }
+      setProductGroupOptions(groups);
     }
     if (correctionsRes.data) {
       const seen = new Set<string>();
@@ -619,39 +650,67 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
     });
   };
 
-  const selectProduct = (idx: number, product: ProductOption) => {
+  const selectProductGroup = (idx: number, group: ProductGroupOption) => {
+    if (group.specs.length === 1) {
+      selectSpec(idx, group, group.specs[0]);
+    } else {
+      setSpecPickerRow({ idx, group });
+      setActiveProductRow(null);
+      setProductSearch('');
+    }
+  };
+
+  const selectSpec = (idx: number, group: ProductGroupOption, spec: ProductOption) => {
     const snapshot = parsedSnapshotRef.current[idx];
     const wasAIParsed = snapshot && snapshot.productName;
-    const isDifferentProduct = wasAIParsed && snapshot.productName !== product.name;
+    const isDifferentProduct = wasAIParsed && snapshot.productName !== spec.name;
 
-    const ingId = product.parentIngredientId || product.ingredientId;
+    const ingId = spec.parentIngredientId || spec.ingredientId;
     const pref = ingId ? getClientPreference(ingId) : undefined;
-    let ptId = pref?.processingTypeId;
-    let ptName = ptId ? processingTypes.find(t => t.id === ptId)?.name : undefined;
-    let pSpec = pref?.defaultSpec;
-    let lineNote = pref?.note;
+    const isByPiece = spec.pricingMode === 'by_piece';
 
     setOrderLines(prev => {
       const next = [...prev];
       next[idx] = {
         ...next[idx],
-        productId: product.id,
-        productName: product.name,
-        unitPrice: product.price,
-        lineTotal: next[idx].qty * product.price * (1 - next[idx].discount / 100),
-        processingTypeId: ptId,
-        processingTypeName: ptName,
-        processingSpec: pSpec,
-        lineNote: lineNote,
+        productId: spec.id,
+        productName: `${group.name} ${spec.variantLabel || ''}`.trim(),
+        groupId: group.id,
+        groupName: group.name,
+        specId: spec.id,
+        unitPrice: spec.price,
+        pricingMode: (spec.pricingMode || 'fixed_pack') as any,
+        unit: isByPiece ? '磅' : (next[idx].unit || '磅'),
+        lineTotal: isByPiece ? 0 : next[idx].qty * spec.price * (1 - next[idx].discount / 100),
+        processingTypeId: pref?.processingTypeId || undefined,
+        processingTypeName: pref?.processingTypeId ? processingTypes.find(t => t.id === pref.processingTypeId)?.name : undefined,
+        processingSpec: pref?.defaultSpec,
+        lineNote: pref?.note,
       };
       return next;
     });
+    setSpecPickerRow(null);
     setActiveProductRow(null);
     setProductSearch('');
 
     if (isDifferentProduct) {
       const original = parsedLines[idx]?.productName || snapshot.productName;
-      saveCorrection(original, product.id, product.name, snapshot.qty, snapshot.unit);
+      saveCorrection(original, spec.id, spec.name, snapshot.qty, snapshot.unit);
+    }
+  };
+
+  const selectProduct = (idx: number, product: ProductOption) => {
+    const group = productGroupOptions.find(g => g.specs.some(s => s.id === product.id));
+    if (group) {
+      selectSpec(idx, group, product);
+    } else {
+      setOrderLines(prev => {
+        const next = [...prev];
+        next[idx] = { ...next[idx], productId: product.id, productName: product.name, unitPrice: product.price, lineTotal: next[idx].qty * product.price * (1 - next[idx].discount / 100) };
+        return next;
+      });
+      setActiveProductRow(null);
+      setProductSearch('');
     }
   };
 
@@ -1027,6 +1086,11 @@ ${pages}
         c.clientCode.toLowerCase().includes(q);
     });
 
+  const filteredProductGroups = productGroupOptions.filter(g =>
+    !productSearch || g.name.toLowerCase().includes(productSearch.toLowerCase()) ||
+    g.specs.some(s => s.name.toLowerCase().includes(productSearch.toLowerCase()) || (s.variantLabel || '').toLowerCase().includes(productSearch.toLowerCase()))
+  ).slice(0, 10);
+
   const filteredProducts = products.filter(p =>
     !productSearch || p.name.toLowerCase().includes(productSearch.toLowerCase())
   ).slice(0, 10);
@@ -1332,27 +1396,45 @@ ${pages}
                             上次 ${lastPriceMap[line.productName].price}/{lastPriceMap[line.productName].unit} ({lastPriceMap[line.productName].date})
                           </span>
                         )}
-                        {activeProductRow === idx && productSearch && (
-                          <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-50 max-h-36 overflow-y-auto">
-                            {filteredProducts.map(p => (
+                        {activeProductRow === idx && productSearch && !specPickerRow && (
+                          <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-50 max-h-48 overflow-y-auto">
+                            {filteredProductGroups.map(g => (
                               <button
-                                key={p.id}
-                                onMouseDown={() => selectProduct(idx, p)}
-                                className="w-full flex items-center justify-between px-4 py-2 hover:bg-slate-50 text-left gap-2"
+                                key={g.id}
+                                onMouseDown={() => selectProductGroup(idx, g)}
+                                className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 text-left gap-2 border-b border-slate-50 last:border-0"
                               >
                                 <div className="flex items-center gap-1.5 min-w-0">
-                                  <span className="text-xs font-bold text-slate-700 truncate">{p.name}</span>
-                                  {p.variantLabel && p.variantLabel !== '原件' && (
-                                    <span className="flex-shrink-0 px-1 py-0.5 bg-violet-50 text-violet-600 rounded text-[9px] font-bold">{p.variantLabel}</span>
-                                  )}
-                                  {!p.variantLabel && p.processingTypeName && (
-                                    <span className="flex-shrink-0 px-1 py-0.5 bg-violet-50 text-violet-600 rounded text-[9px] font-bold">{p.processingTypeName}</span>
-                                  )}
-                                  {p.packSize && (
-                                    <span className="flex-shrink-0 text-[9px] text-slate-400">{p.packSize}</span>
-                                  )}
+                                  <span className="text-xs font-bold text-slate-700 truncate">{g.name}</span>
+                                  <span className="flex-shrink-0 px-1.5 py-0.5 bg-violet-50 text-violet-500 rounded text-[9px] font-bold">{g.specs.length} 款</span>
                                 </div>
-                                <span className="text-xs text-slate-400 flex-shrink-0">${p.price}</span>
+                                <ChevronDown size={12} className="text-slate-300 flex-shrink-0" />
+                              </button>
+                            ))}
+                            {filteredProductGroups.length === 0 && (
+                              <div className="px-4 py-3 text-center text-slate-300 text-xs font-bold">找不到產品</div>
+                            )}
+                          </div>
+                        )}
+                        {specPickerRow && specPickerRow.idx === idx && (
+                          <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-violet-200 rounded-xl shadow-lg z-50 max-h-48 overflow-y-auto">
+                            <div className="px-4 py-2 bg-violet-50 border-b border-violet-100 flex items-center justify-between">
+                              <span className="text-[10px] font-black text-violet-700">{specPickerRow.group.name} — 選擇規格</span>
+                              <button onMouseDown={() => { setSpecPickerRow(null); setActiveProductRow(idx); }} className="text-[9px] text-violet-500 font-bold hover:underline">← 返回</button>
+                            </div>
+                            {specPickerRow.group.specs.map(spec => (
+                              <button
+                                key={spec.id}
+                                onMouseDown={() => selectSpec(idx, specPickerRow.group, spec)}
+                                className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-violet-50/50 text-left gap-2 border-b border-slate-50 last:border-0"
+                              >
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="text-xs font-bold text-slate-700">{spec.variantLabel || spec.name}</span>
+                                  {spec.pricingMode === 'by_piece' && <span className="px-1 py-0.5 bg-pink-50 text-pink-600 rounded text-[8px] font-black">抄碼</span>}
+                                  {spec.pricingMode !== 'by_piece' && <span className="px-1 py-0.5 bg-slate-100 text-slate-500 rounded text-[8px] font-bold">定裝</span>}
+                                  {spec.packSize && <span className="text-[9px] text-slate-400">{spec.packSize}</span>}
+                                </div>
+                                <span className="text-xs text-slate-400 flex-shrink-0">${spec.price}{spec.pricingMode === 'by_piece' ? '/磅' : ''}</span>
                               </button>
                             ))}
                           </div>
@@ -1400,6 +1482,32 @@ ${pages}
                             />
                           </div>
                         )}
+                        {line.pricingMode === 'by_piece' && (
+                          <div className="flex items-center gap-2 mt-1.5">
+                            <span className="text-[9px] font-bold text-pink-500">🏷️ 抄碼 ${line.unitPrice}/磅</span>
+                            <span className="text-[9px] text-slate-400">實際重量:</span>
+                            <input
+                              type="number"
+                              value={line.actualWeight || ''}
+                              onChange={e => {
+                                const w = parseFloat(e.target.value) || 0;
+                                setOrderLines(prev => {
+                                  const next = [...prev];
+                                  next[idx] = { ...next[idx], actualWeight: w || undefined, lineTotal: w > 0 ? w * next[idx].unitPrice * (1 - next[idx].discount / 100) : 0 };
+                                  return next;
+                                });
+                              }}
+                              placeholder="待秤..."
+                              className="w-20 px-2 py-1 bg-pink-50 border border-pink-200 rounded-md text-[10px] font-bold text-pink-700 outline-none focus:border-pink-400 placeholder:text-pink-300"
+                              min="0"
+                              step="0.1"
+                            />
+                            <span className="text-[9px] text-slate-400">磅</span>
+                            {line.actualWeight && line.actualWeight > 0 && (
+                              <span className="text-[10px] font-black text-emerald-600">= ${(line.actualWeight * line.unitPrice).toFixed(1)}</span>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td className="px-3 py-2 align-top pt-3">
                         <input
@@ -1440,7 +1548,13 @@ ${pages}
                           max="100"
                         />
                       </td>
-                      <td className="px-3 py-2 text-right font-black text-slate-800 align-top pt-3">${line.lineTotal.toFixed(1)}</td>
+                      <td className="px-3 py-2 text-right font-black align-top pt-3">
+                        {line.pricingMode === 'by_piece' && !line.actualWeight ? (
+                          <span className="text-amber-500 text-xs">待秤</span>
+                        ) : (
+                          <span className="text-slate-800">${line.lineTotal.toFixed(1)}</span>
+                        )}
+                      </td>
                       <td className="px-3 py-2 align-top pt-3">
                         <button onClick={() => removeLine(idx)} className="p-1 text-slate-300 hover:text-rose-500 transition-colors">
                           <Trash2 size={14} />

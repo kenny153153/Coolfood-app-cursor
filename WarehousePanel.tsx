@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import type {
-  Ingredient, IngredientCategory, SaleChannel, Supplier,
+  Ingredient, IngredientCategory, SaleChannel, MaterialType, Supplier,
   RawMaterialCatalog, SupplierQuote, QuoteLineItem,
   ComparisonRow, PurchaseDecision, JustificationCategory,
   ProcessingType, GoodsReceipt, StockMovement,
@@ -21,6 +21,11 @@ interface Props {
 }
 
 type SubTab = 'ingredients' | 'suppliers' | 'quote_compare' | 'purchase_orders' | 'goods_receiving' | 'units' | 'processing_types' | 'reorder_alerts';
+
+const MATERIAL_TYPES: { value: MaterialType; label: string }[] = [
+  { value: 'meat', label: '🥩 肉類原材料' },
+  { value: 'third_party', label: '📦 第三方產品' },
+];
 
 const SALE_CHANNELS: { value: SaleChannel; label: string }[] = [
   { value: 'both', label: '全部' },
@@ -120,6 +125,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
   const [search, setSearch] = useState('');
   const [filterCategory, setFilterCategory] = useState('all');
   const [filterChannel, setFilterChannel] = useState<SaleChannel | 'all'>('all');
+  const [filterMaterialType, setFilterMaterialType] = useState<MaterialType | 'all'>('all');
   const [editing, setEditing] = useState<(Partial<Ingredient> & { isNew?: boolean }) | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -233,6 +239,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
         id: r.id, legacyId: r.legacy_id, name: r.name, nameEn: r.name_en,
         baseCostPerLb: r.base_cost_per_lb, supplier: r.supplier,
         marketBenchmark: r.market_benchmark, unit: r.unit, category: r.category,
+        materialType: (['meat', 'third_party'].includes(r.material_type) ? r.material_type : 'meat') as MaterialType,
         saleChannel: r.sale_channel as SaleChannel | undefined,
         notes: r.notes, stockQty: r.stock_qty || 0, stockUnit: r.stock_unit,
         minStockAlert: r.min_stock_alert,
@@ -468,7 +475,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
   const filtered = ingredients.filter(i => {
     if (search && !i.name.toLowerCase().includes(search.toLowerCase()) && !(i.nameEn || '').toLowerCase().includes(search.toLowerCase())) return false;
     if (filterCategory !== 'all' && i.category !== filterCategory) return false;
-    if (filterChannel !== 'all' && i.saleChannel !== filterChannel && i.saleChannel !== 'both') return false;
+    if (filterMaterialType !== 'all' && (i.materialType || 'meat') !== filterMaterialType) return false;
     return true;
   });
 
@@ -479,7 +486,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
       name: editing.name.trim(), name_en: editing.nameEn || null,
       base_cost_per_lb: editing.baseCostPerLb || 0, supplier: editing.supplier || null,
       market_benchmark: editing.marketBenchmark || null, unit: editing.unit || 'lb',
-      category: editing.category || null, sale_channel: editing.saleChannel || 'both',
+      category: editing.category || null, material_type: editing.materialType || 'meat',
       notes: editing.notes || null,
     };
     if (editing.isNew) {
@@ -1320,12 +1327,12 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
                 <option value="all">所有類別</option>
                 {categories.map(c => <option key={c.id} value={c.name}>{c.emoji} {c.name}</option>)}
               </select>
-              <select value={filterChannel} onChange={e => setFilterChannel(e.target.value as any)} className="px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold">
-                <option value="all">所有渠道</option>
-                {SALE_CHANNELS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+              <select value={filterMaterialType} onChange={e => setFilterMaterialType(e.target.value as any)} className="px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold">
+                <option value="all">所有類型</option>
+                {MATERIAL_TYPES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
               </select>
             </div>
-            <button onClick={() => setEditing({ isNew: true, unit: 'lb', baseCostPerLb: 0, saleChannel: 'both' })} className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-black hover:bg-slate-800">
+            <button onClick={() => setEditing({ isNew: true, unit: 'lb', baseCostPerLb: 0, materialType: 'meat' })} className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-black hover:bg-slate-800">
               <Plus size={14} /> 新增原材料
             </button>
           </div>
@@ -1350,7 +1357,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
                     <th className="px-4 py-3 text-right">待入</th>
                     <th className="px-4 py-3 text-right">成本/單位</th>
                     <th className="px-4 py-3 text-left">供應商</th>
-                    <th className="px-4 py-3 text-center">渠道</th>
+                    <th className="px-4 py-3 text-center">類型</th>
                     <th className="px-4 py-3 w-20"></th>
                   </tr>
                 </thead>
@@ -1385,8 +1392,8 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
                         <td className="px-4 py-3 text-right font-black text-slate-800">${ing.baseCostPerLb.toFixed(2)}</td>
                         <td className="px-4 py-3 text-xs font-bold text-slate-500">{ing.supplier || '—'}</td>
                         <td className="px-4 py-3 text-center">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-black ${ing.saleChannel === 'retail' ? 'bg-blue-50 text-blue-600' : ing.saleChannel === 'wholesale' ? 'bg-amber-50 text-amber-600' : 'bg-slate-100 text-slate-500'}`}>
-                            {ing.saleChannel === 'retail' ? '零售' : ing.saleChannel === 'wholesale' ? '批發' : '全部'}
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-black ${(ing.materialType || 'meat') === 'meat' ? 'bg-rose-50 text-rose-600' : 'bg-blue-50 text-blue-600'}`}>
+                            {(ing.materialType || 'meat') === 'meat' ? '🥩 肉類' : '📦 第三方'}
                           </span>
                         </td>
                         <td className="px-4 py-3">
@@ -2314,11 +2321,9 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">渠道</label>
-                  <select value={editing.saleChannel || 'both'} onChange={e => setEditing({ ...editing, saleChannel: e.target.value as SaleChannel })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm">
-                    <option value="both">全部</option>
-                    <option value="retail">零售</option>
-                    <option value="wholesale">批發</option>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">原材料類型</label>
+                  <select value={editing.materialType || 'meat'} onChange={e => setEditing({ ...editing, materialType: e.target.value as MaterialType })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm">
+                    {MATERIAL_TYPES.map(mt => <option key={mt.value} value={mt.value}>{mt.label}</option>)}
                   </select>
                 </div>
                 <div className="col-span-2">
