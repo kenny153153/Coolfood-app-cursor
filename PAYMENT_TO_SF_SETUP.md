@@ -4,7 +4,7 @@
 
 1. **Airwallex**：顧客付款（card / fps）→ 導回 `/success?order=ORD-xxx`
 2. **/success 頁**：呼叫 `POST /api/confirm-payment` → 訂單標記為「已付款」→ 呼叫順豐下單
-3. **順豐**：`POST /api/sf-order` 向沙箱下單，取得運單號並寫回 Supabase `orders.tracking_number`
+3. **順豐**：`POST /api/sf` (action: 'order') 向沙箱下單，取得運單號並寫回 Supabase `orders.tracking_number`
 4. **Webhook（可選）**：當訂單在 Supabase 被手動或由其他系統更新為 `status = 'paid'` 時，可透過 Supabase Webhook 呼叫 `POST /api/on-order-paid` 自動觸發順豐下單
 
 ---

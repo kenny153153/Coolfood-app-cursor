@@ -1367,8 +1367,10 @@ const App: React.FC = () => {
     try {
       const memberId = localStorage.getItem('coolfood_member_id') || '';
       const sessionToken = localStorage.getItem('coolfood_session_token') || '';
-      const res = await fetch('/api/customer-orders', {
-        headers: { 'x-member-id': memberId, 'x-session-token': sessionToken },
+      const res = await fetch('/api/customer-api', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-member-id': memberId, 'x-session-token': sessionToken },
+        body: JSON.stringify({ action: 'list' }),
       });
       if (!res.ok) { showToast('訂單資料載入失敗', 'error'); return; }
       const json = await res.json();
@@ -1415,14 +1417,14 @@ const App: React.FC = () => {
       try {
         const memberId = localStorage.getItem('coolfood_member_id') || '';
         const sessionToken = localStorage.getItem('coolfood_session_token') || '';
-        const res = await fetch('/api/customer-order-details', {
+        const res = await fetch('/api/customer-api', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'x-member-id': memberId,
             'x-session-token': sessionToken,
           },
-          body: JSON.stringify({ orderId: dbId }),
+          body: JSON.stringify({ action: 'details', orderId: dbId }),
         });
         if (!res.ok) { showToast('無法查看此訂單', 'error'); return; }
         const json = await res.json();
@@ -1699,8 +1701,10 @@ const App: React.FC = () => {
         return;
       }
 
-      const res = await fetch('/api/customer-reorder', {
-        headers: { 'x-member-id': memberId, 'x-session-token': sessionToken },
+      const res = await fetch('/api/customer-api', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-member-id': memberId, 'x-session-token': sessionToken },
+        body: JSON.stringify({ action: 'reorder' }),
       });
       if (!res.ok) {
         setReorderNotification({ type: 'fail', successCount: 0, failedNames: ['系統查詢暫時出錯，請稍後再試。'] });
@@ -2730,9 +2734,9 @@ const App: React.FC = () => {
       for (const row of orderRows) {
         const oid = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
         try {
-          const sfRes = await fetch(`${window.location.origin}/api/sf-label`, {
+          const sfRes = await fetch(`${window.location.origin}/api/sf`, {
             method: 'POST', headers: buildAdminHeaders(adminUser),
-            body: JSON.stringify({ orderId: oid }),
+            body: JSON.stringify({ action: 'label', orderId: oid }),
           });
           const sfJson = await sfRes.json().catch(() => ({}));
           labelResults.push({
@@ -2866,9 +2870,9 @@ const App: React.FC = () => {
       const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
 
       try {
-        const sfRes = await fetch(`${window.location.origin}/api/sf-order`, {
+        const sfRes = await fetch(`${window.location.origin}/api/sf`, {
           method: 'POST', headers: buildAdminHeaders(adminUser),
-          body: JSON.stringify({ orderId }),
+          body: JSON.stringify({ action: 'order', orderId }),
         });
         const sfText = await sfRes.text();
         let sfJson: { waybillNo?: string; waybill_no?: string; success?: boolean } | null = null;
@@ -2915,9 +2919,9 @@ const App: React.FC = () => {
     if (amount > refundModal.total) { showToast('退款金額不能超過訂單總額', 'error'); return; }
     setRefundProcessing(true);
     try {
-      const res = await fetch(`${window.location.origin}/api/airwallex-refund`, {
+      const res = await fetch(`${window.location.origin}/api/airwallex`, {
         method: 'POST', headers: buildAdminHeaders(adminUser),
-        body: JSON.stringify({ orderId: refundModal.orderId, amount }),
+        body: JSON.stringify({ action: 'refund', orderId: refundModal.orderId, amount }),
       });
       const data = await res.json();
       if (res.ok && data.success) {
@@ -3251,10 +3255,10 @@ const App: React.FC = () => {
     const apiBase = typeof window !== 'undefined' ? window.location.origin : '';
     let intentRes: Response;
     try {
-      intentRes = await fetch(`${apiBase}/api/airwallex-create-intent`, {
+      intentRes = await fetch(`${apiBase}/api/airwallex`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount: total, merchant_order_id: orderIdDisplay, success_origin: typeof window !== 'undefined' ? window.location.origin : '' }),
+        body: JSON.stringify({ action: 'create-intent', amount: total, merchant_order_id: orderIdDisplay, success_origin: typeof window !== 'undefined' ? window.location.origin : '' }),
       });
     } catch {
       setIsRedirectingToPayment(false);
@@ -3279,7 +3283,7 @@ const App: React.FC = () => {
           const errText = await intentRes.text();
           console.error('Airwallex API non-JSON error', intentRes.status, errText.slice(0, 500));
           if (intentRes.status === 404) {
-            errMsg = 'Payment API not found. Please redeploy and ensure the Vercel Function /api/airwallex-create-intent is enabled.';
+            errMsg = 'Payment API not found. Please redeploy and ensure the Vercel Function /api/airwallex is enabled.';
           }
         }
       } catch {

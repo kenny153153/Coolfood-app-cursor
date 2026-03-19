@@ -221,7 +221,7 @@ ${content}
         topP: 0.8,
         maxOutputTokens: 65536,
       },
-      systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
+      systemInstruction: { role: 'system', parts: [{ text: SYSTEM_INSTRUCTION }] },
     });
 
     // Build content parts: for PDF, include the file as inline_data so Gemini reads visually

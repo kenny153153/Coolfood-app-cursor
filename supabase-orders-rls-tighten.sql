@@ -8,8 +8,8 @@
 --   UPDATE: allowed (admin panel updates order status client-side)
 --   DELETE: BLOCKED (orders should never be deleted by clients)
 --
--- Customer reads now go through secure API routes (/api/customer-orders,
--- /api/customer-order-details) that validate sessions server-side and
+-- Customer reads now go through secure API routes (/api/customer-api
+-- with action: list/details/reorder) that validate sessions server-side and
 -- use the service role key (which bypasses RLS).
 --
 -- Run this AFTER deploying the new API routes.

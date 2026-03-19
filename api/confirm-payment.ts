@@ -187,10 +187,10 @@ export default async function handler(
       (async () => {
         try {
           console.log('[confirm-payment] Auto SF call for', orderId);
-          const sfRes = await fetchWithTimeout(`${selfOrigin}/api/sf-order`, {
+          const sfRes = await fetchWithTimeout(`${selfOrigin}/api/sf`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'x-internal-secret': serviceRoleKey },
-            body: JSON.stringify({ orderId }),
+            body: JSON.stringify({ action: 'order', orderId }),
           }, 12000);
           const sfData: any = await sfRes.json().catch(() => ({}));
           if (sfRes.ok && sfData.waybillNo) {
