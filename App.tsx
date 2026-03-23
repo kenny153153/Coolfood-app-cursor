@@ -896,8 +896,22 @@ const App: React.FC = () => {
   // Product Groups (產品群組)
   const [productGroups, setProductGroups] = useState<ProductGroup[]>([]);
 
+  const deriveVariantLabel = (
+    processingTypeId: string | undefined,
+    pricingMode: string | undefined,
+    packSize: string | undefined,
+    classification: string | undefined,
+  ): string => {
+    if (classification === 'raw_material') {
+      const pt = processingTypeId ? processingTypes.find(p => p.id === processingTypeId) : null;
+      const ptName = pt?.name || '原件';
+      if (pricingMode === 'by_piece') return `${ptName} 抄碼`;
+      return packSize ? `${ptName} ${packSize}` : ptName;
+    }
+    return packSize || '';
+  };
+
   interface WizardSpec {
-    variantLabel: string;
     pricingMode: PricingMode;
     processingTypeId?: string;
     processingSpec?: string;
@@ -912,7 +926,6 @@ const App: React.FC = () => {
     pricingMode: PricingMode;
     packSize: string;
     productName: string;
-    variantLabel: string;
     specs: WizardSpec[];
   } | null>(null);
   const [customUnits, setCustomUnits] = useState<{ id: string; label: string; value: string }[]>([]);
@@ -3465,10 +3478,10 @@ const App: React.FC = () => {
       '# 產品批量上傳範本 (新結構：產品→規格)',
       '# ═══════════════════════════════════════════════',
       '#',
-      '# ★ 必填：groupName（產品名稱）、variantLabel（規格名稱）',
+      '# ★ 必填：groupName（產品名稱）',
       '#',
       '# groupName     : 產品名稱，同名的行會自動歸入同一產品群組',
-      '# variantLabel   : 規格名稱，例如：原件抄碼、切絲 2MM 5kg、原包',
+      '# variantLabel   : 規格名稱（選填，系統可自動產生），例如：原件抄碼、切絲 2MM 5kg',
       '# pricingMode   : fixed_pack=定裝（固定包裝） / by_piece=抄碼（按重量）',
       '# price         : 售價（定裝=包裝價 / 抄碼=每磅/kg 價錢）',
       '# saleChannel   : both=零售+批發 / retail=零售 / wholesale=批發',
@@ -3842,7 +3855,7 @@ const App: React.FC = () => {
               }} className="px-6 py-3 bg-purple-600 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-sm hover:bg-purple-700 transition-all disabled:opacity-50">
                 {aiDescLoading ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />} AI 批量寫描述
               </button>
-              <button onClick={() => setNewProductWizard({ classification: null, ingredientId: '', pricingMode: 'fixed_pack', packSize: '', productName: '', variantLabel: '', specs: [] })} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 transition-all">
+              <button onClick={() => setNewProductWizard({ classification: null, ingredientId: '', pricingMode: 'fixed_pack', packSize: '', productName: '', specs: [] })} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl hover:bg-slate-800 transition-all">
                 <Plus size={16}/> 上架新產品
               </button>
             </div>
@@ -7151,7 +7164,7 @@ const App: React.FC = () => {
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="px-2.5 py-1 bg-violet-100 text-violet-700 rounded-lg text-[10px] font-black">{classLabel}</span>
                         <span className="text-xs font-bold text-slate-700">{group.name}</span>
-                        {editingProduct.variantLabel && <span className="px-2 py-0.5 bg-white border border-violet-200 text-violet-600 rounded-md text-[10px] font-bold">規格: {editingProduct.variantLabel}</span>}
+                        {(() => { const lbl = deriveVariantLabel(editingProduct.processingTypeId, editingProduct.pricingMode, editingProduct.packSize, group?.classification) || editingProduct.variantLabel; return lbl ? <span className="px-2 py-0.5 bg-white border border-violet-200 text-violet-600 rounded-md text-[10px] font-bold">規格: {lbl}</span> : null; })()}
                       </div>
                       {siblings.length > 0 && (
                         <div className="flex items-center gap-1.5 flex-wrap">
@@ -7178,7 +7191,7 @@ const App: React.FC = () => {
                               groupId: group.id,
                               parentIngredientId: editingProduct.parentIngredientId,
                               ingredientId: editingProduct.ingredientId,
-                              variantLabel: group.classification === 'raw_material' ? '' : '',
+                              variantLabel: '',
                               pricingMode: 'fixed_pack',
                             };
                             setEditingProduct(newVariant);
@@ -7222,8 +7235,10 @@ const App: React.FC = () => {
                   {/* Variant-specific fields */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-slate-500 ml-1">規格標籤</label>
-                      <input value={editingProduct.variantLabel || ''} onChange={e => setEditingProduct({ ...editingProduct, variantLabel: e.target.value })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" placeholder={group?.classification === 'third_party' ? '例: 1kg, 500g' : '例: 原件, 切粒'} />
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">規格標籤（自動）</label>
+                      <div className="w-full p-2.5 bg-violet-50 rounded-xl font-bold text-xs border border-violet-200 text-violet-700 min-h-[36px] flex items-center">
+                        {deriveVariantLabel(editingProduct.processingTypeId, editingProduct.pricingMode, editingProduct.packSize, group?.classification) || editingProduct.variantLabel || <span className="text-slate-300">由加工方式及包裝規格自動產生</span>}
+                      </div>
                     </div>
                     {(group?.classification === 'raw_material' || editingProduct.productType === 'raw_material' || editingProduct.productType === 'processed') && (
                       <div className="space-y-1">
@@ -7239,7 +7254,6 @@ const App: React.FC = () => {
                             ...editingProduct,
                             processingTypeId: ptId,
                             processingCost: autoSurcharge,
-                            variantLabel: pt?.name || editingProduct.variantLabel,
                             packSize: pt?.requiresRepackaging && pt.defaultPackWeightLb ? `${pt.defaultPackWeightLb}磅/包` : editingProduct.packSize,
                             packWeightLb: pt?.defaultPackWeightLb ?? editingProduct.packWeightLb,
                           });
@@ -7528,8 +7542,13 @@ const App: React.FC = () => {
             <div className="p-8 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
               <button onClick={() => setEditingProduct(null)} className="px-6 py-3 bg-white border border-slate-200 rounded-2xl font-black text-xs">取消</button>
               <button onClick={() => {
-                if (!editingProduct.name.trim()) { showToast('請輸入產品名稱', 'error'); return; }
-                upsertProduct(editingProduct);
+                const group = editingProduct.groupId ? productGroups.find(g => g.id === editingProduct.groupId) : null;
+                const autoLabel = deriveVariantLabel(editingProduct.processingTypeId, editingProduct.pricingMode, editingProduct.packSize, group?.classification);
+                const finalLabel = autoLabel || editingProduct.variantLabel || '';
+                const finalName = group ? `${group.name} ${finalLabel}`.trim() : editingProduct.name;
+                const toSave = { ...editingProduct, variantLabel: finalLabel, name: finalName };
+                if (!toSave.name.trim()) { showToast('請輸入產品名稱', 'error'); return; }
+                upsertProduct(toSave);
                 setEditingProduct(null);
               }} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs">保存</button>
             </div>
@@ -7607,7 +7626,7 @@ const App: React.FC = () => {
                 <div className="space-y-4 p-5 bg-violet-50/50 rounded-2xl border border-violet-200">
                   <div className="flex items-center justify-between">
                     <h5 className="text-xs font-black text-violet-700">規格列表</h5>
-                    <button onClick={() => setNewProductWizard(w => w ? { ...w, specs: [...w.specs, { variantLabel: '', pricingMode: 'fixed_pack', packSize: '', price: 0 }] } : w)} className="flex items-center gap-1 px-3 py-1.5 bg-violet-600 text-white rounded-xl text-[10px] font-black hover:bg-violet-700">
+                    <button onClick={() => setNewProductWizard(w => w ? { ...w, specs: [...w.specs, { pricingMode: 'fixed_pack', packSize: '', price: 0 }] } : w)} className="flex items-center gap-1 px-3 py-1.5 bg-violet-600 text-white rounded-xl text-[10px] font-black hover:bg-violet-700">
                       <Plus size={12}/> 新增規格
                     </button>
                   </div>
@@ -7624,11 +7643,10 @@ const App: React.FC = () => {
                       </div>
                       <div className="grid grid-cols-3 gap-3">
                         <div className="space-y-1">
-                          <label className="text-[8px] font-bold text-slate-400 ml-0.5">規格名稱 *</label>
-                          <input value={spec.variantLabel} onChange={e => {
-                            const next = [...newProductWizard.specs]; next[si] = { ...next[si], variantLabel: e.target.value };
-                            setNewProductWizard(w => w ? { ...w, specs: next } : w);
-                          }} className="w-full p-2.5 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100" placeholder="例：原件抄碼、切絲 5kg" />
+                          <label className="text-[8px] font-bold text-slate-400 ml-0.5">規格名稱（自動）</label>
+                          <div className="w-full p-2.5 bg-violet-50 rounded-lg font-bold text-xs border border-violet-200 text-violet-700 min-h-[36px] flex items-center">
+                            {deriveVariantLabel(spec.processingTypeId, spec.pricingMode, spec.packSize, newProductWizard.classification ?? undefined) || <span className="text-slate-300">選擇加工方式及包裝後自動產生</span>}
+                          </div>
                         </div>
                         <div className="space-y-1">
                           <label className="text-[8px] font-bold text-slate-400 ml-0.5">計價方式</label>
@@ -7657,9 +7675,8 @@ const App: React.FC = () => {
                             <label className="text-[8px] font-bold text-slate-400 ml-0.5">加工方式</label>
                             <select value={spec.processingTypeId || ''} onChange={e => {
                               const ptId = e.target.value || undefined;
-                              const pt = processingTypes.find(p => p.id === ptId);
                               const next = [...newProductWizard.specs];
-                              next[si] = { ...next[si], processingTypeId: ptId, variantLabel: spec.variantLabel || pt?.name || '' };
+                              next[si] = { ...next[si], processingTypeId: ptId };
                               setNewProductWizard(w => w ? { ...w, specs: next } : w);
                             }} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100">
                               <option value="">原件（不加工）</option>
@@ -7703,8 +7720,7 @@ const App: React.FC = () => {
                   !newProductWizard.classification ||
                   (newProductWizard.classification === 'raw_material' && !newProductWizard.ingredientId) ||
                   (newProductWizard.classification !== 'raw_material' && !newProductWizard.productName.trim()) ||
-                  newProductWizard.specs.length === 0 ||
-                  newProductWizard.specs.some(s => !s.variantLabel.trim())
+                  newProductWizard.specs.length === 0
                 }
                 onClick={async () => {
                   const wiz = newProductWizard;
@@ -7740,9 +7756,11 @@ const App: React.FC = () => {
                   const savedGroup = await upsertProductGroup(newGroup);
                   if (!savedGroup) return;
 
-                  const newProducts: Product[] = wiz.specs.map((spec, i) => ({
+                  const newProducts: Product[] = wiz.specs.map((spec, i) => {
+                    const autoLabel = deriveVariantLabel(spec.processingTypeId, spec.pricingMode, spec.packSize, wiz.classification ?? undefined);
+                    return {
                     id: 'P-' + Date.now() + '-' + i,
-                    name: `${groupName} ${spec.variantLabel}`,
+                    name: `${groupName} ${autoLabel}`.trim(),
                     categories: [],
                     price: 0,
                     memberPrice: 0,
@@ -7755,13 +7773,13 @@ const App: React.FC = () => {
                     groupId: savedGroup.id,
                     parentIngredientId: parentIngId,
                     ingredientId: ingId,
-                    variantLabel: spec.variantLabel,
+                    variantLabel: autoLabel,
                     pricingMode: spec.pricingMode,
                     processingTypeId: spec.processingTypeId,
                     processingSpec: spec.processingSpec,
                     packSize: spec.packSize || undefined,
                     packWeightLb: spec.packWeightLb,
-                  }));
+                  }; });
 
                   const success = await upsertProducts(newProducts);
                   if (success) {
