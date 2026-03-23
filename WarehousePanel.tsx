@@ -2218,7 +2218,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                     <th className="text-right px-4 py-3">豬雞費/磅</th>
                     <th className="text-right px-4 py-3">牛羊海鮮費/磅</th>
                     <th className="text-center px-4 py-3">重包裝</th>
-                    <th className="text-right px-4 py-3">預設包裝(磅)</th>
+                    <th className="text-right px-4 py-3">預設包裝規格</th>
                     <th className="text-center px-4 py-3">狀態</th>
                     <th className="text-right px-4 py-3 w-24">操作</th>
                   </tr>
@@ -2233,7 +2233,11 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                       <td className="px-4 py-3 text-right font-bold text-amber-600">${pt.surchargePorkChicken.toFixed(1)}</td>
                       <td className="px-4 py-3 text-right font-bold text-rose-600">${pt.surchargeBeefLambSeafood.toFixed(1)}</td>
                       <td className="px-4 py-3 text-center">{pt.requiresRepackaging ? <Check size={14} className="text-emerald-500 mx-auto" /> : <span className="text-slate-300">—</span>}</td>
-                      <td className="px-4 py-3 text-right text-xs">{pt.defaultPackWeightLb ? `${pt.defaultPackWeightLb}磅` : '—'}</td>
+                      <td className="px-4 py-3 text-right text-xs">{(() => {
+                        const wt = pt.defaultPackWeightLb;
+                        const reverseMap: Record<number, string> = { 1: '1磅/包', 2: '2磅/包', 5: '5磅/包', 10: '10磅/箱', 0.66: '300g/包', 1.1: '500g/包', 2.2: '1kg/包', 11: '5kg/包' };
+                        return wt ? (reverseMap[wt] || `${wt}磅`) : '—';
+                      })()}</td>
                       <td className="px-4 py-3 text-center">
                         <span className={`px-2 py-0.5 rounded-md text-[10px] font-black ${pt.isActive ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>{pt.isActive ? '啟用' : '停用'}</span>
                       </td>
@@ -2298,8 +2302,26 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                   <input type="number" step="0.1" min="0" value={editingPT.surchargeBeefLambSeafood ?? ''} onChange={e => setEditingPT({ ...editingPT, surchargeBeefLambSeafood: parseFloat(e.target.value) || 0 })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm" />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">預設包裝重量 (磅)</label>
-                  <input type="number" step="0.5" min="0" value={editingPT.defaultPackWeightLb ?? ''} onChange={e => setEditingPT({ ...editingPT, defaultPackWeightLb: parseFloat(e.target.value) || undefined })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm" placeholder="例: 5" />
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">預設包裝規格</label>
+                  <select value={(() => {
+                    const wt = editingPT.defaultPackWeightLb;
+                    const reverseMap: Record<number, string> = { 1: '1磅/包', 2: '2磅/包', 5: '5磅/包', 10: '10磅/箱', 0.66: '300g/包', 1.1: '500g/包', 2.2: '1kg/包', 11: '5kg/包' };
+                    return wt ? (reverseMap[wt] || '') : '';
+                  })()} onChange={e => {
+                    const val = e.target.value;
+                    const weightMap: Record<string, number> = { '1磅/包': 1, '2磅/包': 2, '5磅/包': 5, '10磅/箱': 10, '300g/包': 0.66, '500g/包': 1.1, '1kg/包': 2.2, '5kg/包': 11 };
+                    setEditingPT({ ...editingPT, defaultPackWeightLb: weightMap[val] || undefined });
+                  }} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm">
+                    <option value="">— 不設定 —</option>
+                    <option value="1磅/包">1磅/包</option>
+                    <option value="2磅/包">2磅/包</option>
+                    <option value="5磅/包">5磅/包</option>
+                    <option value="10磅/箱">10磅/箱</option>
+                    <option value="300g/包">300g/包</option>
+                    <option value="500g/包">500g/包</option>
+                    <option value="1kg/包">1kg/包</option>
+                    <option value="5kg/包">5kg/包</option>
+                  </select>
                 </div>
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">排序</label>
@@ -2534,14 +2556,13 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                         <table className="w-full text-xs">
                           <thead>
                             <tr className="bg-slate-50 text-[9px] font-bold text-slate-400 uppercase tracking-widest">
-                              <th className="text-left px-4 py-2">產品</th>
-                              <th className="text-left px-2 py-2">加工</th>
+                              <th className="text-left px-4 py-2">規格</th>
                               <th className="text-right px-2 py-2">成本/lb</th>
                               <th className="text-right px-2 py-2">包裝費</th>
                               <th className="text-right px-2 py-2">雜費</th>
                               {costItems.map(ci => <th key={ci.id} className="text-center px-1 py-2">{ci.name}</th>)}
                               <th className="text-right px-2 py-2">總成本/lb</th>
-                              <th className="text-right px-2 py-2">包裝磅數</th>
+                              <th className="text-right px-2 py-2">包裝規格</th>
                               <th className="text-right px-3 py-2">成本/包</th>
                               {costsChannelFilter !== 'retail' && <th className="text-right px-3 py-2 text-orange-500">P0</th>}
                               {costsChannelFilter !== 'retail' && costsWsRules.priceTiers.map(tier => (
@@ -2554,7 +2575,6 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                               const perLbCost = computeProductCost(p, ing, costItems, matProcEntries);
                               const packCost = computePackCost(perLbCost, p.packWeightLb, p.pricingMode);
                               const p0 = packCost > 0 ? packCost / costsWsRules.targetMarginFactor : 0;
-                              const ptName = p.processingTypeId ? processingTypes.find(pt => pt.id === p.processingTypeId)?.name : '原件';
                               return (
                                 <tr key={p.id} className="hover:bg-slate-50/50">
                                   <td className="px-4 py-2">
@@ -2563,12 +2583,10 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                         {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-[10px]">{p.image || '📦'}</span>}
                                       </div>
                                       <div>
-                                        <span className="font-bold text-slate-700 text-[11px]">{p.name}</span>
-                                        {p.variantLabel && <span className="ml-1 text-[9px] text-violet-500 font-bold">{p.variantLabel}</span>}
+                                        <span className="font-bold text-slate-700 text-[11px]">{p.variantLabel || p.name}</span>
                                       </div>
                                     </div>
                                   </td>
-                                  <td className="px-2 py-2 text-[10px] font-bold text-slate-500">{ptName || '—'}</td>
                                   <td className="px-2 py-2 text-right font-bold text-slate-700">${perLbCost.toFixed(2)}</td>
                                   <td className="px-2 py-2 text-right">
                                     <input type="number" min="0" step="0.1" value={p.packagingCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, packagingCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-12 p-1 bg-slate-50 rounded-md font-bold text-right border border-slate-100 text-xs" />
@@ -2592,7 +2610,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                   })}
                                   <td className="px-2 py-2 text-right font-black text-slate-900">${perLbCost.toFixed(2)}</td>
                                   <td className="px-2 py-2 text-right text-[10px] font-bold text-slate-500">
-                                    {p.pricingMode === 'by_piece' ? <span className="text-pink-500">抄碼</span> : p.packWeightLb ? `${p.packWeightLb}磅` : '—'}
+                                    {p.pricingMode === 'by_piece' ? <span className="text-pink-500">抄碼</span> : p.packSize || (p.packWeightLb ? `${p.packWeightLb}磅` : '—')}
                                   </td>
                                   <td className="px-3 py-2 text-right font-black text-amber-700">
                                     {p.pricingMode === 'by_piece' ? `$${perLbCost.toFixed(1)}/lb` : p.packWeightLb ? `$${packCost.toFixed(1)}` : `$${perLbCost.toFixed(1)}/lb`}

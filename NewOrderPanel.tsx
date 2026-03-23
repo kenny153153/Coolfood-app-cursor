@@ -1438,7 +1438,6 @@ ${pages}
                                   <span className="text-xs font-bold text-slate-700">{spec.variantLabel || spec.name}</span>
                                   {spec.pricingMode === 'by_piece' && <span className="px-1 py-0.5 bg-pink-50 text-pink-600 rounded text-[8px] font-black">抄碼</span>}
                                   {spec.pricingMode !== 'by_piece' && <span className="px-1 py-0.5 bg-slate-100 text-slate-500 rounded text-[8px] font-bold">定裝</span>}
-                                  {spec.packSize && <span className="text-[9px] text-slate-400">{spec.packSize}</span>}
                                 </div>
                                 <span className="text-xs text-slate-400 flex-shrink-0">${spec.price}{spec.pricingMode === 'by_piece' ? '/磅' : ''}</span>
                               </button>

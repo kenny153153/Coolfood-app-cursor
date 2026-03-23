@@ -4035,10 +4035,8 @@ const App: React.FC = () => {
                             <td className="px-6 py-3">
                               <div className="flex items-center gap-2">
                                 <span className="text-xs font-bold text-slate-700">{spec.variantLabel || spec.name}</span>
-                                {pt && <span className="px-1.5 py-0.5 bg-violet-50 text-violet-600 rounded text-[9px] font-bold">{pt.name}</span>}
                                 {spec.processingSpec && <span className="px-1.5 py-0.5 bg-amber-50 text-amber-600 rounded text-[9px] font-bold">{spec.processingSpec}</span>}
                                 <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${spec.pricingMode === 'by_piece' ? 'bg-pink-50 text-pink-600' : 'bg-slate-100 text-slate-500'}`}>{pricingLabel}</span>
-                                {spec.packSize && <span className="text-[9px] text-slate-400 font-bold">{spec.packSize}</span>}
                                 <span className="text-[10px] font-black text-slate-800 ml-auto">${spec.price}{spec.pricingMode === 'by_piece' ? `/${spec.weight || '磅'}` : ''}</span>
                               </div>
                             </td>
@@ -7250,12 +7248,15 @@ const App: React.FC = () => {
                           const ingCategory = parentIng?.category?.toLowerCase() || '';
                           const isBLS = ingCategory.includes('牛') || ingCategory.includes('羊') || ingCategory.includes('海鮮');
                           const autoSurcharge = pt ? (isBLS ? pt.surchargeBeefLambSeafood : pt.surchargePorkChicken) : 0;
+                          const reverseMap: Record<number, string> = { 1: '1磅/包', 2: '2磅/包', 5: '5磅/包', 10: '10磅/箱', 0.66: '300g/包', 1.1: '500g/包', 2.2: '1kg/包', 11: '5kg/包' };
+                          const autoPackSize = pt?.requiresRepackaging && pt.defaultPackWeightLb ? (reverseMap[pt.defaultPackWeightLb] || `${pt.defaultPackWeightLb}磅/包`) : editingProduct.packSize;
+                          const weightMap: Record<string, number> = { '1磅/包': 1, '2磅/包': 2, '5磅/包': 5, '10磅/箱': 10, '300g/包': 0.66, '500g/包': 1.1, '1kg/包': 2.2, '5kg/包': 11 };
                           setEditingProduct({
                             ...editingProduct,
                             processingTypeId: ptId,
                             processingCost: autoSurcharge,
-                            packSize: pt?.requiresRepackaging && pt.defaultPackWeightLb ? `${pt.defaultPackWeightLb}磅/包` : editingProduct.packSize,
-                            packWeightLb: pt?.defaultPackWeightLb ?? editingProduct.packWeightLb,
+                            packSize: autoPackSize,
+                            packWeightLb: autoPackSize ? (weightMap[autoPackSize] ?? pt?.defaultPackWeightLb ?? editingProduct.packWeightLb) : editingProduct.packWeightLb,
                           });
                         }} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100">
                           <option value="">原件（不加工）</option>
@@ -7298,10 +7299,6 @@ const App: React.FC = () => {
                           <option value={editingProduct.packSize}>{editingProduct.packSize} (自訂)</option>
                         )}
                       </select>
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-slate-500 ml-1">包裝重量 (磅)</label>
-                      <input type="number" min="0" step="0.01" value={editingProduct.packWeightLb ?? ''} onChange={e => setEditingProduct({ ...editingProduct, packWeightLb: Number(e.target.value) || undefined })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" placeholder="例: 5" />
                     </div>
                   </div>
 
@@ -7641,7 +7638,7 @@ const App: React.FC = () => {
                         <span className="text-[10px] font-black text-violet-600">規格 #{si + 1}</span>
                         <button onClick={() => setNewProductWizard(w => w ? { ...w, specs: w.specs.filter((_, i) => i !== si) } : w)} className="p-1 text-rose-400 hover:text-rose-600"><Trash2 size={12}/></button>
                       </div>
-                      <div className="grid grid-cols-3 gap-3">
+                      <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
                           <label className="text-[8px] font-bold text-slate-400 ml-0.5">規格名稱（自動）</label>
                           <div className="w-full p-2.5 bg-violet-50 rounded-lg font-bold text-xs border border-violet-200 text-violet-700 min-h-[36px] flex items-center">
@@ -7660,13 +7657,6 @@ const App: React.FC = () => {
                               setNewProductWizard(w => w ? { ...w, specs: next } : w);
                             }} className={`flex-1 p-2 rounded-lg text-[10px] font-black border transition-all ${spec.pricingMode === 'by_piece' ? 'border-pink-500 bg-pink-100 text-pink-700' : 'border-slate-200 bg-white text-slate-500'}`}>🏷️ 抄碼</button>
                           </div>
-                        </div>
-                        <div className="space-y-1">
-                          <label className="text-[8px] font-bold text-slate-400 ml-0.5">包裝重量 (磅)</label>
-                          <input type="number" value={spec.packWeightLb || ''} onChange={e => {
-                            const next = [...newProductWizard.specs]; next[si] = { ...next[si], packWeightLb: Number(e.target.value) || undefined };
-                            setNewProductWizard(w => w ? { ...w, specs: next } : w);
-                          }} className="w-full p-2.5 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100" placeholder="例: 5" min="0" step="0.1" />
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-3">

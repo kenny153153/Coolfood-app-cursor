@@ -382,7 +382,6 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                                     <div className="flex items-center gap-1.5">
                                       <span className="text-xs font-bold text-slate-700">{spec.variantLabel || spec.name}</span>
                                       {isByPiece && <span className="px-1 py-0.5 bg-pink-50 text-pink-600 rounded text-[8px] font-black">抄碼</span>}
-                                      {spec.packSize && <span className="text-[9px] text-slate-400">{spec.packSize}</span>}
                                     </div>
                                   </td>
                                   <td className="px-3 py-2 text-slate-500 text-xs hidden sm:table-cell font-mono">{spec.legacyId || ''}</td>
@@ -439,8 +438,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                               {p.image && <img src={p.image} alt="" className="w-8 h-8 rounded object-cover bg-slate-100 flex-shrink-0" />}
                               <div className="min-w-0">
                                 <p className="font-bold text-slate-800 truncate">{p.name}</p>
-                                {p.packSize && <p className="text-[10px] text-slate-400">{p.packSize}</p>}
-                                {!p.packSize && p.weight && <p className="text-[10px] text-slate-400">{p.weight}</p>}
+                                {p.weight && !p.packSize && <p className="text-[10px] text-slate-400">{p.weight}</p>}
                               </div>
                             </div>
                           </td>
