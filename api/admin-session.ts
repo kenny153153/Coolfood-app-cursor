@@ -5,7 +5,7 @@
  * Validates an existing admin session server-side. Used on page load to
  * restore a cached admin session without exposing password_hash to the client.
  */
-import { createHash } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 
 type Req = {
   method?: string;
@@ -25,7 +25,10 @@ function sha256(input: string): string {
 
 function verifySessionToken(token: string, memberId: string, passwordHash: string | null): boolean {
   const expected = sha256(`session:${memberId}:${passwordHash ?? ''}`);
-  return token === expected;
+  const bufA = Buffer.from(token);
+  const bufB = Buffer.from(expected);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
 }
 
 export default async function handler(req: Req, res: Res) {
@@ -41,12 +44,8 @@ export default async function handler(req: Req, res: Res) {
     return res.status(401).json({ error: '無效的登入狀態', code: 'MISSING_SESSION' });
   }
 
-  const supabaseUrl = (
-    process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? ''
-  ).trim().replace(/\/$/, '');
-  const serviceRoleKey = safeTrim(
-    process.env.SUPABASE_SERVICE_ROLE_KEY ?? ''
-  );
+  const supabaseUrl = (process.env.SUPABASE_URL ?? '').trim().replace(/\/$/, '');
+  const serviceRoleKey = safeTrim(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '');
 
   if (!supabaseUrl || !serviceRoleKey) {
     console.error('[admin-session] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');

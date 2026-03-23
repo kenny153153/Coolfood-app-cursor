@@ -333,6 +333,8 @@ export interface OrderLineItem {
   processing_type_name?: string;
   processing_spec?: string;
   line_note?: string;
+  pricing_mode?: PricingMode;
+  actual_weight_lb?: number;
 }
 
 /** Supabase public.orders table – column names must match exactly (snake_case). id may be bigint (number) or text. */
@@ -1099,6 +1101,8 @@ export interface GoodsReceiptItem {
   unitCost: number;
   lineTotal: number;
   storageLocation?: string;
+  brand?: string;
+  reservedForClientId?: string;
   notes?: string;
   createdAt?: string;
 }
@@ -1134,6 +1138,54 @@ export interface StockMovement {
   performedAt: string;
   notes?: string;
   ingredientName?: string;
+  lotId?: string;
+}
+
+// ─── Stock Lots (庫存批次) ──────────────────────────────────────
+
+export type StockLotStatus = 'available' | 'reserved' | 'depleted' | 'expired';
+
+export interface StockLot {
+  id: string;
+  ingredientId: string;
+  brand?: string;
+  supplierId?: string;
+  supplierName?: string;
+  goodsReceiptItemId?: string;
+  receivedDate: string;
+  expiryDate?: string;
+  quantityReceived: number;
+  quantityRemaining: number;
+  unit: string;
+  costPerUnit: number;
+  storageLocation?: string;
+  reservedForClientId?: string;
+  reservedForClientName?: string;
+  lotStatus: StockLotStatus;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SupabaseStockLotRow {
+  id: string;
+  ingredient_id: string;
+  brand?: string | null;
+  supplier_id?: string | null;
+  supplier_name?: string | null;
+  goods_receipt_item_id?: string | null;
+  received_date: string;
+  expiry_date?: string | null;
+  quantity_received: number;
+  quantity_remaining: number;
+  unit: string;
+  cost_per_unit: number;
+  storage_location?: string | null;
+  reserved_for_client_id?: string | null;
+  lot_status: string;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 // ─── Quotation types ────────────────────────────────────────────

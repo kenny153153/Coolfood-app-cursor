@@ -1,7 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { ShieldCheck, CheckCircle, AlertTriangle, Eye, EyeOff } from 'lucide-react';
-import { supabase } from './supabaseClient';
-import { hashPassword } from './authHelpers';
 
 const SetupPage: React.FC = () => {
   const [checking, setChecking] = useState(true);
@@ -15,17 +13,14 @@ const SetupPage: React.FC = () => {
   useEffect(() => {
     (async () => {
       try {
-        const { data, error } = await supabase
-          .from('members')
-          .select('id')
-          .eq('role', 'admin')
-          .limit(1);
-        if (!error && data && data.length > 0) {
-          setAlreadyExists(true);
-        }
-      } catch {
-        // If table doesn't exist yet, allow setup
-      }
+        // Check via a lightweight POST to the setup API — it returns 409 if admin exists
+        const res = await fetch('/api/setup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: '__check__', phone: '00000000', password: 'checkonly' }),
+        });
+        if (res.status === 409) setAlreadyExists(true);
+      } catch { /* allow setup */ }
       setChecking(false);
     })();
   }, []);
@@ -40,32 +35,14 @@ const SetupPage: React.FC = () => {
 
     setSubmitting(true);
     try {
-      // Double-check no admin exists
-      const { data: existing } = await supabase.from('members').select('id').eq('role', 'admin').limit(1);
-      if (existing && existing.length > 0) {
-        setAlreadyExists(true);
-        setSubmitting(false);
-        return;
-      }
-
-      const passwordHash = await hashPassword(form.password);
-      const { error: insertError } = await supabase.from('members').insert({
-        id: `u-${Date.now()}`,
-        name: form.name.trim(),
-        phone_number: form.phone.trim(),
-        role: 'admin',
-        password_hash: passwordHash,
-        tier: 'VIP',
-        wallet_balance: 0,
-        points: 0,
+      const res = await fetch('/api/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: form.name.trim(), phone: form.phone.trim(), password: form.password }),
       });
-
-      if (insertError) {
-        setError(`建立失敗: ${insertError.message}`);
-        setSubmitting(false);
-        return;
-      }
-
+      const json = await res.json();
+      if (res.status === 409) { setAlreadyExists(true); setSubmitting(false); return; }
+      if (!res.ok) { setError(json.error || '建立失敗'); setSubmitting(false); return; }
       setDone(true);
     } catch (err: any) {
       setError(`系統錯誤: ${err.message}`);

@@ -629,7 +629,11 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
       const next = [...prev];
       const line = { ...next[idx], [field]: value };
       if (field === 'qty' || field === 'unitPrice' || field === 'discount') {
-        line.lineTotal = line.qty * line.unitPrice * (1 - line.discount / 100);
+        if (line.pricingMode === 'by_piece' && line.actualWeight && line.actualWeight > 0) {
+          line.lineTotal = line.actualWeight * line.unitPrice * (1 - line.discount / 100);
+        } else {
+          line.lineTotal = line.qty * line.unitPrice * (1 - line.discount / 100);
+        }
       }
       next[idx] = line;
 
@@ -739,6 +743,8 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
         processing_type_name: l.processingTypeName || undefined,
         processing_spec: l.processingSpec || undefined,
         line_note: l.lineNote || undefined,
+        pricing_mode: l.pricingMode || undefined,
+        actual_weight_lb: l.actualWeight || undefined,
       }));
 
     const payload = {

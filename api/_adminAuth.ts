@@ -3,16 +3,10 @@
  * Validates that the request comes from an authenticated admin user
  * OR from an internal server-to-server call using the service role key.
  *
+ * Security: verifies session token server-side to prevent header spoofing.
  * Enterprise Security: optionally enforces module + CRUD operation checks.
- *
- * Usage in API handlers:
- *   const authResult = await verifyAdminRequest(req);
- *   if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
- *
- * With module+operation check:
- *   const authResult = await verifyAdminRequest(req, 'accounting', 'create');
- *   if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
  */
+import { createHash, timingSafeEqual } from 'crypto';
 
 export type CrudOp = 'read' | 'create' | 'update' | 'delete' | 'export';
 
@@ -34,10 +28,22 @@ export type AdminAuthResult = {
 
 const safeTrim = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 
+function sha256(input: string): string {
+  return createHash('sha256').update(input).digest('hex');
+}
+
+function timingSafeCompare(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
 function isInternalCall(req: { headers?: Record<string, string | string[] | undefined> }): boolean {
   const secret = safeTrim(req.headers?.['x-internal-secret'] as string);
   const serviceRoleKey = safeTrim(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '');
-  return !!secret && !!serviceRoleKey && secret === serviceRoleKey;
+  if (!secret || !serviceRoleKey) return false;
+  return timingSafeCompare(secret, serviceRoleKey);
 }
 
 /** Normalize legacy boolean or new CRUD permission value */
@@ -62,9 +68,14 @@ export async function verifyAdminRequest(
 
   const adminId = safeTrim(req.headers?.['x-admin-id'] as string);
   const adminRole = safeTrim(req.headers?.['x-admin-role'] as string);
+  const sessionToken = safeTrim(req.headers?.['x-session-token'] as string);
 
   if (!adminId || !adminRole) {
     return { ok: false, status: 401, error: '未授權：需要管理員登入' };
+  }
+
+  if (!sessionToken) {
+    return { ok: false, status: 401, error: '未授權：缺少會話令牌' };
   }
 
   const supabaseUrl = (process.env.SUPABASE_URL ?? '').trim().replace(/\/$/, '');
@@ -76,8 +87,8 @@ export async function verifyAdminRequest(
 
   try {
     const selectCols = requiredModule
-      ? 'id,role,admin_permissions'
-      : 'id,role';
+      ? 'id,role,admin_permissions,password_hash'
+      : 'id,role,password_hash';
 
     const res = await fetch(
       `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(adminId)}&role=neq.customer&select=${selectCols}`,
@@ -88,6 +99,12 @@ export async function verifyAdminRequest(
 
     if (!admin) {
       return { ok: false, status: 403, error: '權限不足：非管理員帳號' };
+    }
+
+    // Verify session token against password_hash
+    const expectedToken = sha256(`session:${admin.id}:${admin.password_hash ?? ''}`);
+    if (!timingSafeCompare(sessionToken, expectedToken)) {
+      return { ok: false, status: 401, error: '會話已過期，請重新登入' };
     }
 
     // super_admin bypasses all module/op checks

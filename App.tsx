@@ -58,7 +58,7 @@ import {
   mapProductGroupRow,
   mapProductGroupToRow,
 } from './supabaseMappers';
-import { hashPassword, verifyPassword, generateSessionToken, verifySessionToken } from './authHelpers';
+import { hashPassword } from './authHelpers';
 import { uploadImage, uploadImages, deleteImage, isMediaUrl } from './imageUpload';
 
 const LazySetupPage = lazy(() => import('./SetupPage'));
@@ -650,10 +650,13 @@ const PERMISSION_GROUPS: { label: string; keys: (keyof AdminPermissions)[] }[] =
 /** Build auth headers for admin-only API calls, with optional module + operation for CRUD enforcement */
 function buildAdminHeaders(admin: { id: string; role: string } | null, module?: string, op?: CrudOp): Record<string, string> {
   if (!admin) return { 'Content-Type': 'application/json' };
+  let sessionToken = '';
+  try { sessionToken = localStorage.getItem('coolfood_admin_session_token') ?? ''; } catch { /* ignore */ }
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'x-admin-id': admin.id,
     'x-admin-role': admin.role,
+    'x-session-token': sessionToken,
   };
   if (module) headers['x-admin-module'] = module;
   if (op) headers['x-admin-op'] = op;
@@ -1154,10 +1157,13 @@ const App: React.FC = () => {
   // Load core data from Supabase on mount
   useEffect(() => {
     const loadCoreData = async () => {
+      const membersPromise = isAdminRoute
+        ? supabase.from('members').select('id, name, email, phone_number, points, wallet_balance, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses')
+        : Promise.resolve({ data: null, error: null });
       const [productsRes, categoriesRes, membersRes, slideshowRes] = await Promise.all([
         supabase.from('products').select('*'),
         supabase.from('categories').select('*'),
-        supabase.from('members').select('id, name, email, phone_number, points, wallet_balance, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses'),
+        membersPromise,
         supabase.from('slideshow').select('*').order('sort_order', { ascending: true })
       ]);
 
@@ -1297,7 +1303,7 @@ const App: React.FC = () => {
     return () => clearInterval(t);
   }, [slideshowItems.length]);
 
-  // Restore member login from localStorage after page load (e.g. after return from payment)
+  // Restore member login from localStorage via server-side session validation
   useEffect(() => {
     let storedId: string | null = null;
     let storedToken: string | null = null;
@@ -1305,20 +1311,21 @@ const App: React.FC = () => {
       storedId = localStorage.getItem('coolfood_member_id');
       storedToken = localStorage.getItem('coolfood_session_token');
     } catch { /* ignore */ }
-    if (!storedId) return;
+    if (!storedId || !storedToken) return;
     const restoreUser = async () => {
-      const { data, error } = await supabase.from('members').select('id, name, email, password_hash, phone_number, points, wallet_balance, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses').eq('id', storedId).maybeSingle();
-      if (error || !data) return;
-      const row = data as SupabaseMemberRow;
-      // Validate session token to prevent impersonation via localStorage tampering
-      if (storedToken) {
-        const valid = await verifySessionToken(storedToken, row.id, row.password_hash);
-        if (!valid) {
+      try {
+        const res = await fetch('/api/customer-auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'restore-session', memberId: storedId, sessionToken: storedToken }),
+        });
+        if (!res.ok) {
           try { localStorage.removeItem('coolfood_member_id'); localStorage.removeItem('coolfood_session_token'); } catch { /* ignore */ }
           return;
         }
-      }
-      setUser(mapMemberRowToUser(row));
+        const json = await res.json();
+        if (json.user) setUser(mapMemberRowToUser(json.user as SupabaseMemberRow));
+      } catch { /* ignore */ }
     };
     restoreUser();
   }, []);
@@ -1863,7 +1870,10 @@ const App: React.FC = () => {
     if (isWholesaleRoute) {
       cart.forEach(item => {
         const linkedIng = ingredients.find(i => i.id === item.ingredientId);
-        subtotal += getWholesaleUnitPrice(item, linkedIng, costItems, siteConfig.wholesalePricingRules!, user?.wholesalePriceTier, wholesalePriceOverrides) * item.qty;
+        const unitPrice = getWholesaleUnitPrice(item, linkedIng, costItems, siteConfig.wholesalePricingRules!, user?.wholesalePriceTier, wholesalePriceOverrides);
+        const isByPiece = item.pricingMode === 'by_piece';
+        const effectiveQty = isByPiece && item.packWeightLb ? item.packWeightLb * item.qty : item.qty;
+        subtotal += unitPrice * effectiveQty;
       });
       const deliveryFee = 0;
       return {
@@ -1936,36 +1946,30 @@ const App: React.FC = () => {
       showToast('請輸入電郵或電話及密碼', 'error');
       return;
     }
-    const loginCols = 'id, name, email, password_hash, phone_number, points, wallet_balance, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses';
-    const isEmail = input.includes('@');
-    const { data, error } = isEmail
-      ? await supabase.from('members').select(loginCols).eq('email', input.toLowerCase()).maybeSingle()
-      : await supabase.from('members').select(loginCols).eq('phone_number', input).maybeSingle();
-    if (error) {
-      showToast(error.message || '登入失敗', 'error');
-      return;
-    }
-    if (!data) {
-      showToast('找不到此帳戶', 'error');
-      return;
-    }
-    const row = data as SupabaseMemberRow;
-    const ok = await verifyPassword(authForm.password, row.password_hash);
-    if (!ok) {
-      showToast('密碼錯誤', 'error');
-      return;
-    }
-    const u = mapMemberRowToUser(row);
-    setUser(u);
     try {
-      localStorage.setItem('coolfood_member_id', u.id);
-      const sessionToken = await generateSessionToken(u.id, row.password_hash);
-      localStorage.setItem('coolfood_session_token', sessionToken);
-    } catch { /* ignore */ }
-    setShowAuthModal(false);
-    setAuthForm({ email: '', password: '', name: '', phone: '' });
-    setView('profile');
-    showToast('歡迎回來！');
+      const res = await fetch('/api/customer-auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'login', identifier: input, password: authForm.password, isWholesale: isWholesaleRoute }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        showToast(json.error || '登入失敗', 'error');
+        return;
+      }
+      const u = mapMemberRowToUser(json.user as SupabaseMemberRow);
+      setUser(u);
+      try {
+        localStorage.setItem('coolfood_member_id', u.id);
+        if (json.sessionToken) localStorage.setItem('coolfood_session_token', json.sessionToken);
+      } catch { /* ignore */ }
+      setShowAuthModal(false);
+      setAuthForm({ email: '', password: '', name: '', phone: '' });
+      setView('profile');
+      showToast('歡迎回來！');
+    } catch {
+      showToast('登入失敗，請稍後再試', 'error');
+    }
   };
 
   const handleSignup = async (e: React.FormEvent) => {
@@ -1979,52 +1983,38 @@ const App: React.FC = () => {
       showToast('密碼至少 6 個字元', 'error');
       return;
     }
-    const { data: existingPhone } = await supabase.from('members').select('id').eq('phone_number', phone).maybeSingle();
-    if (existingPhone) {
-      showToast('此電話已被註冊', 'error');
-      return;
-    }
-    const emailVal = authForm.email.trim() ? authForm.email.trim().toLowerCase() : null;
-    if (emailVal) {
-      const { data: existingEmail } = await supabase.from('members').select('id').eq('email', emailVal).maybeSingle();
-      if (existingEmail) {
-        showToast('此電郵已被註冊', 'error');
+    try {
+      const res = await fetch('/api/customer-auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'register',
+          name: authForm.name.trim(),
+          phone,
+          email: authForm.email.trim() || null,
+          password: authForm.password,
+          isWholesale: isWholesaleRoute,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        showToast(json.error || '註冊失敗', 'error');
         return;
       }
+      const u = mapMemberRowToUser(json.user as SupabaseMemberRow);
+      setUser(u);
+      try {
+        localStorage.setItem('coolfood_member_id', u.id);
+        if (json.sessionToken) localStorage.setItem('coolfood_session_token', json.sessionToken);
+      } catch { /* ignore */ }
+      setMembers(prev => [...prev, u]);
+      setShowAuthModal(false);
+      setAuthForm({ email: '', password: '', name: '', phone: '' });
+      setView('profile');
+      showToast('註冊成功！');
+    } catch {
+      showToast('註冊失敗，請稍後再試', 'error');
     }
-    const passwordHash = await hashPassword(authForm.password);
-    const newId = `u-${Date.now()}`;
-    const newMember: SupabaseMemberRow = {
-      id: newId,
-      name: authForm.name.trim(),
-      email: emailVal,
-      password_hash: passwordHash,
-      phone_number: phone,
-      points: 0,
-      wallet_balance: 0,
-      tier: 'Bronze',
-      role: 'customer',
-      member_type: isWholesaleRoute ? 'wholesale' : 'retail',
-      wholesale_price_tier: isWholesaleRoute ? 'P0' : null,
-      addresses: null
-    };
-    const { data, error } = await supabase.from('members').insert(newMember).select().single();
-    if (error) {
-      showToast(error.message || '註冊失敗', 'error');
-      return;
-    }
-    const u = mapMemberRowToUser(data as SupabaseMemberRow);
-    setUser(u);
-    try {
-      localStorage.setItem('coolfood_member_id', u.id);
-      const sessionToken = await generateSessionToken(u.id, passwordHash);
-      localStorage.setItem('coolfood_session_token', sessionToken);
-    } catch { /* ignore */ }
-    setMembers(prev => [...prev, u]);
-    setShowAuthModal(false);
-    setAuthForm({ email: '', password: '', name: '', phone: '' });
-    setView('profile');
-    showToast('註冊成功！');
   };
 
   const handleSetDefaultAddress = (ownerId: string, addressId: string) => {
@@ -3147,8 +3137,14 @@ const App: React.FC = () => {
 
     const lineItems: OrderLineItem[] = cart.map(item => {
       const unitPrice = getPrice(item, item.qty);
-      const lineTotal = unitPrice * item.qty;
-      return { product_id: item.id, name: item.name, unit_price: unitPrice, qty: item.qty, line_total: lineTotal, image: item.image ?? null };
+      const isByPiece = item.pricingMode === 'by_piece';
+      const estimatedWeight = isByPiece && item.packWeightLb ? item.packWeightLb * item.qty : undefined;
+      const lineTotal = estimatedWeight ? unitPrice * estimatedWeight : unitPrice * item.qty;
+      return {
+        product_id: item.id, name: item.name, unit_price: unitPrice, qty: item.qty, line_total: lineTotal, image: item.image ?? null,
+        pricing_mode: item.pricingMode || undefined,
+        actual_weight_lb: estimatedWeight,
+      };
     });
 
     const deliveryAddress = getCheckoutDeliveryAddress();
@@ -9098,24 +9094,22 @@ const App: React.FC = () => {
         onLogin={async (form) => {
           const input = form.email.trim();
           if (!input || !form.password) { showToast('請輸入電話及密碼', 'error'); return; }
-          const ghLoginCols = 'id, name, email, password_hash, phone_number, points, wallet_balance, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses';
-          const isEmail = input.includes('@');
-          const { data, error } = isEmail
-            ? await supabase.from('members').select(ghLoginCols).eq('email', input.toLowerCase()).maybeSingle()
-            : await supabase.from('members').select(ghLoginCols).eq('phone_number', input).maybeSingle();
-          if (error) { showToast(error.message || '登入失敗', 'error'); return; }
-          if (!data) { showToast('找不到此帳戶', 'error'); return; }
-          const row = data as SupabaseMemberRow;
-          const ok = await verifyPassword(form.password, row.password_hash);
-          if (!ok) { showToast('密碼錯誤', 'error'); return; }
-          const u = mapMemberRowToUser(row);
-          setUser(u);
           try {
-            localStorage.setItem('coolfood_member_id', u.id);
-            const sessionToken = await generateSessionToken(u.id, row.password_hash);
-            localStorage.setItem('coolfood_session_token', sessionToken);
-          } catch { /* ignore */ }
-          showToast('歡迎回來！');
+            const res = await fetch('/api/customer-auth', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'login', identifier: input, password: form.password, isWholesale: true }),
+            });
+            const json = await res.json();
+            if (!res.ok) { showToast(json.error || '登入失敗', 'error'); return; }
+            const u = mapMemberRowToUser(json.user as SupabaseMemberRow);
+            setUser(u);
+            try {
+              localStorage.setItem('coolfood_member_id', u.id);
+              if (json.sessionToken) localStorage.setItem('coolfood_session_token', json.sessionToken);
+            } catch { /* ignore */ }
+            showToast('歡迎回來！');
+          } catch { showToast('登入失敗，請稍後再試', 'error'); }
         }}
         onSubmitOrder={handleSubmitOrder}
         logoUrl={siteConfig.logoUrl}

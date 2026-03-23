@@ -3,9 +3,14 @@
  * Body: { adminId: string, sessionToken: string, newPassword: string }
  *
  * Allows an authenticated admin to change their password server-side.
+ * New passwords are hashed with bcrypt.
  * Returns a new session token (since password_hash changes).
  */
-import { createHash, randomBytes } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
+import bcrypt from 'bcryptjs';
+import { z } from 'zod';
+
+const BCRYPT_ROUNDS = 12;
 
 type Req = {
   method?: string;
@@ -23,24 +28,22 @@ function sha256(input: string): string {
   return createHash('sha256').update(input).digest('hex');
 }
 
-function generateSalt(): string {
-  return randomBytes(8).toString('hex');
-}
-
-function hashPassword(plain: string): string {
-  const salt = generateSalt();
-  const hash = sha256(salt + plain);
-  return `${salt}:${hash}`;
-}
-
-function verifySessionToken(token: string, memberId: string, passwordHash: string | null): boolean {
-  const expected = sha256(`session:${memberId}:${passwordHash ?? ''}`);
-  return token === expected;
+function timingSafeCompare(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
 }
 
 function generateSessionToken(memberId: string, passwordHash: string | null): string {
   return sha256(`session:${memberId}:${passwordHash ?? ''}`);
 }
+
+const changePasswordSchema = z.object({
+  adminId: z.string().min(1),
+  sessionToken: z.string().min(1),
+  newPassword: z.string().min(6),
+});
 
 export default async function handler(req: Req, res: Res) {
   if (req.method !== 'POST') {
@@ -48,23 +51,17 @@ export default async function handler(req: Req, res: Res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const adminId = safeTrim(req.body?.adminId);
-  const sessionToken = safeTrim(req.body?.sessionToken);
-  const newPassword = req.body?.newPassword ?? '';
-
-  if (!adminId || !sessionToken) {
-    return res.status(401).json({ error: '未授權：需要登入', code: 'UNAUTHORIZED' });
-  }
-  if (!newPassword || newPassword.length < 6) {
-    return res.status(400).json({ error: '新密碼至少需要6個字元', code: 'WEAK_PASSWORD' });
+  const parsed = changePasswordSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const msg = parsed.error.issues[0]?.path.includes('newPassword') ? '新密碼至少需要6個字元' : '未授權：需要登入';
+    const code = parsed.error.issues[0]?.path.includes('newPassword') ? 'WEAK_PASSWORD' : 'UNAUTHORIZED';
+    return res.status(400).json({ error: msg, code });
   }
 
-  const supabaseUrl = (
-    process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? ''
-  ).trim().replace(/\/$/, '');
-  const serviceRoleKey = safeTrim(
-    process.env.SUPABASE_SERVICE_ROLE_KEY ?? ''
-  );
+  const { adminId, sessionToken, newPassword } = parsed.data;
+
+  const supabaseUrl = (process.env.SUPABASE_URL ?? '').trim().replace(/\/$/, '');
+  const serviceRoleKey = safeTrim(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '');
 
   if (!supabaseUrl || !serviceRoleKey) {
     return res.status(500).json({ error: '伺服器配置錯誤', code: 'SERVER_CONFIG' });
@@ -78,11 +75,12 @@ export default async function handler(req: Req, res: Res) {
     const members = await memberRes.json();
     const member = Array.isArray(members) ? members[0] : null;
 
-    if (!member || !verifySessionToken(sessionToken, member.id, member.password_hash)) {
+    const expectedToken = member ? generateSessionToken(member.id, member.password_hash) : '';
+    if (!member || !timingSafeCompare(sessionToken, expectedToken)) {
       return res.status(401).json({ error: '登入已過期，請重新登入', code: 'INVALID_SESSION' });
     }
 
-    const newHash = hashPassword(newPassword);
+    const newHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
 
     const updateRes = await fetch(
       `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(adminId)}`,
@@ -94,7 +92,7 @@ export default async function handler(req: Req, res: Res) {
           'Content-Type': 'application/json',
           Prefer: 'return=minimal',
         },
-        body: JSON.stringify({ password_hash: newHash }),
+        body: JSON.stringify({ password_hash: newHash, must_change_password: false }),
       }
     );
 

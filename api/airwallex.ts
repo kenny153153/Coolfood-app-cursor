@@ -1,11 +1,10 @@
 /**
  * Consolidated Airwallex API — POST /api/airwallex
  * Body: { action: 'create-intent' | 'refund', ... }
- *
- * Merges the former /api/airwallex-create-intent and /api/airwallex-refund.
  */
 import { createClient } from '@supabase/supabase-js';
 import { verifyAdminRequest } from './_adminAuth';
+import { checkRateLimit, getClientIp } from './_rateLimit';
 
 const AIRWALLEX_DEMO = 'https://api-demo.airwallex.com';
 const AIRWALLEX_PROD = 'https://api.airwallex.com';
@@ -24,9 +23,9 @@ function fetchWithTimeout(url: string, opts: RequestInit, ms = 10000): Promise<R
 }
 
 function getAirwallexConfig() {
-  const clientId = safeTrim(process.env.AIRWALLEX_CLIENT_ID ?? process.env.VITE_AIRWALLEX_CLIENT_ID ?? '');
-  const apiKey = safeTrim(process.env.AIRWALLEX_API_KEY ?? process.env.VITE_AIRWALLEX_API_KEY ?? '');
-  const envRaw = safeTrim(process.env.AIRWALLEX_ENV ?? process.env.VITE_AIRWALLEX_ENV ?? '');
+  const clientId = safeTrim(process.env.AIRWALLEX_CLIENT_ID ?? '');
+  const apiKey = safeTrim(process.env.AIRWALLEX_API_KEY ?? '');
+  const envRaw = safeTrim(process.env.AIRWALLEX_ENV ?? '');
   const useDemo = envRaw !== 'prod';
   const baseUrl = useDemo ? AIRWALLEX_DEMO : AIRWALLEX_PROD;
   return { clientId, apiKey, useDemo, baseUrl };
@@ -52,13 +51,15 @@ async function getAirwallexToken(): Promise<{ token: string; baseUrl: string }> 
 // ─── create-intent ──────────────────────────────────────────────────
 
 async function handleCreateIntent(req: any, res: any) {
+  // Rate limit payment intent creation per IP
+  const ip = getClientIp(req.headers ?? {});
+  const rl = checkRateLimit(`create-intent:${ip}`, 10, 60_000);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: 'Too many requests', code: 'RATE_LIMITED' });
+  }
+
   const { clientId, apiKey, useDemo, baseUrl } = getAirwallexConfig();
   const authUrl = `${baseUrl}/api/v1/authentication/login`;
-
-  console.log('目前正在訪問的網址是: ' + authUrl);
-  console.log('process.env.VITE_AIRWALLEX_ENV =', JSON.stringify(process.env.VITE_AIRWALLEX_ENV), '| AIRWALLEX_ENV =', JSON.stringify(process.env.AIRWALLEX_ENV));
-  console.log('clientId length:', clientId.length, '| apiKey length:', apiKey.length);
-  if (useDemo) console.log('Airwallex Sandbox Mode Active');
 
   if (!clientId || !apiKey) {
     return res.status(500).json({
@@ -201,8 +202,8 @@ async function handleRefund(req: any, res: any) {
     return res.status(400).json({ error: 'Missing orderId or invalid amount', code: 'BAD_REQUEST' });
   }
 
-  const supabaseUrl = safeTrim(process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? '').replace(/\/$/, '');
-  const supabaseKey = safeTrim(process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.VITE_SUPABASE_ANON_KEY ?? '');
+  const supabaseUrl = safeTrim(process.env.SUPABASE_URL ?? '').replace(/\/$/, '');
+  const supabaseKey = safeTrim(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '');
 
   if (!supabaseUrl || !supabaseKey) {
     return res.status(500).json({ error: 'Server config missing', code: 'CONFIG_MISSING' });

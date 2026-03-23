@@ -2,9 +2,11 @@
  * 第三部分：Webhook — 當 Supabase 訂單被更新為「已付款」(paid/success) 時由 Supabase 呼叫
  * 在 Supabase Dashboard → Database → Webhooks 新增：table orders, Events: Update, URL: https://你的網域/api/on-order-paid
  * 
- * 注意：SF API 已解耦，此 webhook 僅確認付款並更新狀態至 processing。
- * 順豐下單改由後台「呼叫順豐」批量操作觸發。
+ * Security: Requires WEBHOOK_SECRET header to prevent unauthorized calls.
+ * Set the same secret in Supabase webhook config headers.
  */
+import { timingSafeEqual } from 'crypto';
+
 type WebhookPayload = {
   type?: string;
   table?: string;
@@ -12,13 +14,28 @@ type WebhookPayload = {
   old_record?: { status?: string };
 };
 
+function verifyWebhookSecret(headers: Record<string, string | string[] | undefined>): boolean {
+  const secret = (process.env.WEBHOOK_SECRET ?? '').trim();
+  if (!secret) {
+    console.warn('[on-order-paid] WEBHOOK_SECRET not configured — rejecting all requests');
+    return false;
+  }
+  const provided = typeof headers['x-webhook-secret'] === 'string' ? headers['x-webhook-secret'].trim() : '';
+  if (!provided || provided.length !== secret.length) return false;
+  return timingSafeEqual(Buffer.from(provided), Buffer.from(secret));
+}
+
 export default async function handler(
-  req: { method?: string; body?: WebhookPayload },
+  req: { method?: string; body?: WebhookPayload; headers?: Record<string, string | string[] | undefined> },
   res: { setHeader: (k: string, v: string) => void; status: (n: number) => { json: (o: object) => void }; json: (o: object) => void }
 ) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  if (!verifyWebhookSecret(req.headers ?? {})) {
+    return res.status(403).json({ error: 'Invalid webhook secret' });
   }
 
   const body = req.body as WebhookPayload;
@@ -36,7 +53,6 @@ export default async function handler(
     return res.status(200).json({ received: true, skipped: true });
   }
 
-  // SF API 已解耦：webhook 僅記錄收到事件，不再觸發 confirm-payment 或 SF 下單
   console.log('[on-order-paid] Payment confirmed for order', body.record.id, '- SF decoupled, no auto-call');
   return res.status(200).json({ received: true, sfDecoupled: true });
 }

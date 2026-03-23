@@ -5,15 +5,24 @@
  * Merges the former /api/customer-orders, /api/customer-order-details,
  * and /api/customer-reorder into a single serverless function.
  */
-import { createHash } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
+import { z } from 'zod';
 
 const safeTrim = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 
 function verifySession(token: string, memberId: string, passwordHash: string | null): boolean {
   const raw = `session:${memberId}:${passwordHash ?? ''}`;
   const expected = createHash('sha256').update(raw).digest('hex');
-  return token === expected;
+  const bufA = Buffer.from(token);
+  const bufB = Buffer.from(expected);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
 }
+
+const customerApiSchema = z.object({
+  action: z.enum(['list', 'details', 'reorder']),
+  orderId: z.union([z.string(), z.number()]).optional().nullable(),
+});
 
 type Req = {
   method?: string;
@@ -60,10 +69,11 @@ export default async function handler(req: Req, res: Res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const action = req.body?.action;
-  if (!action || !['list', 'details', 'reorder'].includes(action)) {
+  const parsed = customerApiSchema.safeParse(req.body);
+  if (!parsed.success) {
     return res.status(400).json({ error: 'Invalid action. Use: list, details, reorder' });
   }
+  const action = parsed.data.action;
 
   const auth = await authenticate(req, res);
   if (!auth.ok) return auth.respond();

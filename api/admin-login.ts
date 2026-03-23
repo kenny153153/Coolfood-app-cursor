@@ -4,8 +4,15 @@
  *
  * Authenticates admin users server-side using service_role key to bypass RLS.
  * Returns admin profile + session token (never exposes password_hash to client).
+ * Supports bcrypt, salted SHA-256, and legacy SHA-256 hashes.
+ * Auto-upgrades legacy hashes to bcrypt on successful login.
  */
-import { createHash } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
+import bcrypt from 'bcryptjs';
+import { z } from 'zod';
+import { checkRateLimit, getClientIp } from './_rateLimit';
+
+const BCRYPT_ROUNDS = 12;
 
 type Req = {
   method?: string;
@@ -23,20 +30,31 @@ function sha256(input: string): string {
   return createHash('sha256').update(input).digest('hex');
 }
 
-function verifyPasswordServer(plain: string, storedHash: string | null): boolean {
+function timingSafeCompare(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
+async function verifyPasswordServer(plain: string, storedHash: string | null): Promise<boolean> {
   if (!storedHash) return false;
+  if (storedHash.startsWith('$2')) return bcrypt.compare(plain, storedHash);
   if (storedHash.includes(':')) {
     const [salt, hash] = storedHash.split(':');
-    return sha256(salt + plain) === hash;
+    return timingSafeCompare(sha256(salt + plain), hash);
   }
-  return sha256(plain) === storedHash;
+  return timingSafeCompare(sha256(plain), storedHash);
 }
 
 function generateSessionToken(memberId: string, passwordHash: string | null): string {
   return sha256(`session:${memberId}:${passwordHash ?? ''}`);
 }
 
-const LOGIN_DELAY_MS = 300;
+const loginSchema = z.object({
+  phone: z.string().min(1),
+  password: z.string().min(1),
+});
 
 export default async function handler(req: Req, res: Res) {
   if (req.method !== 'POST') {
@@ -44,19 +62,21 @@ export default async function handler(req: Req, res: Res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const phone = safeTrim(req.body?.phone);
-  const password = req.body?.password ?? '';
+  const ip = getClientIp(req.headers ?? {});
+  const rl = checkRateLimit(`admin-login:${ip}`, 5, 60_000);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: '嘗試次數過多，請稍後再試', code: 'RATE_LIMITED', retryAfterMs: rl.retryAfterMs });
+  }
 
-  if (!phone || !password) {
+  const parsed = loginSchema.safeParse(req.body);
+  if (!parsed.success) {
     return res.status(400).json({ error: '請輸入電話號碼和密碼', code: 'MISSING_FIELDS' });
   }
 
-  const supabaseUrl = (
-    process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? ''
-  ).trim().replace(/\/$/, '');
-  const serviceRoleKey = safeTrim(
-    process.env.SUPABASE_SERVICE_ROLE_KEY ?? ''
-  );
+  const { phone, password } = parsed.data;
+
+  const supabaseUrl = (process.env.SUPABASE_URL ?? '').trim().replace(/\/$/, '');
+  const serviceRoleKey = safeTrim(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '');
 
   if (!supabaseUrl || !serviceRoleKey) {
     console.error('[admin-login] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
@@ -64,7 +84,7 @@ export default async function handler(req: Req, res: Res) {
   }
 
   try {
-    const baseCols = 'id,name,phone_number,email,role,admin_permissions,password_hash';
+    const baseCols = 'id,name,phone_number,email,role,admin_permissions,password_hash,must_change_password';
     const memberRes = await fetch(
       `${supabaseUrl}/rest/v1/members?phone_number=eq.${encodeURIComponent(phone)}&role=neq.customer&select=${baseCols}`,
       { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
@@ -72,22 +92,24 @@ export default async function handler(req: Req, res: Res) {
     const members = await memberRes.json();
     const member = Array.isArray(members) ? members[0] : null;
 
-    if (!member || !verifyPasswordServer(password, member.password_hash)) {
-      await new Promise(r => setTimeout(r, LOGIN_DELAY_MS));
+    if (!member || !(await verifyPasswordServer(password, member.password_hash))) {
+      await new Promise(r => setTimeout(r, 300));
       return res.status(401).json({ error: '帳號或密碼錯誤', code: 'INVALID_CREDENTIALS' });
     }
 
-    let mustChangePassword = false;
-    try {
-      const mcpRes = await fetch(
-        `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(member.id)}&select=must_change_password`,
-        { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
+    // Auto-upgrade legacy hash to bcrypt
+    if (member.password_hash && !member.password_hash.startsWith('$2')) {
+      const bcryptHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+      await fetch(
+        `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(member.id)}`,
+        {
+          method: 'PATCH',
+          headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+          body: JSON.stringify({ password_hash: bcryptHash }),
+        }
       );
-      const mcpData = await mcpRes.json();
-      if (Array.isArray(mcpData) && mcpData[0]?.must_change_password) {
-        mustChangePassword = true;
-      }
-    } catch { /* column may not exist yet — ignore */ }
+      member.password_hash = bcryptHash;
+    }
 
     const sessionToken = generateSessionToken(member.id, member.password_hash);
 
@@ -98,7 +120,7 @@ export default async function handler(req: Req, res: Res) {
         phone: member.phone_number,
         role: member.role,
         permissions: member.admin_permissions,
-        mustChangePassword,
+        mustChangePassword: !!member.must_change_password,
       },
       sessionToken,
     });

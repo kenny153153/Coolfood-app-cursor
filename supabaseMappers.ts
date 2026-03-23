@@ -28,6 +28,9 @@ import {
   SupabaseProcessingTypeRow,
   MaterialProcessingEntry,
   SupabaseMaterialProcessingRow,
+  StockLot,
+  StockLotStatus,
+  SupabaseStockLotRow,
 } from './types';
 
 export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
@@ -366,6 +369,50 @@ export const mapMaterialProcessingToRow = (entry: MaterialProcessingEntry): Omit
   yield_rate_override: entry.yieldRateOverride ?? null,
   is_available: entry.isAvailable,
   notes: entry.notes ?? null,
+});
+
+// ── Stock Lot mappers ──
+
+const VALID_LOT_STATUSES: StockLotStatus[] = ['available', 'reserved', 'depleted', 'expired'];
+
+export const mapStockLotRow = (row: SupabaseStockLotRow): StockLot => ({
+  id: row.id,
+  ingredientId: row.ingredient_id,
+  brand: row.brand ?? undefined,
+  supplierId: row.supplier_id ?? undefined,
+  supplierName: row.supplier_name ?? undefined,
+  goodsReceiptItemId: row.goods_receipt_item_id ?? undefined,
+  receivedDate: row.received_date,
+  expiryDate: row.expiry_date ?? undefined,
+  quantityReceived: row.quantity_received,
+  quantityRemaining: row.quantity_remaining,
+  unit: row.unit || 'lb',
+  costPerUnit: row.cost_per_unit,
+  storageLocation: row.storage_location ?? undefined,
+  reservedForClientId: row.reserved_for_client_id ?? undefined,
+  lotStatus: (VALID_LOT_STATUSES.includes(row.lot_status as StockLotStatus) ? row.lot_status as StockLotStatus : 'available'),
+  notes: row.notes ?? undefined,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+export const mapStockLotToRow = (lot: StockLot): Omit<SupabaseStockLotRow, 'created_at' | 'updated_at'> => ({
+  id: lot.id,
+  ingredient_id: lot.ingredientId,
+  brand: lot.brand ?? null,
+  supplier_id: lot.supplierId ?? null,
+  supplier_name: lot.supplierName ?? null,
+  goods_receipt_item_id: lot.goodsReceiptItemId ?? null,
+  received_date: lot.receivedDate,
+  expiry_date: lot.expiryDate ?? null,
+  quantity_received: lot.quantityReceived,
+  quantity_remaining: lot.quantityRemaining,
+  unit: lot.unit,
+  cost_per_unit: lot.costPerUnit,
+  storage_location: lot.storageLocation ?? null,
+  reserved_for_client_id: lot.reservedForClientId ?? null,
+  lot_status: lot.lotStatus,
+  notes: lot.notes ?? null,
 });
 
 // ── Product Groups mappers ──

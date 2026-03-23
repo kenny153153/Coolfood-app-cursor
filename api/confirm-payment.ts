@@ -60,9 +60,9 @@ async function sendWhatsApp(to: string, body: string): Promise<{ success: boolea
 
 // ─── Airwallex ───────────────────────────────────────────────────────
 async function getAirwallexToken(): Promise<{ token: string; baseUrl: string }> {
-  const clientId = safeTrim(process.env.AIRWALLEX_CLIENT_ID ?? process.env.VITE_AIRWALLEX_CLIENT_ID ?? '');
-  const apiKey = safeTrim(process.env.AIRWALLEX_API_KEY ?? process.env.VITE_AIRWALLEX_API_KEY ?? '');
-  const useDemo = safeTrim(process.env.AIRWALLEX_ENV ?? process.env.VITE_AIRWALLEX_ENV ?? '') !== 'prod';
+  const clientId = safeTrim(process.env.AIRWALLEX_CLIENT_ID ?? '');
+  const apiKey = safeTrim(process.env.AIRWALLEX_API_KEY ?? '');
+  const useDemo = safeTrim(process.env.AIRWALLEX_ENV ?? '') !== 'prod';
   const baseUrl = useDemo ? AIRWALLEX_DEMO : AIRWALLEX_PROD;
 
   const authRes = await fetchWithTimeout(`${baseUrl}/api/v1/authentication/login`, {

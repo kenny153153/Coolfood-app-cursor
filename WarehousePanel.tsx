@@ -12,7 +12,7 @@ import type {
   Ingredient, IngredientCategory, SaleChannel, MaterialType, Supplier,
   RawMaterialCatalog, SupplierQuote, QuoteLineItem,
   ComparisonRow, PurchaseDecision, JustificationCategory,
-  ProcessingType, GoodsReceipt, StockMovement,
+  ProcessingType, GoodsReceipt, StockMovement, StockLot,
 } from './types';
 import { mapProcessingTypeRow } from './supabaseMappers';
 
@@ -174,6 +174,8 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
     unit: string;
     unitCost: number;
     storageLocation: string;
+    brand: string;
+    reservedForClientId: string;
     notes: string;
   }[]>([]);
   const [receivingMeta, setReceivingMeta] = useState({ deliveryNoteNumber: '', receivedBy: '', notes: '' });
@@ -182,6 +184,12 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
   const [stockMovements, setStockMovements] = useState<StockMovement[]>([]);
   const [showMovements, setShowMovements] = useState(false);
   const [movementsIngredientId, setMovementsIngredientId] = useState<string | null>(null);
+
+  // ── Stock Lots state ──
+  const [stockLots, setStockLots] = useState<StockLot[]>([]);
+  const [lotsIngredientId, setLotsIngredientId] = useState<string | null>(null);
+  const [showLots, setShowLots] = useState(false);
+  const [wholesaleClients, setWholesaleClients] = useState<{ id: string; companyName: string }[]>([]);
 
   // ── Quote Comparison state ──
   const [quotes, setQuotes] = useState<SupplierQuote[]>([]);
@@ -354,7 +362,37 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
         movementType: r.movement_type, quantity: r.quantity, unit: r.unit,
         referenceType: r.reference_type, referenceId: r.reference_id,
         performedBy: r.performed_by, performedAt: r.performed_at, notes: r.notes,
+        lotId: r.lot_id ?? undefined,
       })));
+    }
+  }, []);
+
+  const loadStockLots = useCallback(async (ingredientId?: string) => {
+    let query = supabase.from('stock_lots').select('*').order('received_date', { ascending: true });
+    if (ingredientId) query = query.eq('ingredient_id', ingredientId);
+    query = query.neq('lot_status', 'depleted');
+    const { data } = await query;
+    if (data) {
+      setStockLots(data.map((r: any) => ({
+        id: r.id, ingredientId: r.ingredient_id, brand: r.brand ?? undefined,
+        supplierId: r.supplier_id ?? undefined, supplierName: r.supplier_name ?? undefined,
+        goodsReceiptItemId: r.goods_receipt_item_id ?? undefined,
+        receivedDate: r.received_date, expiryDate: r.expiry_date ?? undefined,
+        quantityReceived: r.quantity_received, quantityRemaining: r.quantity_remaining,
+        unit: r.unit || 'lb', costPerUnit: r.cost_per_unit,
+        storageLocation: r.storage_location ?? undefined,
+        reservedForClientId: r.reserved_for_client_id ?? undefined,
+        lotStatus: r.lot_status || 'available',
+        notes: r.notes ?? undefined,
+        createdAt: r.created_at, updatedAt: r.updated_at,
+      })));
+    }
+  }, []);
+
+  const loadWholesaleClientsForReservation = useCallback(async () => {
+    const { data } = await supabase.from('wholesale_clients').select('id, company_name').eq('is_active', true).order('company_name');
+    if (data) {
+      setWholesaleClients(data.map((r: any) => ({ id: r.id, companyName: r.company_name })));
     }
   }, []);
 
@@ -462,7 +500,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
     setExpandedMaterials(new Set(loadedCatalog.map(c => c.id)));
   };
 
-  useEffect(() => { loadIngredients(); loadUnits(); }, [loadIngredients, loadUnits]);
+  useEffect(() => { loadIngredients(); loadUnits(); loadWholesaleClientsForReservation(); }, [loadIngredients, loadUnits, loadWholesaleClientsForReservation]);
   useEffect(() => {
     if (subTab === 'purchase_orders') loadPurchaseOrders();
     if (subTab === 'suppliers') loadSuppliers();
@@ -646,6 +684,8 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
       unit: li.unit,
       unitCost: li.unitCost,
       storageLocation: '',
+      brand: '',
+      reservedForClientId: '',
       notes: '',
     })));
     setReceivingMeta({ deliveryNoteNumber: '', receivedBy: '', notes: '' });
@@ -684,26 +724,47 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
         unit_cost: item.unitCost,
         line_total: item.receivedQty * item.unitCost,
         storage_location: item.storageLocation || null,
+        brand: item.brand || null,
+        reserved_for_client_id: item.reservedForClientId || null,
         notes: item.notes || null,
       }));
-      const { error: itemsErr } = await supabase.from('goods_receipt_items').insert(itemPayloads);
+      const { data: insertedGrnItems, error: itemsErr } = await supabase.from('goods_receipt_items').insert(itemPayloads).select('id');
       if (itemsErr) throw itemsErr;
 
-      // Update ingredient stock
-      for (const item of validItems) {
+      // Update ingredient stock & create stock lots
+      for (let i = 0; i < validItems.length; i++) {
+        const item = validItems[i];
+        const grnItemId = insertedGrnItems?.[i]?.id;
         if (item.ingredientId) {
           const { error: stockErr } = await supabase.rpc('increment_ingredient_stock', {
             p_ingredient_id: item.ingredientId,
             p_qty: item.receivedQty,
           });
           if (stockErr) {
-            // Fallback: manual increment if RPC doesn't exist
             const { data: curr } = await supabase.from('ingredients').select('stock_qty').eq('id', item.ingredientId).single();
             const newQty = (curr?.stock_qty || 0) + item.receivedQty;
             await supabase.from('ingredients').update({ stock_qty: newQty }).eq('id', item.ingredientId);
           }
 
-          // Insert stock movement
+          // Create stock lot
+          const lotStatus = item.reservedForClientId ? 'reserved' : 'available';
+          const { data: lotData } = await supabase.from('stock_lots').insert({
+            ingredient_id: item.ingredientId,
+            brand: item.brand || null,
+            supplier_name: receivingPO.supplierName,
+            goods_receipt_item_id: grnItemId || null,
+            received_date: new Date().toISOString().slice(0, 10),
+            quantity_received: item.receivedQty,
+            quantity_remaining: item.receivedQty,
+            unit: item.unit,
+            cost_per_unit: item.unitCost,
+            storage_location: item.storageLocation || null,
+            reserved_for_client_id: item.reservedForClientId || null,
+            lot_status: lotStatus,
+            notes: item.notes || null,
+          }).select('id').single();
+
+          // Insert stock movement with lot reference
           await supabase.from('stock_movements').insert({
             ingredient_id: item.ingredientId,
             movement_type: 'receive',
@@ -711,8 +772,9 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
             unit: item.unit,
             reference_type: 'goods_receipt',
             reference_id: grn.id,
+            lot_id: lotData?.id || null,
             performed_by: receivingMeta.receivedBy || null,
-            notes: `收貨單 ${grnNumber} — ${item.productName}`,
+            notes: `收貨單 ${grnNumber} — ${item.productName}${item.brand ? ` [${item.brand}]` : ''}`,
           });
         }
       }
@@ -1398,6 +1460,16 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={() => { setLotsIngredientId(ing.id); loadStockLots(ing.id); setShowLots(true); }}
+                              className="p-1.5 rounded-lg hover:bg-violet-50 text-slate-400 hover:text-violet-600"
+                              title="庫存批次"
+                            ><Layers size={13} /></button>
+                            <button
+                              onClick={() => { setMovementsIngredientId(ing.id); loadStockMovements(ing.id); setShowMovements(true); }}
+                              className="p-1.5 rounded-lg hover:bg-blue-50 text-slate-400 hover:text-blue-600"
+                              title="進出記錄"
+                            ><History size={13} /></button>
                             <button onClick={() => setEditing({ ...ing, isNew: false })} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400"><Edit size={13} /></button>
                             <button onClick={() => handleDeleteIngredient(ing.id)} className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-500"><Trash2 size={13} /></button>
                           </div>
@@ -1944,8 +2016,10 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
                       <th className="px-4 py-3 text-center">單位</th>
                       <th className="px-4 py-3 text-right">單價</th>
                       <th className="px-4 py-3 text-right">小計</th>
-                      <th className="px-4 py-3 text-left w-32">存放位置</th>
-                      <th className="px-4 py-3 text-left w-32">備註</th>
+                      <th className="px-4 py-3 text-left w-28">品牌</th>
+                      <th className="px-4 py-3 text-left w-36">客戶預留</th>
+                      <th className="px-4 py-3 text-left w-28">存放位置</th>
+                      <th className="px-4 py-3 text-left w-28">備註</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1994,6 +2068,34 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
                           <td className="px-4 py-3 text-center text-xs font-bold text-slate-500">{item.unit}</td>
                           <td className="px-4 py-3 text-right text-xs font-bold text-slate-600">${item.unitCost.toFixed(2)}</td>
                           <td className="px-4 py-3 text-right text-xs font-black text-slate-800">${(item.receivedQty * item.unitCost).toFixed(2)}</td>
+                          <td className="px-4 py-3">
+                            <input
+                              value={item.brand}
+                              onChange={e => {
+                                const items = [...receivingItems];
+                                items[idx] = { ...items[idx], brand: e.target.value };
+                                setReceivingItems(items);
+                              }}
+                              placeholder="品牌名稱"
+                              className="w-full px-2 py-1.5 bg-violet-50 border border-violet-100 rounded-lg text-xs font-bold"
+                            />
+                          </td>
+                          <td className="px-4 py-3">
+                            <select
+                              value={item.reservedForClientId}
+                              onChange={e => {
+                                const items = [...receivingItems];
+                                items[idx] = { ...items[idx], reservedForClientId: e.target.value };
+                                setReceivingItems(items);
+                              }}
+                              className={`w-full px-2 py-1.5 border rounded-lg text-xs font-bold ${item.reservedForClientId ? 'bg-amber-50 border-amber-200 text-amber-700' : 'bg-slate-50 border-slate-100'}`}
+                            >
+                              <option value="">不預留</option>
+                              {wholesaleClients.map(c => (
+                                <option key={c.id} value={c.id}>{c.companyName}</option>
+                              ))}
+                            </select>
+                          </td>
                           <td className="px-4 py-3">
                             <input
                               value={item.storageLocation}
@@ -2913,6 +3015,111 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
                 </table>
               </div>
             )}
+          </div>
+        );
+      })()}
+
+      {/* ═══ Stock Lots Modal (庫存批次) ═══ */}
+      {showLots && lotsIngredientId && (() => {
+        const ing = ingredients.find(i => i.id === lotsIngredientId);
+        const lots = stockLots.filter(l => l.ingredientId === lotsIngredientId);
+        const totalRemaining = lots.reduce((s, l) => s + l.quantityRemaining, 0);
+        const brands = [...new Set(lots.map(l => l.brand).filter(Boolean))];
+        return (
+          <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowLots(false)}>
+            <div className="bg-white rounded-3xl shadow-2xl max-w-4xl w-full max-h-[85vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+              <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                <div>
+                  <h3 className="font-black text-lg text-slate-800">{ing?.name || '—'} — 庫存批次</h3>
+                  <div className="flex items-center gap-3 mt-1">
+                    <span className="text-xs font-bold text-slate-500">
+                      總庫存：<span className="font-black text-emerald-600">{totalRemaining.toFixed(1)} {ing?.unit || 'lb'}</span>
+                    </span>
+                    {brands.length > 0 && (
+                      <span className="text-xs font-bold text-slate-400">
+                        品牌：{brands.map(b => (
+                          <span key={b} className="inline-block px-1.5 py-0.5 bg-violet-50 text-violet-600 rounded text-[10px] font-black ml-1">{b}</span>
+                        ))}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <button onClick={() => setShowLots(false)} className="p-2 rounded-xl hover:bg-slate-100 text-slate-400"><X size={18} /></button>
+              </div>
+              <div className="overflow-auto max-h-[65vh]">
+                {lots.length === 0 ? (
+                  <div className="p-12 text-center">
+                    <Layers size={32} className="text-slate-200 mx-auto mb-3" />
+                    <p className="text-slate-400 font-bold text-sm">暫無批次記錄</p>
+                    <p className="text-[10px] text-slate-300 mt-1">收貨確認後會自動建立批次</p>
+                  </div>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                        <th className="px-5 py-3 text-left">收貨日期</th>
+                        <th className="px-4 py-3 text-left">品牌</th>
+                        <th className="px-4 py-3 text-left">供應商</th>
+                        <th className="px-4 py-3 text-right">收貨量</th>
+                        <th className="px-4 py-3 text-right">剩餘量</th>
+                        <th className="px-4 py-3 text-right">成本/單位</th>
+                        <th className="px-4 py-3 text-left">倉位</th>
+                        <th className="px-4 py-3 text-center">狀態</th>
+                        <th className="px-4 py-3 text-left">備註</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lots.map(lot => {
+                        const clientName = lot.reservedForClientId
+                          ? wholesaleClients.find(c => c.id === lot.reservedForClientId)?.companyName
+                          : undefined;
+                        const pct = lot.quantityReceived > 0 ? (lot.quantityRemaining / lot.quantityReceived) * 100 : 0;
+                        return (
+                          <tr key={lot.id} className="border-t border-slate-50 hover:bg-slate-50/50">
+                            <td className="px-5 py-3 text-xs font-bold text-slate-600">{lot.receivedDate}</td>
+                            <td className="px-4 py-3">
+                              {lot.brand ? (
+                                <span className="px-2 py-0.5 bg-violet-50 text-violet-700 rounded text-[10px] font-black">{lot.brand}</span>
+                              ) : <span className="text-slate-300 text-xs">—</span>}
+                            </td>
+                            <td className="px-4 py-3 text-xs font-bold text-slate-500">{lot.supplierName || '—'}</td>
+                            <td className="px-4 py-3 text-right text-xs font-bold text-slate-500">{lot.quantityReceived.toFixed(1)}</td>
+                            <td className="px-4 py-3 text-right">
+                              <span className={`font-black text-xs ${pct < 20 ? 'text-rose-600' : pct < 50 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                                {lot.quantityRemaining.toFixed(1)}
+                              </span>
+                              <span className="text-[9px] text-slate-400 ml-1">{lot.unit}</span>
+                            </td>
+                            <td className="px-4 py-3 text-right text-xs font-bold text-slate-600">${lot.costPerUnit.toFixed(2)}</td>
+                            <td className="px-4 py-3 text-xs font-bold text-slate-500">{lot.storageLocation || '—'}</td>
+                            <td className="px-4 py-3 text-center">
+                              {lot.lotStatus === 'reserved' && clientName ? (
+                                <span className="px-2 py-0.5 bg-amber-50 text-amber-700 rounded text-[10px] font-black">{clientName} 專用</span>
+                              ) : lot.lotStatus === 'expired' ? (
+                                <span className="px-2 py-0.5 bg-rose-50 text-rose-600 rounded text-[10px] font-black">已過期</span>
+                              ) : (
+                                <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded text-[10px] font-black">可用</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-[10px] text-slate-400">{lot.notes || '—'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+              <div className="px-6 py-3 border-t border-slate-100 flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-400">共 {lots.length} 個批次（按收貨日期 FIFO 排序）</span>
+                <div className="flex gap-2">
+                  {lots.filter(l => l.lotStatus === 'reserved').length > 0 && (
+                    <span className="text-[10px] font-black text-amber-600">
+                      {lots.filter(l => l.lotStatus === 'reserved').length} 批已預留
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         );
       })()}

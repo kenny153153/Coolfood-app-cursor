@@ -77,7 +77,12 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
   }, [wholesaleProducts, categories]);
 
   const cartTotal = useMemo(() => {
-    return cart.reduce((sum, item) => sum + getPrice(item, item.qty) * item.qty, 0);
+    return cart.reduce((sum, item) => {
+      const unitPrice = getPrice(item, item.qty);
+      const isByPiece = item.pricingMode === 'by_piece';
+      const effectiveQty = isByPiece && item.packWeightLb ? item.packWeightLb * item.qty : item.qty;
+      return sum + unitPrice * effectiveQty;
+    }, 0);
   }, [cart, getPrice]);
 
   const cartCount = cart.reduce((s, i) => s + i.qty, 0);
@@ -382,7 +387,12 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                                   </td>
                                   <td className="px-3 py-2 text-slate-500 text-xs hidden sm:table-cell font-mono">{spec.legacyId || ''}</td>
                                   <td className="px-3 py-2 hidden md:table-cell"></td>
-                                  <td className="px-3 py-2 text-right font-bold text-slate-800">${price}{isByPiece ? '/磅' : ''}</td>
+                                  <td className="px-3 py-2 text-right">
+                                    <span className="font-bold text-slate-800">${price}{isByPiece ? '/磅' : ''}</span>
+                                    {isByPiece && spec.packWeightLb && (
+                                      <p className="text-[9px] text-slate-400">~{spec.packWeightLb}磅/件</p>
+                                    )}
+                                  </td>
                                   <td className="px-3 py-2">
                                     {outOfStock ? (
                                       <span className="text-xs text-red-400 font-bold block text-center">缺貨</span>
@@ -400,7 +410,13 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                                       </div>
                                     )}
                                   </td>
-                                  <td className="px-3 py-2 text-right font-bold text-slate-800">{qty > 0 ? `$${price * qty}` : '—'}</td>
+                                  <td className="px-3 py-2 text-right font-bold text-slate-800">
+                                    {qty > 0 ? (
+                                      isByPiece ? (
+                                        <span className="text-pink-600">~${spec.packWeightLb ? (price * spec.packWeightLb * qty).toFixed(0) : price * qty}<span className="text-[9px] text-slate-400 ml-0.5">預估</span></span>
+                                      ) : `$${price * qty}`
+                                    ) : '—'}
+                                  </td>
                                 </tr>
                               );
                             })}
@@ -436,7 +452,12 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                               <span className="px-1.5 py-0.5 bg-pink-50 text-pink-600 rounded font-bold text-[10px]">抄碼</span>
                             ) : '—'}
                           </td>
-                          <td className="px-3 py-2 text-right font-bold text-slate-800">${price}{isByPiece ? '/磅' : ''}</td>
+                          <td className="px-3 py-2 text-right">
+                            <span className="font-bold text-slate-800">${price}{isByPiece ? '/磅' : ''}</span>
+                            {isByPiece && p.packWeightLb && (
+                              <p className="text-[9px] text-slate-400">~{p.packWeightLb}磅/件</p>
+                            )}
+                          </td>
                           <td className="px-3 py-2">
                             {outOfStock ? (
                               <span className="text-xs text-red-400 font-bold block text-center">缺貨</span>
@@ -454,7 +475,13 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                               </div>
                             )}
                           </td>
-                          <td className="px-3 py-2 text-right font-bold text-slate-800">{qty > 0 ? `$${price * qty}` : '—'}</td>
+                          <td className="px-3 py-2 text-right font-bold text-slate-800">
+                            {qty > 0 ? (
+                              isByPiece ? (
+                                <span className="text-pink-600">~${p.packWeightLb ? (price * p.packWeightLb * qty).toFixed(0) : price * qty}<span className="text-[9px] text-slate-400 ml-0.5">預估</span></span>
+                              ) : `$${price * qty}`
+                            ) : '—'}
+                          </td>
                         </tr>
                       );
                     });
