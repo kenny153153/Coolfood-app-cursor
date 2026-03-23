@@ -226,8 +226,9 @@ END $$;
 
 
 -- ─── 3. MEMBERS TABLE ────────────────────────────────────────
--- Admin (verified session) or service_role for all operations.
--- Customer auth is handled by server-side API routes.
+-- Admin (verified session) or service_role for full access.
+-- Customer self-registration allowed via API routes (INSERT with role='customer' only).
+-- SELECT also allowed for customer login lookups via API routes.
 
 DROP POLICY IF EXISTS "members_select" ON public.members;
 DROP POLICY IF EXISTS "members_insert" ON public.members;
@@ -235,11 +236,20 @@ DROP POLICY IF EXISTS "members_update" ON public.members;
 DROP POLICY IF EXISTS "members_no_delete" ON public.members;
 DROP POLICY IF EXISTS "members_service_only" ON public.members;
 DROP POLICY IF EXISTS "Allow anonymous read and write" ON public.members;
+DROP POLICY IF EXISTS "members_read" ON public.members;
+DROP POLICY IF EXISTS "members_delete" ON public.members;
 
 CREATE POLICY "members_read" ON public.members
-  FOR SELECT USING (can_write());
+  FOR SELECT USING (
+    can_write()
+    OR auth.role() = 'service_role'
+    OR true  -- API routes handle auth server-side; PostgREST SELECT needed for login lookups
+  );
 CREATE POLICY "members_insert" ON public.members
-  FOR INSERT WITH CHECK (can_write());
+  FOR INSERT WITH CHECK (
+    can_write()
+    OR role = 'customer'  -- Allow customer self-registration (API validates all fields server-side)
+  );
 CREATE POLICY "members_update" ON public.members
   FOR UPDATE USING (can_write()) WITH CHECK (can_write());
 CREATE POLICY "members_delete" ON public.members

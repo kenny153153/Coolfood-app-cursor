@@ -184,8 +184,17 @@ async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl:
 
   if (!insertRes.ok) {
     const err = await insertRes.text();
-    console.error('[customer-auth] Insert failed:', err);
-    return { status: 500, body: { error: '註冊失敗', code: 'INSERT_FAILED' } };
+    console.error('[customer-auth] Insert failed:', insertRes.status, err);
+    const isRLS = err.includes('row-level security') || err.includes('policy');
+    return {
+      status: isRLS ? 403 : 500,
+      body: {
+        error: isRLS
+          ? '註冊暫時無法使用，請聯繫客服'
+          : '註冊失敗',
+        code: isRLS ? 'RLS_BLOCKED' : 'INSERT_FAILED',
+      },
+    };
   }
 
   const rows = await insertRes.json();
