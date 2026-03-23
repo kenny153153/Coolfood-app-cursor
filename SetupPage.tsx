@@ -14,10 +14,10 @@ const SetupPage: React.FC = () => {
     (async () => {
       try {
         // Check via a lightweight POST to the setup API — it returns 409 if admin exists
-        const res = await fetch('/api/setup', {
+        const res = await fetch('/api/admin-auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: '__check__', phone: '00000000', password: 'checkonly' }),
+          body: JSON.stringify({ action: 'setup', name: '__check__', phone: '00000000', password: 'checkonly' }),
         });
         if (res.status === 409) setAlreadyExists(true);
       } catch { /* allow setup */ }
@@ -35,10 +35,10 @@ const SetupPage: React.FC = () => {
 
     setSubmitting(true);
     try {
-      const res = await fetch('/api/setup', {
+      const res = await fetch('/api/admin-auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: form.name.trim(), phone: form.phone.trim(), password: form.password }),
+        body: JSON.stringify({ action: 'setup', name: form.name.trim(), phone: form.phone.trim(), password: form.password }),
       });
       const json = await res.json();
       if (res.status === 409) { setAlreadyExists(true); setSubmitting(false); return; }

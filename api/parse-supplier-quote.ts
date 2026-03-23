@@ -128,7 +128,7 @@ export default async function handler(req: VercelRequest & { headers?: Record<st
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { verifyAdminRequest } = await import('./_adminAuth');
+  const { verifyAdminRequest } = await import('./_adminAuth.js');
   const authResult = await verifyAdminRequest(req, 'warehouse_ops', 'create');
   if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 

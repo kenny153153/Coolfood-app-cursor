@@ -1341,10 +1341,10 @@ const App: React.FC = () => {
         if (!saved || !sessionToken) return;
         const session = JSON.parse(saved) as AdminAccount;
         if (!session?.id || !session?.role) return;
-        const res = await fetch('/api/admin-session', {
+        const res = await fetch('/api/admin-auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ adminId: session.id, sessionToken }),
+          body: JSON.stringify({ action: 'session', adminId: session.id, sessionToken }),
         });
         if (!res.ok) {
           try { localStorage.removeItem('coolfood_admin_session'); localStorage.removeItem('coolfood_admin_session_token'); } catch { /* ignore */ }
@@ -1525,10 +1525,10 @@ const App: React.FC = () => {
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/admin-login', {
+      const res = await fetch('/api/admin-auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: adminLoginForm.username, password: adminLoginForm.password }),
+        body: JSON.stringify({ action: 'login', phone: adminLoginForm.username, password: adminLoginForm.password }),
       });
       const json = await res.json();
       if (!res.ok || !json.admin) {
@@ -1572,10 +1572,10 @@ const App: React.FC = () => {
     }
     try {
       const sessionToken = localStorage.getItem('coolfood_admin_session_token') || '';
-      const res = await fetch('/api/admin-change-password', {
+      const res = await fetch('/api/admin-auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adminId: adminUser.id, sessionToken, newPassword: passwordChangeForm.newPassword }),
+        body: JSON.stringify({ action: 'change-password', adminId: adminUser.id, sessionToken, newPassword: passwordChangeForm.newPassword }),
       });
       const json = await res.json();
       if (!res.ok) { showToast(json.error || '更改密碼失敗', 'error'); return; }

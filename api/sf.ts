@@ -86,7 +86,7 @@ async function callSfService(serviceCode: string, msgDataObj: object): Promise<{
 type LabelPayload = { orderId?: string; waybillNos?: string[] };
 
 async function handleLabel(req: any, res: any) {
-  const { verifyAdminRequest } = await import('./_adminAuth');
+  const { verifyAdminRequest } = await import('./_adminAuth.js');
   const authResult = await verifyAdminRequest(req, 'dispatch', 'read');
   if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
@@ -315,7 +315,7 @@ function validateSfRequiredFields(msgData: ReturnType<typeof buildSfMsgData>) {
 }
 
 async function handleOrder(req: any, res: any) {
-  const { verifyAdminRequest } = await import('./_adminAuth');
+  const { verifyAdminRequest } = await import('./_adminAuth.js');
   const authResult = await verifyAdminRequest(req, 'dispatch', 'create');
   if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 

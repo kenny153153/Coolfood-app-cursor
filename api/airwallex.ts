@@ -3,8 +3,8 @@
  * Body: { action: 'create-intent' | 'refund', ... }
  */
 import { createClient } from '@supabase/supabase-js';
-import { verifyAdminRequest } from './_adminAuth';
-import { checkRateLimit, getClientIp } from './_rateLimit';
+import { verifyAdminRequest } from './_adminAuth.js';
+import { checkRateLimit, getClientIp } from './_rateLimit.js';
 
 const AIRWALLEX_DEMO = 'https://api-demo.airwallex.com';
 const AIRWALLEX_PROD = 'https://api.airwallex.com';

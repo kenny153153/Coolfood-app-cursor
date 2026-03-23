@@ -8,7 +8,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
-import { checkRateLimit, getClientIp } from './_rateLimit';
+import { checkRateLimit, getClientIp } from './_rateLimit.js';
 
 const BCRYPT_ROUNDS = 12;
 
