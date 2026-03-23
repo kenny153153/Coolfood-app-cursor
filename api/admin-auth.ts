@@ -83,7 +83,7 @@ async function handleLogin(req: Req, res: Res) {
   if (!cfg) return res.status(500).json({ error: '伺服器配置錯誤', code: 'SERVER_CONFIG' });
 
   try {
-    const baseCols = 'id,name,phone_number,email,role,admin_permissions,password_hash,must_change_password';
+    const baseCols = 'id,name,phone_number,email,role,admin_permissions,password_hash';
     const memberRes = await fetch(
       `${cfg.supabaseUrl}/rest/v1/members?phone_number=eq.${encodeURIComponent(parsed.data.phone)}&role=neq.customer&select=${baseCols}`,
       { headers: supaHeaders(cfg.serviceRoleKey) }
@@ -118,7 +118,7 @@ async function handleLogin(req: Req, res: Res) {
         phone: member.phone_number,
         role: member.role,
         permissions: member.admin_permissions,
-        mustChangePassword: !!member.must_change_password,
+        mustChangePassword: false,
       },
       sessionToken,
     });
@@ -142,7 +142,7 @@ async function handleSession(req: Req, res: Res) {
   if (!cfg) return res.status(500).json({ error: '伺服器配置錯誤', code: 'SERVER_CONFIG' });
 
   try {
-    const baseCols = 'id,name,phone_number,role,admin_permissions,password_hash,must_change_password';
+    const baseCols = 'id,name,phone_number,role,admin_permissions,password_hash';
     const memberRes = await fetch(
       `${cfg.supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(adminId)}&role=neq.customer&select=${baseCols}`,
       { headers: supaHeaders(cfg.serviceRoleKey) }
@@ -162,7 +162,7 @@ async function handleSession(req: Req, res: Res) {
         phone: member.phone_number,
         role: member.role,
         permissions: member.admin_permissions,
-        mustChangePassword: !!member.must_change_password,
+        mustChangePassword: false,
       },
     });
   } catch (e: any) {
@@ -211,7 +211,7 @@ async function handleChangePassword(req: Req, res: Res) {
       {
         method: 'PATCH',
         headers: supaHeaders(cfg.serviceRoleKey, { 'Content-Type': 'application/json', Prefer: 'return=minimal' }),
-        body: JSON.stringify({ password_hash: newHash, must_change_password: false }),
+        body: JSON.stringify({ password_hash: newHash }),
       }
     );
 

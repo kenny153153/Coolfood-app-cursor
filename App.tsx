@@ -1634,7 +1634,7 @@ const App: React.FC = () => {
     if (findErr || !member) { showToast('找不到此電話號碼的會員帳戶', 'error'); return; }
     const { error } = await supabase
       .from('members')
-      .update({ role, admin_permissions: permissions, must_change_password: true })
+      .update({ role, admin_permissions: permissions })
       .eq('id', member.id);
     if (error) { showToast(`授權失敗：${error.message}`, 'error'); return; }
     await loadAdminAccounts();
