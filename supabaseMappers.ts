@@ -155,23 +155,36 @@ export const mapIngredientToRow = (ing: Ingredient): SupabaseIngredientRow => ({
   min_stock_alert: ing.minStockAlert ?? null,
 });
 
-/** Compute the final cost of a product using the ingredient -> product formula.
- *  Formula: (ingredient.baseCostPerLb / yieldRate) + processingCost + packagingCost + miscCost + extraCostItems
- *  Falls back to legacy costPrice if no ingredient is linked. */
+/** Compute the per-lb cost of a product using the ingredient -> product formula.
+ *  When materialProcessingEntries is provided and the product has both ingredientId and processingTypeId,
+ *  yield rate and processing cost are pulled from the matrix (原材料 × 加工方式) first.
+ *  Falls back to product-level yieldRate / processingCost, then to legacy costPrice. */
 export const computeProductCost = (
   product: Product,
   ingredient: Ingredient | undefined,
-  costItems: { id: string; defaultPrice: number }[]
+  costItems: { id: string; defaultPrice: number }[],
+  materialProcessingEntries?: MaterialProcessingEntry[],
 ): number => {
-  let baseMaterialCost = product.costPrice || 0;
+  let yieldRate = product.yieldRate;
+  let processingCostVal = product.processingCost || 0;
 
-  if (ingredient && product.yieldRate && product.yieldRate > 0) {
-    baseMaterialCost = ingredient.baseCostPerLb / product.yieldRate;
+  if (materialProcessingEntries && product.ingredientId && product.processingTypeId) {
+    const matEntry = materialProcessingEntries.find(
+      e => e.ingredientId === product.ingredientId && e.processingTypeId === product.processingTypeId
+    );
+    if (matEntry) {
+      if (matEntry.yieldRateOverride != null && matEntry.yieldRateOverride > 0) yieldRate = matEntry.yieldRateOverride;
+      if (matEntry.surchargeOverride != null) processingCostVal = matEntry.surchargeOverride;
+    }
+  }
+
+  let baseMaterialCost = product.costPrice || 0;
+  if (ingredient && yieldRate && yieldRate > 0) {
+    baseMaterialCost = ingredient.baseCostPerLb / yieldRate;
   } else if (ingredient) {
     baseMaterialCost = ingredient.baseCostPerLb;
   }
 
-  const processing = product.processingCost || 0;
   const packaging = product.packagingCost || 0;
   const misc = product.miscCost || 0;
 
@@ -180,7 +193,20 @@ export const computeProductCost = (
     0
   );
 
-  return baseMaterialCost + processing + packaging + misc + extraCost;
+  return baseMaterialCost + processingCostVal + packaging + misc + extraCost;
+};
+
+/** Compute the per-pack cost for a fixed_pack product (per-lb cost × packWeightLb).
+ *  For by_piece products, returns the per-lb cost unchanged. */
+export const computePackCost = (
+  perLbCost: number,
+  packWeightLb: number | undefined,
+  pricingMode: string | undefined,
+): number => {
+  if (pricingMode === 'fixed_pack' && packWeightLb && packWeightLb > 0) {
+    return perLbCost * packWeightLb;
+  }
+  return perLbCost;
 };
 
 export const mapCategoryRowToCategory = (row: SupabaseCategoryRow): Category => ({

@@ -6,21 +6,30 @@ import {
   ChevronDown, ChevronRight, AlertTriangle, Check, Star,
   MessageSquare, Building2, Phone, MapPin, Clock, Mail, Scissors,
   PackageCheck, ClipboardCheck, ArrowDownToLine, History,
+  Coins, ClipboardList,
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
+import { computeProductCost, computePackCost, mapMaterialProcessingRow } from './supabaseMappers';
 import type {
   Ingredient, IngredientCategory, SaleChannel, MaterialType, Supplier,
   RawMaterialCatalog, SupplierQuote, QuoteLineItem,
   ComparisonRow, PurchaseDecision, JustificationCategory,
   ProcessingType, GoodsReceipt, StockMovement, StockLot,
+  Product, CostItem, SiteConfig, WholesalePricingRules, MaterialProcessingEntry,
 } from './types';
 import { mapProcessingTypeRow } from './supabaseMappers';
 
 interface Props {
   showToast: (msg: string, type?: 'success' | 'error') => void;
+  products: Product[];
+  setProducts: React.Dispatch<React.SetStateAction<Product[]>>;
+  costItems: CostItem[];
+  setCostItems: React.Dispatch<React.SetStateAction<CostItem[]>>;
+  siteConfig: SiteConfig;
+  isMediaUrl: (url: string) => boolean;
 }
 
-type SubTab = 'ingredients' | 'suppliers' | 'quote_compare' | 'purchase_orders' | 'goods_receiving' | 'units' | 'processing_types' | 'reorder_alerts';
+type SubTab = 'ingredients' | 'suppliers' | 'quote_compare' | 'purchase_orders' | 'goods_receiving' | 'units' | 'processing_types' | 'product_costs' | 'reorder_alerts';
 
 const MATERIAL_TYPES: { value: MaterialType; label: string }[] = [
   { value: 'meat', label: '🥩 肉類原材料' },
@@ -115,7 +124,7 @@ const EMPTY_PO_LINE: POLineItem = {
   productName: '', qty: 0, unit: 'lb', unitCost: 0, lineTotal: 0, receivedQty: 0, notes: '',
 };
 
-const WarehousePanel: React.FC<Props> = ({ showToast }) => {
+const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, costItems, setCostItems, siteConfig, isMediaUrl }) => {
   const [subTab, setSubTab] = useState<SubTab>('ingredients');
 
   // ── Ingredients state ──
@@ -232,6 +241,11 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
   // ── PO generation from comparison ──
   const [selectedItems, setSelectedItems] = useState<Map<string, QuoteLineItem>>(new Map());
   const [showPOPreview, setShowPOPreview] = useState(false);
+
+  // ── Product Costs overview state ──
+  const [costsChannelFilter, setCostsChannelFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
+  const [matProcEntries, setMatProcEntries] = useState<MaterialProcessingEntry[]>([]);
+  const [matProcLoading, setMatProcLoading] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -500,6 +514,13 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
     setExpandedMaterials(new Set(loadedCatalog.map(c => c.id)));
   };
 
+  const loadMatProcEntries = useCallback(async () => {
+    setMatProcLoading(true);
+    const { data } = await supabase.from('material_processing_matrix').select('*');
+    if (data) setMatProcEntries(data.map(mapMaterialProcessingRow));
+    setMatProcLoading(false);
+  }, []);
+
   useEffect(() => { loadIngredients(); loadUnits(); loadWholesaleClientsForReservation(); }, [loadIngredients, loadUnits, loadWholesaleClientsForReservation]);
   useEffect(() => {
     if (subTab === 'purchase_orders') loadPurchaseOrders();
@@ -507,7 +528,8 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
     if (subTab === 'quote_compare') { loadSuppliers(); loadQuotesAndCatalog(); }
     if (subTab === 'processing_types') loadProcessingTypes();
     if (subTab === 'goods_receiving') { loadGoodsReceipts(); loadPurchaseOrders(); }
-  }, [subTab, loadPurchaseOrders, loadSuppliers, loadQuotesAndCatalog, loadProcessingTypes, loadGoodsReceipts]);
+    if (subTab === 'product_costs') { loadMatProcEntries(); loadProcessingTypes(); }
+  }, [subTab, loadPurchaseOrders, loadSuppliers, loadQuotesAndCatalog, loadProcessingTypes, loadGoodsReceipts, loadMatProcEntries]);
 
   // ── Ingredients CRUD ──
   const filtered = ingredients.filter(i => {
@@ -1352,6 +1374,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
           { id: 'purchase_orders' as SubTab, label: '購買訂單', icon: <ShoppingCart size={16} /> },
           { id: 'goods_receiving' as SubTab, label: '收貨入倉', icon: <PackageCheck size={16} /> },
           { id: 'processing_types' as SubTab, label: '加工方式', icon: <Scissors size={16} /> },
+          { id: 'product_costs' as SubTab, label: '產品成本一覽', icon: <Coins size={16} /> },
           { id: 'reorder_alerts' as SubTab, label: '補貨預警', icon: <AlertTriangle size={16} /> },
           { id: 'units' as SubTab, label: '單位管理', icon: <Filter size={16} /> },
         ]).map(tab => (
@@ -2305,6 +2328,356 @@ const WarehousePanel: React.FC<Props> = ({ showToast }) => {
           </div>
         </div>
       )}
+
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {/* ── TAB: 產品成本一覽 ── */}
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {subTab === 'product_costs' && (() => {
+        const costsWsRules: WholesalePricingRules = siteConfig.wholesalePricingRules || { targetMarginFactor: 0.88, priceTiers: [] };
+        if (!costsWsRules.priceTiers) costsWsRules.priceTiers = [];
+
+        const costsFilteredProducts = products.filter(p => {
+          const ch = p.saleChannel || 'retail';
+          if (costsChannelFilter === 'retail') return ch === 'retail' || ch === 'both';
+          if (costsChannelFilter === 'wholesale') return ch === 'wholesale' || ch === 'both';
+          return true;
+        });
+
+        const ingredientGroupsMap = new Map<string, { ingredient: Ingredient; products: Product[] }>();
+        const unlinkedProducts: Product[] = [];
+        costsFilteredProducts.forEach(p => {
+          const ing = p.ingredientId ? ingredients.find(i => i.id === p.ingredientId) : null;
+          if (ing) {
+            if (!ingredientGroupsMap.has(ing.id)) ingredientGroupsMap.set(ing.id, { ingredient: ing, products: [] });
+            ingredientGroupsMap.get(ing.id)!.products.push(p);
+          } else {
+            unlinkedProducts.push(p);
+          }
+        });
+        const ingredientGroups = {
+          linked: Array.from(ingredientGroupsMap.values()).sort((a, b) => a.ingredient.name.localeCompare(b.ingredient.name)),
+          unlinked: unlinkedProducts,
+        };
+
+        const getMatEntry = (ingredientId: string, processingTypeId: string) =>
+          matProcEntries.find(e => e.ingredientId === ingredientId && e.processingTypeId === processingTypeId);
+
+        const updateMatEntry = async (ingredientId: string, processingTypeId: string, field: 'yieldRateOverride' | 'surchargeOverride', value: number | undefined) => {
+          const existing = getMatEntry(ingredientId, processingTypeId);
+          if (existing) {
+            const updates: any = {};
+            if (field === 'yieldRateOverride') updates.yield_rate_override = value ?? null;
+            if (field === 'surchargeOverride') updates.surcharge_override = value ?? null;
+            await supabase.from('material_processing_matrix').update(updates).eq('id', existing.id);
+            setMatProcEntries(prev => prev.map(e => e.id === existing.id ? { ...e, [field]: value } : e));
+          } else {
+            const newEntry = {
+              ingredient_id: ingredientId,
+              processing_type_id: processingTypeId,
+              yield_rate_override: field === 'yieldRateOverride' ? value : null,
+              surcharge_override: field === 'surchargeOverride' ? value : null,
+              is_available: true,
+            };
+            const { data } = await supabase.from('material_processing_matrix').insert(newEntry).select('*').single();
+            if (data) setMatProcEntries(prev => [...prev, mapMaterialProcessingRow(data)]);
+          }
+        };
+
+        const saveCostItemsToDb = async () => {
+          try {
+            await supabase.from('site_config').upsert({ id: 'cost_items', value: costItems });
+            showToast('成本項目已儲存');
+          } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
+        };
+
+        const saveAllProductCosts = async () => {
+          try {
+            for (const p of costsFilteredProducts) {
+              await supabase.from('products').update({
+                cost_price: p.costPrice ?? null,
+                cost_item_ids: p.costItemIds ?? null,
+                ingredient_id: p.ingredientId ?? null,
+                yield_rate: p.yieldRate ?? null,
+                processing_cost: p.processingCost ?? null,
+                packaging_cost: p.packagingCost ?? null,
+                misc_cost: p.miscCost ?? null,
+              }).eq('id', p.id);
+            }
+            showToast('所有產品成本已儲存');
+          } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
+        };
+
+        return (
+          <div className="space-y-8">
+            {/* Channel filter + save */}
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex gap-2">
+                {(['all', 'retail', 'wholesale'] as const).map(ch => (
+                  <button key={ch} onClick={() => setCostsChannelFilter(ch)}
+                    className={`px-5 py-2 rounded-xl text-xs font-black transition-all ${costsChannelFilter === ch ? 'bg-slate-900 text-white shadow-lg' : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-50'}`}>
+                    {ch === 'all' ? '全部' : ch === 'retail' ? '零售' : '批發'}
+                  </button>
+                ))}
+              </div>
+              <button onClick={saveAllProductCosts}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5">
+                <Save size={14}/> 全部儲存
+              </button>
+            </div>
+
+            {/* Cost Items editor */}
+            <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-amber-50 text-amber-600 rounded-xl"><Coins size={16}/></div>
+                  <div>
+                    <h4 className="font-black text-sm">附加成本項目</h4>
+                    <p className="text-[10px] text-slate-400 font-bold">碟、袋等可勾選的附加成本</p>
+                  </div>
+                </div>
+                <button onClick={saveCostItemsToDb} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black flex items-center gap-1"><Save size={12}/> 儲存</button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {costItems.map(ci => (
+                  <div key={ci.id} className="flex items-center gap-1.5 bg-slate-50 rounded-lg px-2.5 py-1.5 border border-slate-100">
+                    <input value={ci.name} onChange={e => setCostItems(prev => prev.map(x => x.id === ci.id ? { ...x, name: e.target.value } : x))} className="w-20 bg-transparent font-bold text-xs outline-none" placeholder="名稱" />
+                    <span className="text-slate-300">$</span>
+                    <input type="number" min="0" step="0.1" value={ci.defaultPrice} onChange={e => setCostItems(prev => prev.map(x => x.id === ci.id ? { ...x, defaultPrice: Number(e.target.value) || 0 } : x))} className="w-12 bg-transparent font-bold text-xs text-right outline-none" />
+                    <button onClick={() => setCostItems(prev => prev.filter(x => x.id !== ci.id))} className="p-0.5 text-rose-400 hover:text-rose-600"><X size={10}/></button>
+                  </div>
+                ))}
+                <button onClick={() => setCostItems(prev => [...prev, { id: `ci-${Date.now()}`, name: '', defaultPrice: 0 }])} className="px-2.5 py-1.5 border-2 border-dashed border-slate-200 rounded-lg text-[10px] font-black text-slate-400 hover:border-amber-400 hover:text-amber-600 flex items-center gap-1"><Plus size={10}/> 新增</button>
+              </div>
+            </div>
+
+            {/* ── Grouped by Ingredient ── */}
+            {matProcLoading ? (
+              <div className="flex items-center justify-center py-20"><RefreshCw size={24} className="animate-spin text-slate-300" /></div>
+            ) : (
+              <>
+                {ingredientGroups.linked.map(({ ingredient: ing, products: ingProducts }) => {
+                  const relatedPTs = new Set(ingProducts.map(p => p.processingTypeId).filter(Boolean));
+                  const ptList = processingTypes.filter(pt => relatedPTs.has(pt.id)).sort((a, b) => a.sortOrder - b.sortOrder);
+
+                  return (
+                    <div key={ing.id} className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+                      {/* Ingredient header */}
+                      <div className="p-6 pb-3 bg-gradient-to-r from-blue-50/80 to-slate-50/50 border-b border-slate-100">
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 bg-blue-100 rounded-xl flex items-center justify-center text-lg">🥩</div>
+                          <div className="flex-1">
+                            <h4 className="font-black text-slate-900">{ing.name}</h4>
+                            <p className="text-[10px] text-slate-400 font-bold">買入成本: <span className="text-blue-600 font-black">${ing.baseCostPerLb.toFixed(2)}/{ing.unit}</span></p>
+                          </div>
+                          <span className="text-[10px] font-bold text-slate-400">{ingProducts.length} 款產品</span>
+                        </div>
+                      </div>
+
+                      {/* Processing type matrix */}
+                      {ptList.length > 0 && (
+                        <div className="px-6 py-3 border-b border-slate-50">
+                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2">加工方式成本矩陣</p>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                                  <th className="text-left px-2 py-1.5">加工方式</th>
+                                  <th className="text-right px-2 py-1.5 w-20">出成率</th>
+                                  <th className="text-right px-2 py-1.5 w-24">材料成本/lb</th>
+                                  <th className="text-right px-2 py-1.5 w-20">加工費/lb</th>
+                                  <th className="text-right px-2 py-1.5 w-24">小計/lb</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {/* Whole/原件 row (no processing) */}
+                                <tr className="border-t border-slate-50 bg-emerald-50/30">
+                                  <td className="px-2 py-2 font-bold text-emerald-700">原件（不加工）</td>
+                                  <td className="px-2 py-2 text-right text-emerald-600 font-bold">100%</td>
+                                  <td className="px-2 py-2 text-right font-bold">${ing.baseCostPerLb.toFixed(2)}</td>
+                                  <td className="px-2 py-2 text-right text-slate-400">—</td>
+                                  <td className="px-2 py-2 text-right font-black text-slate-800">${ing.baseCostPerLb.toFixed(2)}</td>
+                                </tr>
+                                {ptList.map(pt => {
+                                  const entry = getMatEntry(ing.id, pt.id);
+                                  const yr = entry?.yieldRateOverride || 1;
+                                  const proc = entry?.surchargeOverride || 0;
+                                  const matCost = yr > 0 ? ing.baseCostPerLb / yr : ing.baseCostPerLb;
+                                  const subtotal = matCost + proc;
+                                  return (
+                                    <tr key={pt.id} className="border-t border-slate-50 hover:bg-slate-50/50">
+                                      <td className="px-2 py-2 font-bold text-slate-700">{pt.name}{pt.spec ? ` (${pt.spec})` : ''}</td>
+                                      <td className="px-2 py-2 text-right">
+                                        <input type="number" min="0" max="1" step="0.01"
+                                          value={entry?.yieldRateOverride ?? ''}
+                                          onChange={e => updateMatEntry(ing.id, pt.id, 'yieldRateOverride', e.target.value ? Number(e.target.value) : undefined)}
+                                          placeholder="—" className="w-14 p-1 bg-slate-50 rounded-md font-bold text-right border border-slate-100 text-xs" />
+                                      </td>
+                                      <td className="px-2 py-2 text-right font-bold text-blue-600">${matCost.toFixed(2)}</td>
+                                      <td className="px-2 py-2 text-right">
+                                        <input type="number" min="0" step="0.1"
+                                          value={entry?.surchargeOverride ?? ''}
+                                          onChange={e => updateMatEntry(ing.id, pt.id, 'surchargeOverride', e.target.value ? Number(e.target.value) : undefined)}
+                                          placeholder="0" className="w-14 p-1 bg-slate-50 rounded-md font-bold text-right border border-slate-100 text-xs" />
+                                      </td>
+                                      <td className="px-2 py-2 text-right font-black text-amber-700">${subtotal.toFixed(2)}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Products under this ingredient */}
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="bg-slate-50 text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                              <th className="text-left px-4 py-2">產品</th>
+                              <th className="text-left px-2 py-2">加工</th>
+                              <th className="text-right px-2 py-2">成本/lb</th>
+                              <th className="text-right px-2 py-2">包裝費</th>
+                              <th className="text-right px-2 py-2">雜費</th>
+                              {costItems.map(ci => <th key={ci.id} className="text-center px-1 py-2">{ci.name}</th>)}
+                              <th className="text-right px-2 py-2">總成本/lb</th>
+                              <th className="text-right px-2 py-2">包裝磅數</th>
+                              <th className="text-right px-3 py-2">成本/包</th>
+                              {costsChannelFilter !== 'retail' && <th className="text-right px-3 py-2 text-orange-500">P0</th>}
+                              {costsChannelFilter !== 'retail' && costsWsRules.priceTiers.map(tier => (
+                                <th key={tier.name} className="text-right px-2 py-2 text-teal-500">{tier.name}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-50">
+                            {ingProducts.map(p => {
+                              const perLbCost = computeProductCost(p, ing, costItems, matProcEntries);
+                              const packCost = computePackCost(perLbCost, p.packWeightLb, p.pricingMode);
+                              const p0 = packCost > 0 ? packCost / costsWsRules.targetMarginFactor : 0;
+                              const ptName = p.processingTypeId ? processingTypes.find(pt => pt.id === p.processingTypeId)?.name : '原件';
+                              return (
+                                <tr key={p.id} className="hover:bg-slate-50/50">
+                                  <td className="px-4 py-2">
+                                    <div className="flex items-center gap-2">
+                                      <div className="w-6 h-6 bg-slate-50 rounded-md flex items-center justify-center text-xs overflow-hidden flex-shrink-0 border border-slate-100">
+                                        {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-[10px]">{p.image || '📦'}</span>}
+                                      </div>
+                                      <div>
+                                        <span className="font-bold text-slate-700 text-[11px]">{p.name}</span>
+                                        {p.variantLabel && <span className="ml-1 text-[9px] text-violet-500 font-bold">{p.variantLabel}</span>}
+                                      </div>
+                                    </div>
+                                  </td>
+                                  <td className="px-2 py-2 text-[10px] font-bold text-slate-500">{ptName || '—'}</td>
+                                  <td className="px-2 py-2 text-right font-bold text-slate-700">${perLbCost.toFixed(2)}</td>
+                                  <td className="px-2 py-2 text-right">
+                                    <input type="number" min="0" step="0.1" value={p.packagingCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, packagingCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-12 p-1 bg-slate-50 rounded-md font-bold text-right border border-slate-100 text-xs" />
+                                  </td>
+                                  <td className="px-2 py-2 text-right">
+                                    <input type="number" min="0" step="0.1" value={p.miscCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, miscCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-12 p-1 bg-slate-50 rounded-md font-bold text-right border border-slate-100 text-xs" />
+                                  </td>
+                                  {costItems.map(ci => {
+                                    const checked = (p.costItemIds || []).includes(ci.id);
+                                    return (
+                                      <td key={ci.id} className="text-center px-1 py-2">
+                                        <button onClick={() => {
+                                          const ids = p.costItemIds || [];
+                                          const next = checked ? ids.filter(x => x !== ci.id) : [...ids, ci.id];
+                                          setProducts(prev => prev.map(x => x.id === p.id ? { ...x, costItemIds: next } : x));
+                                        }} className={`w-4 h-4 rounded border-2 flex items-center justify-center mx-auto ${checked ? 'border-amber-500 bg-amber-500 text-white' : 'border-slate-200'}`}>
+                                          {checked && <Check size={9} strokeWidth={3}/>}
+                                        </button>
+                                      </td>
+                                    );
+                                  })}
+                                  <td className="px-2 py-2 text-right font-black text-slate-900">${perLbCost.toFixed(2)}</td>
+                                  <td className="px-2 py-2 text-right text-[10px] font-bold text-slate-500">
+                                    {p.pricingMode === 'by_piece' ? <span className="text-pink-500">抄碼</span> : p.packWeightLb ? `${p.packWeightLb}磅` : '—'}
+                                  </td>
+                                  <td className="px-3 py-2 text-right font-black text-amber-700">
+                                    {p.pricingMode === 'by_piece' ? `$${perLbCost.toFixed(1)}/lb` : p.packWeightLb ? `$${packCost.toFixed(1)}` : `$${perLbCost.toFixed(1)}/lb`}
+                                  </td>
+                                  {costsChannelFilter !== 'retail' && (
+                                    <td className="px-3 py-2 text-right font-black text-orange-600">{p0 > 0 ? `$${p0.toFixed(1)}` : '—'}</td>
+                                  )}
+                                  {costsChannelFilter !== 'retail' && costsWsRules.priceTiers.map(tier => (
+                                    <td key={tier.name} className="px-2 py-2 text-right font-bold text-teal-600">{p0 > 0 ? `$${(p0 / tier.factor).toFixed(1)}` : '—'}</td>
+                                  ))}
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* Unlinked products (no ingredient) */}
+                {ingredientGroups.unlinked.length > 0 && (
+                  <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+                    <div className="p-6 pb-3 bg-gradient-to-r from-slate-50 to-slate-50/50 border-b border-slate-100">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 bg-slate-200 rounded-xl flex items-center justify-center text-lg">📦</div>
+                        <div>
+                          <h4 className="font-black text-slate-700">未關聯原材料</h4>
+                          <p className="text-[10px] text-slate-400 font-bold">以下產品尚未關聯原材料，使用手動成本</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="bg-slate-50 text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                            <th className="text-left px-4 py-2">產品</th>
+                            <th className="text-right px-2 py-2">手動成本</th>
+                            <th className="text-right px-2 py-2">包裝費</th>
+                            <th className="text-right px-2 py-2">雜費</th>
+                            <th className="text-right px-3 py-2">總成本</th>
+                            <th className="text-right px-3 py-2">售價</th>
+                            <th className="text-right px-3 py-2">利潤</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-50">
+                          {ingredientGroups.unlinked.map(p => {
+                            const totalCost = computeProductCost(p, undefined, costItems);
+                            const sellPrice = (p.memberPrice > 0 && p.memberPrice < p.price) ? p.memberPrice : p.price;
+                            const profit = sellPrice - totalCost;
+                            return (
+                              <tr key={p.id} className="hover:bg-slate-50/50">
+                                <td className="px-4 py-2 font-bold text-slate-700">{p.name}</td>
+                                <td className="px-2 py-2 text-right">
+                                  <input type="number" min="0" step="0.5" value={p.costPrice ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, costPrice: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1 bg-slate-50 rounded-md font-bold text-right border border-slate-100 text-xs" />
+                                </td>
+                                <td className="px-2 py-2 text-right">
+                                  <input type="number" min="0" step="0.1" value={p.packagingCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, packagingCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-12 p-1 bg-slate-50 rounded-md font-bold text-right border border-slate-100 text-xs" />
+                                </td>
+                                <td className="px-2 py-2 text-right">
+                                  <input type="number" min="0" step="0.1" value={p.miscCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, miscCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-12 p-1 bg-slate-50 rounded-md font-bold text-right border border-slate-100 text-xs" />
+                                </td>
+                                <td className="px-3 py-2 text-right font-black text-slate-900">${totalCost.toFixed(1)}</td>
+                                <td className="px-3 py-2 text-right font-bold text-slate-600">${sellPrice}</td>
+                                <td className={`px-3 py-2 text-right font-black ${profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{profit >= 0 ? '+' : ''}${profit.toFixed(1)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {costsFilteredProducts.length === 0 && (
+                  <div className="bg-white p-12 rounded-[2rem] border border-slate-100 shadow-sm text-center">
+                    <Coins size={32} className="text-slate-200 mx-auto mb-3" />
+                    <p className="text-slate-400 font-bold">尚無產品</p>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ══════════════════════════════════════════════════════════════ */}
       {/* ── TAB: 單位管理 ── */}

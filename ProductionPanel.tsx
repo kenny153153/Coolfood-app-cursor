@@ -2,14 +2,13 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Package, Layers, ClipboardList, Plus, Edit, Trash2,
   Save, X, RefreshCw, Check, Eye, Send,
-  CheckCircle, XCircle, BarChart3, Coins,
+  CheckCircle, XCircle, BarChart3,
   AlertTriangle, TrendingUp, BookOpen,
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
-import { computeProductCost } from './supabaseMappers';
 import type {
-  Product, Ingredient, IngredientCategory, Category, CostItem,
-  SaleChannel, SiteConfig, WholesalePricingRules,
+  Product, Ingredient,
+  SaleChannel,
   PackagingMaterial, ProductionOrder, ProductionOrderStatus,
   ProductionOrderInput, ProductionOrderOutput,
   ProductBomEntry,
@@ -20,17 +19,10 @@ import type {
 interface Props {
   showToast: (msg: string, type?: 'success' | 'error') => void;
   products: Product[];
-  setProducts: React.Dispatch<React.SetStateAction<Product[]>>;
   ingredients: Ingredient[];
-  ingredientCategories: string[];
-  categories: Category[];
-  costItems: CostItem[];
-  setCostItems: React.Dispatch<React.SetStateAction<CostItem[]>>;
-  siteConfig: SiteConfig;
-  isMediaUrl: (url: string) => boolean;
 }
 
-type SubTab = 'orders' | 'bom' | 'packaging' | 'costs' | 'yield_report';
+type SubTab = 'orders' | 'bom' | 'packaging' | 'yield_report';
 
 const STATUS_META: Record<ProductionOrderStatus, { label: string; color: string; bg: string }> = {
   draft: { label: '草稿', color: 'text-slate-500', bg: 'bg-slate-100' },
@@ -42,8 +34,7 @@ const STATUS_META: Record<ProductionOrderStatus, { label: string; color: string;
 // ─── Component ──────────────────────────────────────────────────
 
 const ProductionPanel: React.FC<Props> = ({
-  showToast, products, setProducts, ingredients, ingredientCategories,
-  categories, costItems, setCostItems, siteConfig, isMediaUrl,
+  showToast, products, ingredients,
 }) => {
   const [subTab, setSubTab] = useState<SubTab>('orders');
 
@@ -68,8 +59,7 @@ const ProductionPanel: React.FC<Props> = ({
   const [bomSaving, setBomSaving] = useState(false);
   const [bomSearch, setBomSearch] = useState('');
 
-  // ── Cost overview state ──
-  const [costsChannelFilter, setCostsChannelFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
+  // (Cost overview moved to WarehousePanel)
 
   // ── Review modal ──
   const [reviewOrder, setReviewOrder] = useState<ProductionOrder | null>(null);
@@ -392,18 +382,6 @@ const ProductionPanel: React.FC<Props> = ({
     else { showToast('已刪除'); loadPackagingMaterials(); }
   };
 
-  // ─── Costs data ───────────────────────────────────────────────
-
-  const costsWsRules: WholesalePricingRules = siteConfig.wholesalePricingRules || { targetMarginFactor: 0.88, priceTiers: [] };
-  if (!costsWsRules.priceTiers) costsWsRules.priceTiers = [];
-
-  const costsFilteredProducts = products.filter(p => {
-    const ch = p.saleChannel || 'retail';
-    if (costsChannelFilter === 'retail') return ch === 'retail' || ch === 'both';
-    if (costsChannelFilter === 'wholesale') return ch === 'wholesale' || ch === 'both';
-    return true;
-  });
-
   // ─── Yield report data ────────────────────────────────────────
 
   const yieldReportData = useMemo(() => {
@@ -575,7 +553,6 @@ const ProductionPanel: React.FC<Props> = ({
           { id: 'orders' as SubTab, label: '生產工單', icon: <ClipboardList size={14} /> },
           { id: 'bom' as SubTab, label: '配方管理', icon: <BookOpen size={14} /> },
           { id: 'packaging' as SubTab, label: '包裝材料', icon: <Package size={14} /> },
-          { id: 'costs' as SubTab, label: '產品成本一覽', icon: <Coins size={14} /> },
           { id: 'yield_report' as SubTab, label: '出成率報告', icon: <TrendingUp size={14} /> },
         ]).map(tab => (
           <button
@@ -820,213 +797,6 @@ const ProductionPanel: React.FC<Props> = ({
               </div>
             </div>
           )}
-        </div>
-      )}
-
-      {/* ════════════════════════════════════════════════════════════ */}
-      {/* TAB 3: Product Cost Overview 產品成本一覽 (moved from costs)*/}
-      {/* ════════════════════════════════════════════════════════════ */}
-      {subTab === 'costs' && (
-        <div className="space-y-8">
-          {/* Channel filter */}
-          <div className="flex gap-2">
-            {([
-              { id: 'all' as const, label: '全部' },
-              { id: 'retail' as const, label: '零售' },
-              { id: 'wholesale' as const, label: '批發' },
-            ]).map(ch => (
-              <button key={ch.id} onClick={() => setCostsChannelFilter(ch.id)}
-                className={`px-5 py-2 rounded-xl text-xs font-black transition-all ${costsChannelFilter === ch.id ? 'bg-slate-900 text-white shadow-lg' : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-50'}`}>
-                {ch.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Cost Items (legacy support – maps to packaging materials) */}
-          <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl"><Coins size={18}/></div>
-                <div>
-                  <h4 className="font-black text-lg">成本項目</h4>
-                  <p className="text-[10px] text-slate-400 font-bold">定義包裝、配件等附加成本（不含肉品成本，肉品成本在各產品設定）</p>
-                </div>
-              </div>
-              <button onClick={async () => {
-                try {
-                  await supabase.from('site_config').upsert({ id: 'cost_items', value: costItems });
-                  showToast('成本項目已儲存');
-                } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
-              }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Save size={14}/> 儲存</button>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                    <th className="text-left px-4 py-3">名稱</th>
-                    <th className="text-right px-4 py-3">單價 ($)</th>
-                    <th className="text-right px-4 py-3 w-20">操作</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {costItems.map((ci) => (
-                    <tr key={ci.id} className="hover:bg-slate-50/50 transition-colors">
-                      <td className="px-4 py-3">
-                        <input value={ci.name} onChange={e => setCostItems(prev => prev.map(x => x.id === ci.id ? { ...x, name: e.target.value } : x))} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100 focus:ring-2 focus:ring-amber-100" />
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <input type="number" min="0" step="0.1" value={ci.defaultPrice} onChange={e => setCostItems(prev => prev.map(x => x.id === ci.id ? { ...x, defaultPrice: Number(e.target.value) || 0 } : x))} className="w-24 p-2 bg-slate-50 rounded-lg font-bold text-xs text-right border border-slate-100 focus:ring-2 focus:ring-amber-100" />
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <button onClick={() => setCostItems(prev => prev.filter(x => x.id !== ci.id))} className="p-1.5 text-rose-400 hover:bg-rose-50 rounded-lg transition-colors"><Trash2 size={14}/></button>
-                      </td>
-                    </tr>
-                  ))}
-                  {costItems.length === 0 && (
-                    <tr><td colSpan={3} className="px-4 py-8 text-center text-slate-300 font-bold text-xs">尚無成本項目，點擊下方新增</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            <button onClick={() => setCostItems(prev => [...prev, { id: `ci-${Date.now()}`, name: '', defaultPrice: 0 }])} className="px-4 py-2.5 border-2 border-dashed border-slate-200 rounded-xl text-xs font-black text-slate-400 hover:border-amber-400 hover:text-amber-600 transition-all flex items-center gap-1.5"><Plus size={14}/> 新增成本項目</button>
-          </div>
-
-          {/* Per-Product Cost Overview */}
-          <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden">
-            <div className="p-8 pb-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><ClipboardList size={18}/></div>
-                <h4 className="font-black text-lg">產品成本一覽{costsChannelFilter === 'wholesale' ? '（批發）' : costsChannelFilter === 'retail' ? '（零售）' : ''}</h4>
-              </div>
-              <button onClick={async () => {
-                try {
-                  for (const p of costsFilteredProducts) {
-                    await supabase.from('products').update({
-                      cost_price: p.costPrice ?? null,
-                      cost_item_ids: p.costItemIds ?? null,
-                      ingredient_id: p.ingredientId ?? null,
-                      yield_rate: p.yieldRate ?? null,
-                      processing_cost: p.processingCost ?? null,
-                      packaging_cost: p.packagingCost ?? null,
-                      misc_cost: p.miscCost ?? null,
-                    }).eq('id', p.id);
-                  }
-                  showToast('所有產品成本已儲存');
-                } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
-              }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all flex items-center gap-1.5"><Save size={14}/> 全部儲存</button>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                    <th className="text-left px-4 py-3">產品</th>
-                    <th className="text-left px-3 py-3">原材料</th>
-                    <th className="text-right px-3 py-3">原料成本</th>
-                    <th className="text-right px-3 py-3">出成率</th>
-                    <th className="text-right px-3 py-3">加工費</th>
-                    <th className="text-right px-3 py-3">包裝費</th>
-                    <th className="text-right px-3 py-3">其他</th>
-                    {costItems.map(ci => <th key={ci.id} className="text-center px-2 py-3">{ci.name}<br/><span className="text-slate-300">${ci.defaultPrice}</span></th>)}
-                    <th className="text-right px-4 py-3">總成本</th>
-                    {costsChannelFilter === 'wholesale' ? (
-                      <>
-                        <th className="text-right px-4 py-3 text-orange-500">P0 直銷</th>
-                        {costsWsRules.priceTiers.map(tier => (
-                          <th key={tier.name} className="text-right px-4 py-3 text-teal-500">{tier.name}</th>
-                        ))}
-                      </>
-                    ) : (
-                      <>
-                        <th className="text-right px-4 py-3">售價</th>
-                        <th className="text-right px-4 py-3">利潤</th>
-                      </>
-                    )}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {costsFilteredProducts.length === 0 ? (
-                    <tr><td colSpan={20} className="px-4 py-12 text-center text-slate-300 font-bold text-sm">尚無產品</td></tr>
-                  ) : costsFilteredProducts.map(p => {
-                    const linkedIng = ingredients.find(i => i.id === p.ingredientId);
-                    const totalCost = computeProductCost(p, linkedIng, costItems);
-                    const sellPrice = (p.memberPrice > 0 && p.memberPrice < p.price) ? p.memberPrice : p.price;
-                    const profit = sellPrice - totalCost;
-                    const costP0 = totalCost > 0 ? totalCost / costsWsRules.targetMarginFactor : 0;
-                    return (
-                      <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <div className="w-7 h-7 bg-slate-50 rounded-lg flex items-center justify-center text-sm overflow-hidden flex-shrink-0 border border-slate-100">
-                              {isMediaUrl(p.image) ? <img src={p.image} className="w-full h-full object-cover" alt="" /> : <span className="text-xs">{p.image || '📦'}</span>}
-                            </div>
-                            <span className="font-bold text-slate-700 truncate max-w-[120px]">{p.name}</span>
-                          </div>
-                        </td>
-                        <td className="px-3 py-3">
-                          <select value={p.ingredientId || ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, ingredientId: e.target.value || undefined } : x))} className="w-32 p-1.5 bg-slate-50 rounded-lg font-bold border border-slate-100 text-xs">
-                            <option value="">（手動）</option>
-                            {ingredientCategories.map(cat => {
-                              const catIngs = ingredients.filter(i => i.category === cat);
-                              if (catIngs.length === 0) return null;
-                              return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}</optgroup>;
-                            })}
-                            {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name}</option>)}</optgroup>}
-                          </select>
-                        </td>
-                        <td className="px-3 py-3 text-right">
-                          {linkedIng ? (
-                            <span className="font-bold text-blue-600">${linkedIng.baseCostPerLb.toFixed(1)}/{linkedIng.unit}</span>
-                          ) : (
-                            <input type="number" min="0" step="0.5" value={p.costPrice ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, costPrice: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-16 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
-                          )}
-                        </td>
-                        <td className="px-3 py-3 text-right">
-                          <input type="number" min="0" max="1" step="0.01" value={p.yieldRate ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, yieldRate: Number(e.target.value) || undefined } : x))} placeholder="—" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
-                        </td>
-                        <td className="px-3 py-3 text-right">
-                          <input type="number" min="0" step="0.5" value={p.processingCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, processingCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
-                        </td>
-                        <td className="px-3 py-3 text-right">
-                          <input type="number" min="0" step="0.5" value={p.packagingCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, packagingCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
-                        </td>
-                        <td className="px-3 py-3 text-right">
-                          <input type="number" min="0" step="0.5" value={p.miscCost ?? ''} onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, miscCost: Number(e.target.value) || 0 } : x))} placeholder="0" className="w-14 p-1.5 bg-slate-50 rounded-lg font-bold text-right border border-slate-100 text-xs" />
-                        </td>
-                        {costItems.map(ci => {
-                          const checked = (p.costItemIds || []).includes(ci.id);
-                          return (
-                            <td key={ci.id} className="text-center px-2 py-3">
-                              <button onClick={() => {
-                                const ids = p.costItemIds || [];
-                                const next = checked ? ids.filter(x => x !== ci.id) : [...ids, ci.id];
-                                setProducts(prev => prev.map(x => x.id === p.id ? { ...x, costItemIds: next } : x));
-                              }} className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all mx-auto ${checked ? 'border-amber-500 bg-amber-500 text-white' : 'border-slate-200 bg-white'}`}>
-                                {checked && <Check size={12} strokeWidth={3}/>}
-                              </button>
-                            </td>
-                          );
-                        })}
-                        <td className="text-right px-4 py-3 font-bold text-slate-900">${totalCost.toFixed(1)}</td>
-                        {costsChannelFilter === 'wholesale' ? (
-                          <>
-                            <td className="text-right px-4 py-3 font-black text-orange-600">{totalCost > 0 ? `$${costP0.toFixed(1)}` : '—'}</td>
-                            {costsWsRules.priceTiers.map(tier => (
-                              <td key={tier.name} className="text-right px-4 py-3 font-black text-teal-600">{totalCost > 0 ? `$${(costP0 / tier.factor).toFixed(1)}` : '—'}</td>
-                            ))}
-                          </>
-                        ) : (
-                          <>
-                            <td className="text-right px-4 py-3 font-bold text-slate-700">${sellPrice}</td>
-                            <td className={`text-right px-4 py-3 font-black ${profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{profit >= 0 ? '+' : ''}${profit.toFixed(1)}</td>
-                          </>
-                        )}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
         </div>
       )}
 

@@ -54,6 +54,7 @@ import {
   mapIngredientToRow,
   mapIngredientCategoryRow,
   computeProductCost,
+  computePackCost,
   mapProcessingTypeRow,
   mapProductGroupRow,
   mapProductGroupToRow,
@@ -268,9 +269,10 @@ const getWholesaleUnitPrice = (
   memberPriceTier?: string,
   priceOverrides?: Record<string, number>,
 ): number => {
-  const totalCost = computeProductCost(p, linkedIngredient, costItems);
+  const perLbCost = computeProductCost(p, linkedIngredient, costItems);
+  const packCost = computePackCost(perLbCost, p.packWeightLb, p.pricingMode);
   const override = priceOverrides?.[p.id];
-  const p0 = override != null ? override : (totalCost > 0 ? totalCost / wholesaleRules.targetMarginFactor : p.price);
+  const p0 = override != null ? override : (packCost > 0 ? packCost / wholesaleRules.targetMarginFactor : p.price);
   if (!memberPriceTier || memberPriceTier === 'P0') return Math.round(p0);
   const tier = wholesaleRules.priceTiers?.find(t => t.name === memberPriceTier);
   if (tier) return Math.round(p0 / tier.factor);
@@ -901,6 +903,7 @@ const App: React.FC = () => {
     processingSpec?: string;
     packSize: string;
     price: number;
+    packWeightLb?: number;
   }
 
   const [newProductWizard, setNewProductWizard] = useState<{
@@ -4212,8 +4215,8 @@ const App: React.FC = () => {
     if (adminModule === 'new_order') return <NewOrderPanel showToast={showToast} />;
     if (adminModule === 'accounting') return <AccountingPanel showToast={showToast} />;
     if (adminModule === 'legacy_features') return <LegacyFeaturesPanel showToast={showToast} />;
-    if (adminModule === 'warehouse_ops') return <WarehousePanel showToast={showToast} />;
-    if (adminModule === 'production') return <ProductionPanel showToast={showToast} products={products} setProducts={setProducts} ingredients={ingredients} ingredientCategories={ingredientCategories} categories={categories} costItems={costItems} setCostItems={setCostItems} siteConfig={siteConfig} isMediaUrl={isMediaUrl} />;
+    if (adminModule === 'warehouse_ops') return <WarehousePanel showToast={showToast} products={products} setProducts={setProducts} costItems={costItems} setCostItems={setCostItems} siteConfig={siteConfig} isMediaUrl={isMediaUrl} />;
+    if (adminModule === 'production') return <ProductionPanel showToast={showToast} products={products} ingredients={ingredients} />;
 
     // Functional panels — wholesale
     if (adminModule === 'wholesale_clients') return <WholesaleClientsPanel showToast={showToast} />;
@@ -4525,9 +4528,10 @@ const App: React.FC = () => {
                 setProducts(prev => prev.map(p => {
                   if (!applyToOverrides && retailOverrideIds.has(p.id)) return p;
                   const linkedIng = ingredients.find(i => i.id === p.ingredientId);
-                  const totalCost = computeProductCost(p, linkedIng, costItems);
-                  if (totalCost <= 0) return p;
-                  return { ...p, price: Math.round(totalCost / rtFactor) };
+                  const perLbCost = computeProductCost(p, linkedIng, costItems);
+                  if (perLbCost <= 0) return p;
+                  const packCost = computePackCost(perLbCost, p.packWeightLb, p.pricingMode);
+                  return { ...p, price: Math.round(packCost / rtFactor) };
                 }));
                 if (applyToOverrides) setRetailOverrideIds(new Set());
                 setPendingApplyTab(null);
@@ -4703,7 +4707,8 @@ const App: React.FC = () => {
                           const memberP = excluded ? base : Math.round(base * (1 - mPct / 100));
                           const walletP = excluded ? base : Math.round(base * (1 - mPct / 100) * (1 - wPct / 100));
                           const linkedIng = ingredients.find(i => i.id === p.ingredientId);
-                          const totalCost = computeProductCost(p, linkedIng, costItems);
+                          const perLbCost = computeProductCost(p, linkedIng, costItems);
+                          const totalCost = computePackCost(perLbCost, p.packWeightLb, p.pricingMode);
                           const marginPct = totalCost > 0 ? Math.round(((p.price - totalCost) / p.price) * 100) : null;
                           const isOverridden = retailOverrideIds.has(p.id);
                           return (
@@ -4782,7 +4787,8 @@ const App: React.FC = () => {
                 products.forEach(p => {
                   if (!applyToOverrides && wholesalePriceOverrides[p.id] != null) return;
                   const linkedIng = ingredients.find(i => i.id === p.ingredientId);
-                  const totalCost = computeProductCost(p, linkedIng, costItems);
+                  const perLbCost = computeProductCost(p, linkedIng, costItems);
+                  const totalCost = computePackCost(perLbCost, p.packWeightLb, p.pricingMode);
                   if (totalCost <= 0) return;
                   delete newOverrides[p.id];
                 });
@@ -4912,7 +4918,8 @@ const App: React.FC = () => {
                       <tbody className="divide-y divide-slate-50">
                         {products.map(p => {
                           const linkedIng = ingredients.find(i => i.id === p.ingredientId);
-                          const totalCost = computeProductCost(p, linkedIng, costItems);
+                          const perLbCost = computeProductCost(p, linkedIng, costItems);
+                          const totalCost = computePackCost(perLbCost, p.packWeightLb, p.pricingMode);
                           const computedP0 = totalCost > 0 ? Math.round(totalCost / wsRules.targetMarginFactor) : null;
                           const override = wholesalePriceOverrides[p.id];
                           const actualP0 = override != null ? override : (computedP0 ?? 0);
@@ -5720,8 +5727,8 @@ const App: React.FC = () => {
           </div>
         );
       case 'costs':
-        // Costs module moved to ProductionPanel (shared module "工場")
-        return <ProductionPanel showToast={showToast} products={products} setProducts={setProducts} ingredients={ingredients} ingredientCategories={ingredientCategories} categories={categories} costItems={costItems} setCostItems={setCostItems} siteConfig={siteConfig} isMediaUrl={isMediaUrl} />;
+        // Costs module moved to WarehousePanel → 產品成本一覽
+        return <WarehousePanel showToast={showToast} products={products} setProducts={setProducts} costItems={costItems} setCostItems={setCostItems} siteConfig={siteConfig} isMediaUrl={isMediaUrl} />;
       case 'language':
         return (
           <div className="space-y-8 animate-fade-in pb-20">
@@ -7076,14 +7083,48 @@ const App: React.FC = () => {
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">ID (舊系統)</label>
                   <input value={editingProduct.legacyId || ''} onChange={e => setEditingProduct({ ...editingProduct, legacyId: e.target.value || undefined })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold font-mono" placeholder="選填，舊系統產品編號" />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">價格</label>
-                  <input type="number" value={editingProduct.price} onChange={e => setEditingProduct({ ...editingProduct, price: Number(e.target.value) })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">折扣價</label>
-                  <input type="number" min="0" value={editingProduct.memberPrice || ''} onChange={e => setEditingProduct({ ...editingProduct, memberPrice: Number(e.target.value) || 0 })} placeholder="留空 = 不設折扣" className="w-full p-3 bg-slate-50 rounded-2xl font-bold" />
-                  <p className="text-[9px] text-slate-400 font-bold leading-relaxed">留空或填 0 = 不設折扣，以售價出售。<br/>例如售價 $100，填 <span className="text-blue-600">90</span> = 以 $90 出售（減 $10）。<br/>折扣價為所有客人可見的特價，會員/錢包折扣會在此基礎上再計算。</p>
+                <div className="space-y-2 md:col-span-2 p-4 bg-gradient-to-r from-emerald-50/60 to-teal-50/60 rounded-2xl border border-emerald-100/60">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Coins size={14} className="text-emerald-600" />
+                    <label className="text-[10px] font-bold text-emerald-700 uppercase tracking-widest">定價預覽</label>
+                    <span className="text-[9px] text-slate-400 font-bold ml-auto">售價由系統根據成本 × 利潤率自動計算，前往「價錢設定」套用</span>
+                  </div>
+                  {(() => {
+                    const linkedIng = ingredients.find(i => i.id === editingProduct.ingredientId);
+                    const perLbCost = computeProductCost(editingProduct, linkedIng, costItems);
+                    const packCost = editingProduct.pricingMode === 'fixed_pack' && editingProduct.packWeightLb
+                      ? perLbCost * editingProduct.packWeightLb : perLbCost;
+                    const rtFactor = siteConfig.pricingRules?.targetMarginFactor || 0.88;
+                    const wsFactor = siteConfig.wholesalePricingRules?.targetMarginFactor || 0.88;
+                    const suggestedRetail = packCost > 0 ? Math.round(packCost / rtFactor) : 0;
+                    const suggestedP0 = packCost > 0 ? Math.round(packCost / wsFactor) : 0;
+                    return (
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                        <div className="p-2.5 bg-white rounded-xl border border-emerald-100">
+                          <p className="text-[9px] text-slate-400 font-bold">成本/磅</p>
+                          <p className="font-black text-slate-800">${perLbCost.toFixed(2)}</p>
+                        </div>
+                        {editingProduct.pricingMode === 'fixed_pack' && editingProduct.packWeightLb ? (
+                          <div className="p-2.5 bg-white rounded-xl border border-emerald-100">
+                            <p className="text-[9px] text-slate-400 font-bold">成本/包 ({editingProduct.packWeightLb}磅)</p>
+                            <p className="font-black text-amber-700">${packCost.toFixed(2)}</p>
+                          </div>
+                        ) : null}
+                        <div className="p-2.5 bg-white rounded-xl border border-emerald-100">
+                          <p className="text-[9px] text-slate-400 font-bold">建議零售價</p>
+                          <p className="font-black text-blue-600">${suggestedRetail}</p>
+                        </div>
+                        <div className="p-2.5 bg-white rounded-xl border border-emerald-100">
+                          <p className="text-[9px] text-slate-400 font-bold">建議批發 P0</p>
+                          <p className="font-black text-orange-600">${suggestedP0}</p>
+                        </div>
+                        <div className="p-2.5 bg-white rounded-xl border border-slate-100">
+                          <p className="text-[9px] text-slate-400 font-bold">當前售價</p>
+                          <p className="font-black text-slate-800">${editingProduct.price}</p>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">銷售渠道</label>
@@ -7221,7 +7262,32 @@ const App: React.FC = () => {
                     )}
                     <div className="space-y-1">
                       <label className="text-[9px] font-bold text-slate-500 ml-1">包裝規格</label>
-                      <input value={editingProduct.packSize || ''} onChange={e => setEditingProduct({ ...editingProduct, packSize: e.target.value })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" placeholder="例: 5磅/包" />
+                      <select value={editingProduct.packSize || ''} onChange={e => {
+                        const val = e.target.value;
+                        const weightMap: Record<string, number> = { '1磅/包': 1, '2磅/包': 2, '5磅/包': 5, '10磅/箱': 10, '300g/包': 0.66, '500g/包': 1.1, '1kg/包': 2.2, '5kg/包': 11 };
+                        setEditingProduct({
+                          ...editingProduct,
+                          packSize: val || undefined,
+                          packWeightLb: weightMap[val] ?? editingProduct.packWeightLb,
+                        });
+                      }} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100">
+                        <option value="">— 選擇規格 —</option>
+                        <option value="1磅/包">1磅/包</option>
+                        <option value="2磅/包">2磅/包</option>
+                        <option value="5磅/包">5磅/包</option>
+                        <option value="10磅/箱">10磅/箱</option>
+                        <option value="300g/包">300g/包</option>
+                        <option value="500g/包">500g/包</option>
+                        <option value="1kg/包">1kg/包</option>
+                        <option value="5kg/包">5kg/包</option>
+                        {editingProduct.packSize && !['1磅/包','2磅/包','5磅/包','10磅/箱','300g/包','500g/包','1kg/包','5kg/包'].includes(editingProduct.packSize) && (
+                          <option value={editingProduct.packSize}>{editingProduct.packSize} (自訂)</option>
+                        )}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-500 ml-1">包裝重量 (磅)</label>
+                      <input type="number" min="0" step="0.01" value={editingProduct.packWeightLb ?? ''} onChange={e => setEditingProduct({ ...editingProduct, packWeightLb: Number(e.target.value) || undefined })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" placeholder="例: 5" />
                     </div>
                   </div>
 
@@ -7249,78 +7315,10 @@ const App: React.FC = () => {
                   );
                 })()}
 
-                {/* ── Cost Section ── */}
-                <div className="space-y-3 md:col-span-2 p-4 bg-gradient-to-r from-amber-50/60 to-orange-50/60 rounded-2xl border border-amber-100/60">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Coins size={14} className="text-amber-600" />
-                    <label className="text-[10px] font-bold text-amber-700 uppercase tracking-widest">成本設定</label>
-                  </div>
-                  {/* Ingredient Link */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-slate-500 ml-1">關聯原材料</label>
-                      <select value={editingProduct.ingredientId || ''} onChange={e => setEditingProduct({ ...editingProduct, ingredientId: e.target.value || undefined })} className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100">
-                        <option value="">無（手動輸入成本）</option>
-                        {ingredientCategories.map(cat => {
-                          const catIngs = ingredients.filter(i => i.category === cat);
-                          if (catIngs.length === 0) return null;
-                          return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>;
-                        })}
-                        {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>}
-                      </select>
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-slate-500 ml-1">總成本</label>
-                      <div className="p-2.5 bg-white rounded-xl font-black text-xs border border-slate-100 text-amber-700">
-                        ${computeProductCost(editingProduct, ingredients.find(i => i.id === editingProduct.ingredientId), costItems).toFixed(1)}
-                      </div>
-                    </div>
-                  </div>
-                  {/* Manual cost (when no ingredient linked) / Yield + Processing + Packaging + Misc */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    {!editingProduct.ingredientId && (
-                      <div className="space-y-1">
-                        <label className="text-[9px] font-bold text-slate-500 ml-1">原料成本 ($)</label>
-                        <input type="number" min="0" step="0.5" value={editingProduct.costPrice ?? ''} onChange={e => setEditingProduct({ ...editingProduct, costPrice: Number(e.target.value) || 0 })} placeholder="0" className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" />
-                      </div>
-                    )}
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-slate-500 ml-1">出成率 (0~1)</label>
-                      <input type="number" min="0" max="1" step="0.01" value={editingProduct.yieldRate ?? ''} onChange={e => setEditingProduct({ ...editingProduct, yieldRate: e.target.value ? Number(e.target.value) : undefined })} placeholder="例: 0.7" className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-slate-500 ml-1">加工費 ($)</label>
-                      <input type="number" min="0" step="0.5" value={editingProduct.processingCost ?? ''} onChange={e => setEditingProduct({ ...editingProduct, processingCost: Number(e.target.value) || 0 })} placeholder="0" className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-slate-500 ml-1">包裝費 ($)</label>
-                      <input type="number" min="0" step="0.5" value={editingProduct.packagingCost ?? ''} onChange={e => setEditingProduct({ ...editingProduct, packagingCost: Number(e.target.value) || 0 })} placeholder="0" className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-slate-500 ml-1">其他費用 ($)</label>
-                      <input type="number" min="0" step="0.5" value={editingProduct.miscCost ?? ''} onChange={e => setEditingProduct({ ...editingProduct, miscCost: Number(e.target.value) || 0 })} placeholder="0" className="w-full p-2.5 bg-white rounded-xl font-bold text-xs border border-slate-100" />
-                    </div>
-                  </div>
-                  {costItems.length > 0 && (
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-slate-500 ml-1">附加成本項目</label>
-                      <div className="flex flex-wrap gap-2">
-                        {costItems.map(ci => {
-                          const checked = (editingProduct.costItemIds || []).includes(ci.id);
-                          return (
-                            <button key={ci.id} type="button" onClick={() => {
-                              const ids = editingProduct.costItemIds || [];
-                              const next = checked ? ids.filter(x => x !== ci.id) : [...ids, ci.id];
-                              setEditingProduct({ ...editingProduct, costItemIds: next });
-                            }} className={`px-3 py-1.5 rounded-xl text-xs font-black border transition-all ${checked ? 'bg-amber-500 text-white border-amber-500 shadow-md' : 'bg-white text-slate-500 border-slate-200 hover:border-amber-300'}`}>
-                              {ci.name} (${ci.defaultPrice})
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                  {costItems.length === 0 && <p className="text-[8px] text-slate-400 font-bold">到「工場 → 產品成本一覽」新增包裝、碟、袋等成本項目</p>}
+                {/* Cost note — editing moved to 材料與倉務 → 產品成本一覽 */}
+                <div className="md:col-span-2 p-3 bg-amber-50/60 rounded-xl border border-amber-100/60 flex items-center gap-2">
+                  <Coins size={14} className="text-amber-500 flex-shrink-0" />
+                  <p className="text-[10px] text-amber-700 font-bold">成本設定已移至「材料與倉務 → 產品成本一覽」，在該處統一管理原材料成本、出成率、加工費等。</p>
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">庫存</label>
@@ -7646,11 +7644,11 @@ const App: React.FC = () => {
                           </div>
                         </div>
                         <div className="space-y-1">
-                          <label className="text-[8px] font-bold text-slate-400 ml-0.5">價錢 {spec.pricingMode === 'by_piece' ? '(每磅)' : '(每包)'}</label>
-                          <input type="number" value={spec.price || ''} onChange={e => {
-                            const next = [...newProductWizard.specs]; next[si] = { ...next[si], price: Number(e.target.value) || 0 };
+                          <label className="text-[8px] font-bold text-slate-400 ml-0.5">包裝重量 (磅)</label>
+                          <input type="number" value={spec.packWeightLb || ''} onChange={e => {
+                            const next = [...newProductWizard.specs]; next[si] = { ...next[si], packWeightLb: Number(e.target.value) || undefined };
                             setNewProductWizard(w => w ? { ...w, specs: next } : w);
-                          }} className="w-full p-2.5 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100" placeholder="$0" min="0" step="0.1" />
+                          }} className="w-full p-2.5 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100" placeholder="例: 5" min="0" step="0.1" />
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-3">
@@ -7673,10 +7671,22 @@ const App: React.FC = () => {
                         )}
                         <div className="space-y-1">
                           <label className="text-[8px] font-bold text-slate-400 ml-0.5">包裝規格</label>
-                          <input value={spec.packSize} onChange={e => {
-                            const next = [...newProductWizard.specs]; next[si] = { ...next[si], packSize: e.target.value };
+                          <select value={spec.packSize || ''} onChange={e => {
+                            const val = e.target.value;
+                            const weightMap: Record<string, number> = { '1磅/包': 1, '2磅/包': 2, '5磅/包': 5, '10磅/箱': 10, '300g/包': 0.66, '500g/包': 1.1, '1kg/包': 2.2, '5kg/包': 11 };
+                            const next = [...newProductWizard.specs]; next[si] = { ...next[si], packSize: val, packWeightLb: weightMap[val] ?? next[si].packWeightLb };
                             setNewProductWizard(w => w ? { ...w, specs: next } : w);
-                          }} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100" placeholder="例：5kg/包、300g" />
+                          }} className="w-full p-2 bg-slate-50 rounded-lg font-bold text-xs border border-slate-100">
+                            <option value="">— 選擇 —</option>
+                            <option value="1磅/包">1磅/包</option>
+                            <option value="2磅/包">2磅/包</option>
+                            <option value="5磅/包">5磅/包</option>
+                            <option value="10磅/箱">10磅/箱</option>
+                            <option value="300g/包">300g/包</option>
+                            <option value="500g/包">500g/包</option>
+                            <option value="1kg/包">1kg/包</option>
+                            <option value="5kg/包">5kg/包</option>
+                          </select>
                         </div>
                       </div>
                     </div>
@@ -7734,7 +7744,7 @@ const App: React.FC = () => {
                     id: 'P-' + Date.now() + '-' + i,
                     name: `${groupName} ${spec.variantLabel}`,
                     categories: [],
-                    price: spec.price || 0,
+                    price: 0,
                     memberPrice: 0,
                     stock: 0,
                     trackInventory: true,
@@ -7750,6 +7760,7 @@ const App: React.FC = () => {
                     processingTypeId: spec.processingTypeId,
                     processingSpec: spec.processingSpec,
                     packSize: spec.packSize || undefined,
+                    packWeightLb: spec.packWeightLb,
                   }));
 
                   const success = await upsertProducts(newProducts);
