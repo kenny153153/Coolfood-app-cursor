@@ -9518,6 +9518,9 @@ const App: React.FC = () => {
                       )}
                     </div>
                   </div>
+                  {!isWholesaleRoute && (
+                    <a href="/wholesale" className="block text-center text-[10px] text-slate-300 mt-6 hover:text-slate-400 transition-colors">批發客戶？前往批發平台 →</a>
+                  )}
                 </div>
              </div>
           )}
@@ -9559,6 +9562,9 @@ const App: React.FC = () => {
                   {/* Admin access: navigate to yoursite.com/#admin */}
                 </div>
                 <button onClick={() => { setUser(null); try { localStorage.removeItem('coolfood_member_id'); localStorage.removeItem('coolfood_session_token'); } catch { /* ignore */ } setView('store'); showToast(t.profile.loggedOut); }} className="w-full py-5 bg-white text-rose-500 rounded-[2rem] font-black border border-rose-50 shadow-sm active:scale-95 transition-all hover:bg-rose-50">{t.profile.logout}</button>
+                {!isWholesaleRoute && (
+                  <a href="/wholesale" className="block text-center text-[10px] text-slate-300 mt-6 hover:text-slate-400 transition-colors">批發客戶？前往批發平台 →</a>
+                )}
              </div>
           )}
           {!isAdminRoute && (
