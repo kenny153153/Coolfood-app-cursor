@@ -527,6 +527,7 @@ export interface SiteConfig {
   pricingRules?: GlobalPricingRules;
   wholesalePricingRules?: WholesalePricingRules;
   deliveryRules?: DeliveryRules;
+  inventoryEnforcementEnabled?: boolean;
 }
 
 // ─── Wholesale operations types ─────────────────────────────────

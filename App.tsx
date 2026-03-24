@@ -739,7 +739,8 @@ const App: React.FC = () => {
         { min: 200, fee: 50 },
         { min: 400, fee: 30 }
       ]
-    }
+    },
+    inventoryEnforcementEnabled: false,
   });
   
   const [products, setProducts] = useState<Product[]>([]);
@@ -839,7 +840,9 @@ const App: React.FC = () => {
   const [confirmation, setConfirmation] = useState<{ title: string, message: string, onConfirm: () => void } | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
-  const [authForm, setAuthForm] = useState({ email: '', password: '', name: '', phone: '' });
+  const [authForm, setAuthForm] = useState({ email: '', password: '', name: '', phone: '', companyName: '', brNumber: '' });
+  const [wholesaleRegFiles, setWholesaleRegFiles] = useState<{ brDoc: File | null; storefrontPhoto: File | null }>({ brDoc: null, storefrontPhoto: null });
+  const [wholesaleRegUploading, setWholesaleRegUploading] = useState(false);
   const [editingMemberPassword, setEditingMemberPassword] = useState('');
   const [aiDescLoading, setAiDescLoading] = useState(false);
   const [aiFieldLoading, setAiFieldLoading] = useState<string | null>(null);
@@ -1094,7 +1097,7 @@ const App: React.FC = () => {
         '@type': 'Offer',
         priceCurrency: 'HKD',
         price: selectedProduct.price,
-        availability: (!selectedProduct.trackInventory || selectedProduct.stock > 0) ? 'https://schema.org/InStock' : 'https://schema.org/OutOfStock',
+        availability: (!siteConfig.inventoryEnforcementEnabled || !selectedProduct.trackInventory || selectedProduct.stock > 0) ? 'https://schema.org/InStock' : 'https://schema.org/OutOfStock',
       },
     };
     if (existingEl) {
@@ -1292,6 +1295,7 @@ const App: React.FC = () => {
             ...(cfgMap.site_branding || {}),
             pricingRules: cfgMap.pricing_rules ? { ...prev.pricingRules, ...cfgMap.pricing_rules } : prev.pricingRules,
             wholesalePricingRules: cfgMap.wholesale_pricing_rules ? { ...prev.wholesalePricingRules, ...cfgMap.wholesale_pricing_rules } : prev.wholesalePricingRules,
+            ...(typeof cfgMap.store_feature_flags?.inventoryEnforcementEnabled === 'boolean' ? { inventoryEnforcementEnabled: cfgMap.store_feature_flags.inventoryEnforcementEnabled } : {}),
           }));
           if (Array.isArray(cfgMap.cost_items)) setCostItems(cfgMap.cost_items);
           if (Array.isArray(cfgMap.custom_units)) setCustomUnits(cfgMap.custom_units);
@@ -1799,8 +1803,8 @@ const App: React.FC = () => {
           continue;
         }
 
-        // 庫存判斷：若不追蹤庫存(trackInventory=false)則視為有貨；stock 為 null/undefined 也視為有貨
-        const hasStock = !prod.trackInventory || prod.stock === null || prod.stock === undefined || prod.stock > 0;
+        // 庫存判斷：若庫存管控關閉則視為全部有貨
+        const hasStock = !inventoryOn || !prod.trackInventory || prod.stock === null || prod.stock === undefined || prod.stock > 0;
         if (!hasStock) {
           console.warn(`[reorder] ❌ 庫存不足 — "${prod.name}" stock=${prod.stock}, trackInventory=${prod.trackInventory}`);
           failedNames.push(li.name || prod.name);
@@ -1808,7 +1812,7 @@ const App: React.FC = () => {
         }
 
         const existing = newCart.find(c => c.id === prod.id);
-        const maxQty = (prod.trackInventory && prod.stock > 0) ? prod.stock : 999;
+        const maxQty = (inventoryOn && prod.trackInventory && prod.stock > 0) ? prod.stock : 999;
         const wantQty = Math.min(li.qty || 1, maxQty);
         if (existing) {
           existing.qty = Math.min(existing.qty + wantQty, maxQty);
@@ -1865,6 +1869,9 @@ const App: React.FC = () => {
   }, []);
 
   const isUsingWallet = user && user.walletBalance > 0;
+
+  const inventoryOn = siteConfig.inventoryEnforcementEnabled === true;
+  const hideWholesalePrice = isWholesaleRoute && !user;
 
   // ── 定價上下文（三層：訪客 / 會員 / 錢包）──
   const pricingTier: PricingTier = isUsingWallet ? 'wallet' : user ? 'member' : 'guest';
@@ -1951,7 +1958,7 @@ const App: React.FC = () => {
 
   const openAuthModal = (mode: 'login' | 'signup' = 'login') => {
     setAuthMode(mode);
-    setAuthForm({ email: '', password: '', name: '', phone: '' });
+    setAuthForm({ email: '', password: '', name: '', phone: '', companyName: '', brNumber: '' });
     setShowAuthModal(true);
   };
 
@@ -1980,7 +1987,7 @@ const App: React.FC = () => {
         if (json.sessionToken) localStorage.setItem('coolfood_session_token', json.sessionToken);
       } catch { /* ignore */ }
       setShowAuthModal(false);
-      setAuthForm({ email: '', password: '', name: '', phone: '' });
+      setAuthForm({ email: '', password: '', name: '', phone: '', companyName: '', brNumber: '' });
       setView('profile');
       showToast('歡迎回來！');
     } catch {
@@ -1999,7 +2006,37 @@ const App: React.FC = () => {
       showToast('密碼至少 6 個字元', 'error');
       return;
     }
+    if (isWholesaleRoute) {
+      if (!authForm.companyName.trim()) {
+        showToast('請填寫公司名稱', 'error');
+        return;
+      }
+      if (!authForm.brNumber.trim()) {
+        showToast('請填寫商業登記證 (BR) 號碼', 'error');
+        return;
+      }
+      if (!wholesaleRegFiles.brDoc) {
+        showToast('請上傳商業登記證 (BR) 副本', 'error');
+        return;
+      }
+      if (!wholesaleRegFiles.storefrontPhoto) {
+        showToast('請上傳餐廳門口相片', 'error');
+        return;
+      }
+    }
     try {
+      setWholesaleRegUploading(true);
+      let brDocUrl: string | null = null;
+      let storefrontPhotoUrl: string | null = null;
+
+      if (isWholesaleRoute && wholesaleRegFiles.brDoc && wholesaleRegFiles.storefrontPhoto) {
+        const timestamp = Date.now();
+        const brPath = `wholesale-registrations/${timestamp}/br-doc.webp`;
+        const photoPath = `wholesale-registrations/${timestamp}/storefront-photo.webp`;
+        brDocUrl = await uploadImage(wholesaleRegFiles.brDoc, brPath);
+        storefrontPhotoUrl = await uploadImage(wholesaleRegFiles.storefrontPhoto, photoPath);
+      }
+
       const res = await fetch('/api/customer-auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2010,11 +2047,16 @@ const App: React.FC = () => {
           email: authForm.email.trim() || null,
           password: authForm.password,
           isWholesale: isWholesaleRoute,
+          companyName: isWholesaleRoute ? authForm.companyName.trim() : undefined,
+          brNumber: isWholesaleRoute ? authForm.brNumber.trim() : undefined,
+          brDocUrl: brDocUrl || undefined,
+          storefrontPhotoUrl: storefrontPhotoUrl || undefined,
         }),
       });
       const json = await res.json();
       if (!res.ok) {
         showToast(json.error || '註冊失敗', 'error');
+        setWholesaleRegUploading(false);
         return;
       }
       const u = mapMemberRowToUser(json.user as SupabaseMemberRow);
@@ -2025,10 +2067,13 @@ const App: React.FC = () => {
       } catch { /* ignore */ }
       setMembers(prev => [...prev, u]);
       setShowAuthModal(false);
-      setAuthForm({ email: '', password: '', name: '', phone: '' });
+      setAuthForm({ email: '', password: '', name: '', phone: '', companyName: '', brNumber: '' });
+      setWholesaleRegFiles({ brDoc: null, storefrontPhoto: null });
+      setWholesaleRegUploading(false);
       setView('profile');
-      showToast('註冊成功！');
+      showToast(isWholesaleRoute ? '註冊申請已提交，我們會盡快審核！' : '註冊成功！');
     } catch {
+      setWholesaleRegUploading(false);
       showToast('註冊失敗，請稍後再試', 'error');
     }
   };
@@ -3131,18 +3176,20 @@ const App: React.FC = () => {
     }
     if (isRedirectingToPayment) return;
 
-    // Stock check: verify items are still in stock before payment
-    const outOfStock: string[] = [];
-    for (const item of cart) {
-      const current = products.find(p => p.id === item.id);
-      if (!current) { outOfStock.push(item.name); continue; }
-      if (current.trackInventory && current.stock < item.qty) {
-        outOfStock.push(`${item.name}（剩餘 ${current.stock} 件）`);
+    // Stock check: verify items are still in stock before payment (only when inventory enforcement is on)
+    if (inventoryOn) {
+      const outOfStock: string[] = [];
+      for (const item of cart) {
+        const current = products.find(p => p.id === item.id);
+        if (!current) { outOfStock.push(item.name); continue; }
+        if (current.trackInventory && current.stock < item.qty) {
+          outOfStock.push(`${item.name}（剩餘 ${current.stock} 件）`);
+        }
       }
-    }
-    if (outOfStock.length > 0) {
-      showToast(`以下產品庫存不足：${outOfStock.join('、')}`, 'error');
-      return;
+      if (outOfStock.length > 0) {
+        showToast(`以下產品庫存不足：${outOfStock.join('、')}`, 'error');
+        return;
+      }
     }
 
     const { subtotal, deliveryFee, total } = pricingData;
@@ -3202,17 +3249,19 @@ const App: React.FC = () => {
         showToast(error.message || '訂單提交失敗', 'error');
         return;
       }
-      for (const item of cart) {
-        const prod = products.find(p => p.id === item.id);
-        if (prod?.trackInventory && prod.stock > 0) {
-          supabase.rpc('decrement_stock', { p_id: item.id, p_qty: item.qty }).then(({ error: stockErr }) => {
-            if (stockErr) console.warn(`[stock] Failed to decrement ${item.id}:`, stockErr.message);
-          });
+      if (inventoryOn) {
+        for (const item of cart) {
+          const prod = products.find(p => p.id === item.id);
+          if (prod?.trackInventory && prod.stock > 0) {
+            supabase.rpc('decrement_stock', { p_id: item.id, p_qty: item.qty }).then(({ error: stockErr }) => {
+              if (stockErr) console.warn(`[stock] Failed to decrement ${item.id}:`, stockErr.message);
+            });
+          }
         }
       }
       setProducts(prev => prev.map(p => {
         const cartItem = cart.find(c => c.id === p.id);
-        if (cartItem && p.trackInventory) return { ...p, stock: Math.max(0, p.stock - cartItem.qty) };
+        if (inventoryOn && cartItem && p.trackInventory) return { ...p, stock: Math.max(0, p.stock - cartItem.qty) };
         return p;
       }));
       const newOrder: Order = { id: orderIdDisplay, customerName: user.name, total, status: wsStatus, date: orderDate, items: itemsCount, orderType: 'wholesale', memberId: user.id };
@@ -3354,21 +3403,21 @@ const App: React.FC = () => {
       return;
     }
 
-    // Decrement stock for tracked-inventory products (fire-and-forget, non-blocking)
-    for (const item of cart) {
-      const prod = products.find(p => p.id === item.id);
-      if (prod?.trackInventory && prod.stock > 0) {
-        supabase.rpc('decrement_stock', { p_id: item.id, p_qty: item.qty }).then(({ error: stockErr }) => {
-          if (stockErr) console.warn(`[stock] Failed to decrement ${item.id}:`, stockErr.message);
-        });
+    if (inventoryOn) {
+      for (const item of cart) {
+        const prod = products.find(p => p.id === item.id);
+        if (prod?.trackInventory && prod.stock > 0) {
+          supabase.rpc('decrement_stock', { p_id: item.id, p_qty: item.qty }).then(({ error: stockErr }) => {
+            if (stockErr) console.warn(`[stock] Failed to decrement ${item.id}:`, stockErr.message);
+          });
+        }
       }
+      setProducts(prev => prev.map(p => {
+        const cartItem = cart.find(c => c.id === p.id);
+        if (cartItem && p.trackInventory) return { ...p, stock: Math.max(0, p.stock - cartItem.qty) };
+        return p;
+      }));
     }
-    // Update local product state immediately
-    setProducts(prev => prev.map(p => {
-      const cartItem = cart.find(c => c.id === p.id);
-      if (cartItem && p.trackInventory) return { ...p, stock: Math.max(0, p.stock - cartItem.qty) };
-      return p;
-    }));
 
     if (user && useDraft && checkoutSaveNewAddressAsDefault && checkoutAddressDraft) {
       handleSaveAddress(user.id, checkoutAddressDraft, true, true);
@@ -5212,6 +5261,34 @@ const App: React.FC = () => {
                   }
                 }} className="w-full py-4 bg-orange-500 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2"><Save size={16}/> 儲存湊單推薦</button>
              </div>
+             {/* ── 進階功能開關 ── */}
+             <div className="bg-white p-10 rounded-[3.5rem] border border-slate-100 shadow-sm space-y-8 lg:col-span-2">
+                <div className="flex items-center gap-3"><div className="p-3 bg-rose-50 text-rose-600 rounded-2xl"><Package size={20}/></div><h3 className="text-xl font-black">進階功能開關</h3></div>
+                <p className="text-xs text-slate-400 font-bold -mt-4">控制系統是否啟用庫存管理等後勤功能。關閉後前台不會檢查庫存，所有產品均可購買。</p>
+                <div className="p-6 bg-slate-50 rounded-3xl border border-slate-100 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="font-black text-sm text-slate-700">庫存管控</h4>
+                      <p className="text-xs text-slate-400 mt-0.5">啟用後，前台會檢查庫存數量、顯示缺貨狀態、下單時扣減庫存。關閉後系統如無限庫存運作。</p>
+                    </div>
+                    <button
+                      onClick={() => setSiteConfig(prev => ({ ...prev, inventoryEnforcementEnabled: !prev.inventoryEnforcementEnabled }))}
+                      className={`relative w-14 h-7 rounded-full transition-colors duration-200 flex-shrink-0 ${siteConfig.inventoryEnforcementEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                    >
+                      <span className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform duration-200 ${siteConfig.inventoryEnforcementEnabled ? 'translate-x-7' : ''}`} />
+                    </button>
+                  </div>
+                  <p className={`text-xs font-bold px-3 py-2 rounded-xl ${siteConfig.inventoryEnforcementEnabled ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                    {siteConfig.inventoryEnforcementEnabled ? '✅ 已啟用 — 前台會檢查庫存、扣減庫存、顯示缺貨' : '⚠️ 已關閉 — 前台不檢查庫存，所有產品均可無限購買'}
+                  </p>
+                </div>
+                <button onClick={async () => {
+                  try {
+                    await supabase.from('site_config').upsert({ id: 'store_feature_flags', value: { inventoryEnforcementEnabled: siteConfig.inventoryEnforcementEnabled } });
+                    showToast('功能開關已儲存');
+                  } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
+                }} className="w-full py-4 bg-rose-600 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2"><Save size={16}/> 儲存功能開關</button>
+             </div>
           </div>
         );
       case 'ingredients':
@@ -6720,8 +6797,17 @@ const App: React.FC = () => {
                </div>
              )}
              <div className="flex items-center justify-between p-6 bg-slate-900 text-white rounded-[2.5rem] shadow-xl">
-               <div><p className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1">精選價</p><p className="text-3xl font-black">${getPrice(selectedProduct)}</p>{getPrice(selectedProduct) < selectedProduct.price && <p className="text-xs text-white/40 line-through">${selectedProduct.price}</p>}</div>
-               <button onClick={() => { updateCart(selectedProduct, 1); setSelectedProduct(null); showToast('已加入購物車'); }} className={`${accentClass} text-white px-10 py-5 rounded-[1.5rem] font-black text-sm shadow-2xl active:scale-95 transition-all`}>立即選購</button>
+               {hideWholesalePrice ? (
+                 <>
+                   <div><p className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1">批發價格</p><p className="text-lg font-bold text-amber-400">登入後查看價格</p></div>
+                   <button onClick={() => { setSelectedProduct(null); setView('profile'); }} className="bg-amber-500 text-white px-8 py-5 rounded-[1.5rem] font-black text-sm shadow-2xl active:scale-95 transition-all">登入 / 註冊</button>
+                 </>
+               ) : (
+                 <>
+                   <div><p className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1">精選價</p><p className="text-3xl font-black">${getPrice(selectedProduct)}</p>{getPrice(selectedProduct) < selectedProduct.price && <p className="text-xs text-white/40 line-through">${selectedProduct.price}</p>}</div>
+                   <button onClick={() => { updateCart(selectedProduct, 1); setSelectedProduct(null); showToast('已加入購物車'); }} className={`${accentClass} text-white px-10 py-5 rounded-[1.5rem] font-black text-sm shadow-2xl active:scale-95 transition-all`}>立即選購</button>
+                 </>
+               )}
              </div>
           </div>
         </div>
@@ -8804,7 +8890,7 @@ const App: React.FC = () => {
       <header className="bg-white/95 backdrop-blur-md sticky top-0 z-40 px-4 py-3 border-b border-slate-100 flex items-center justify-between">
         <div className="flex items-center gap-2"><div className={`w-9 h-9 ${isWholesaleRoute ? 'bg-orange-600' : 'bg-blue-600'} rounded-lg flex items-center justify-center text-white shadow-lg overflow-hidden`}>{isMediaUrl(siteConfig.logoUrl) ? <img src={siteConfig.logoUrl} alt={siteConfig.logoText} className="w-full h-full object-contain p-0.5" /> : <span>{siteConfig.logoIcon}</span>}</div><h1 className="font-bold text-lg text-slate-900 tracking-tight">{siteConfig.logoText}</h1>{isWholesaleRoute && <span className="px-2 py-0.5 bg-orange-100 text-orange-700 rounded-full text-[10px] font-black">批發</span>}</div>
         <div className="flex items-center gap-2">
-          <button onClick={handleReorderClick} className="p-2 bg-amber-50 text-amber-600 rounded-full border border-amber-100 active:scale-90 transition-transform" title="一鍵回購"><Clock size={18} /></button>
+          <button onClick={handleReorderClick} className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 text-amber-600 rounded-full border border-amber-100 active:scale-90 transition-transform"><Clock size={14} /><span className="text-xs font-bold">一鍵回購</span></button>
           <button onClick={() => setLang(lang === 'zh-HK' ? 'en' : 'zh-HK')} className="px-2.5 py-1.5 bg-slate-100 text-slate-600 rounded-full border border-slate-200 text-[10px] font-black uppercase tracking-wider hover:bg-slate-200 transition-colors">{lang === 'zh-HK' ? 'EN' : '中'}</button>
           <a href={`https://wa.me/${SHOP_WHATSAPP}`} target="_blank" rel="noreferrer" className="p-2 bg-green-50 text-green-600 rounded-full border border-green-100"><MessageCircle size={18} fill="currentColor" /></a>
           {user ? (
@@ -8814,6 +8900,14 @@ const App: React.FC = () => {
           )}
         </div>
       </header>
+      {hideWholesalePrice && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-bold text-amber-700 flex-1">批發價格僅供已註冊客戶查看。登入或註冊以查看價格及下單。</p>
+            <button onClick={() => setView('profile')} className="px-4 py-1.5 bg-amber-500 text-white rounded-full text-xs font-bold flex-shrink-0 active:scale-95 transition-all">登入 / 註冊</button>
+          </div>
+        </div>
+      )}
       <div className="px-3 py-2 bg-white border-b border-slate-100">
         <div className="relative">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" />
@@ -8998,7 +9092,9 @@ const App: React.FC = () => {
                              </div>
                              <div className="flex items-end justify-between mt-2">
                                 <div className="flex items-center gap-2">
-                                  {(() => {
+                                  {hideWholesalePrice ? (
+                                    <p className="text-xs font-bold text-amber-600">登入查看批發價</p>
+                                  ) : (() => {
                                     const yourPrice = getPrice(p);
                                     const showOriginal = yourPrice < p.price;
                                     return (<>
@@ -9007,12 +9103,16 @@ const App: React.FC = () => {
                                     </>);
                                   })()}
                                 </div>
+                                {hideWholesalePrice ? (
+                                  <button onClick={(e) => { e.stopPropagation(); setView('profile'); }} className="px-3 py-1.5 bg-amber-50 text-amber-600 rounded-full border border-amber-100 text-xs font-bold">登入</button>
+                                ) : (
                                 <div className={`flex items-center rounded-full p-1 border transition-all ${isOfferMet ? 'bg-amber-400 border-amber-500 scale-105 shadow-md ring-2 ring-amber-200' : 'bg-white border-slate-100 shadow-sm'}`}>
                                   {qty > 0 && (
                                     <><button onClick={(e) => updateCart(p, -1, e)} className={`w-8 h-8 flex items-center justify-center transition-colors active:scale-75 ${isOfferMet ? 'text-white' : 'text-slate-300'}`}><Minus size={16}/></button><span className={`mx-2 text-sm font-black w-4 text-center ${isOfferMet ? 'text-white' : 'text-slate-900'}`}>{qty}</span></>
                                   )}
                                   <button onClick={(e) => updateCart(p, 1, e)} className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${isOfferMet ? 'bg-white text-amber-500' : accentClass + ' text-white shadow-lg'} active:scale-90 animate-pop-pulse`}><Plus size={16}/></button>
                                 </div>
+                                )}
                              </div>
                           </div>
                         </div>
@@ -9050,7 +9150,7 @@ const App: React.FC = () => {
           )}
         </main>
       </div>
-      {cart.length > 0 && (
+      {cart.length > 0 && !hideWholesalePrice && (
         <div className="fixed bottom-20 inset-x-4 z-[60]">
           <button onClick={(e) => { e.stopPropagation(); setView('checkout'); }} className="w-full bg-slate-900 text-white rounded-2xl shadow-2xl active:scale-[0.98] transition-all ring-4 ring-white/10 overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3">
@@ -9136,6 +9236,7 @@ const App: React.FC = () => {
         logoText={site.brandName}
         processingTypes={processingTypes}
         productGroups={productGroups}
+        inventoryEnforcementEnabled={inventoryOn}
       />
     );
   }
@@ -9371,7 +9472,48 @@ const App: React.FC = () => {
                             <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{t.profile.passwordMin6}</label>
                             <input type="password" value={authForm.password} onChange={e => setAuthForm({ ...authForm, password: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder={t.profile.password} minLength={6} required />
                           </div>
-                          <button type="submit" className="w-full py-3 bg-slate-900 text-white rounded-2xl font-black text-sm">{t.profile.signupBtn}</button>
+                          {isWholesaleRoute && (
+                            <>
+                              <div className="pt-2 border-t border-slate-100">
+                                <p className="text-[10px] font-black text-orange-500 uppercase tracking-widest mb-3">批發開戶資料</p>
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">公司名稱 *</label>
+                                <input value={authForm.companyName} onChange={e => setAuthForm({ ...authForm, companyName: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder="貴公司名稱" required />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">商業登記證號碼 (BR) *</label>
+                                <input value={authForm.brNumber} onChange={e => setAuthForm({ ...authForm, brNumber: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder="如：12345678-000-00-00-0" required />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">上傳商業登記證 (BR) 副本 *</label>
+                                <label className={`flex items-center justify-center gap-2 w-full p-4 rounded-2xl border-2 border-dashed cursor-pointer transition-colors ${wholesaleRegFiles.brDoc ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-slate-50 hover:border-orange-300'}`}>
+                                  {wholesaleRegFiles.brDoc ? (
+                                    <span className="text-xs font-bold text-emerald-600">✓ {wholesaleRegFiles.brDoc.name}</span>
+                                  ) : (
+                                    <span className="text-xs font-bold text-slate-400">點擊上傳 BR 圖片 / 相片</span>
+                                  )}
+                                  <input type="file" accept="image/*" className="hidden" onChange={e => { if (e.target.files?.[0]) setWholesaleRegFiles(prev => ({ ...prev, brDoc: e.target.files![0] })); }} />
+                                </label>
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">餐廳門口相片 *</label>
+                                <p className="text-[9px] text-slate-400 mb-2">用於核實經營地址，請拍攝清晰的門口招牌相片</p>
+                                <label className={`flex items-center justify-center gap-2 w-full p-4 rounded-2xl border-2 border-dashed cursor-pointer transition-colors ${wholesaleRegFiles.storefrontPhoto ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-slate-50 hover:border-orange-300'}`}>
+                                  {wholesaleRegFiles.storefrontPhoto ? (
+                                    <span className="text-xs font-bold text-emerald-600">✓ {wholesaleRegFiles.storefrontPhoto.name}</span>
+                                  ) : (
+                                    <span className="text-xs font-bold text-slate-400">點擊上傳餐廳門口相片</span>
+                                  )}
+                                  <input type="file" accept="image/*" className="hidden" onChange={e => { if (e.target.files?.[0]) setWholesaleRegFiles(prev => ({ ...prev, storefrontPhoto: e.target.files![0] })); }} />
+                                </label>
+                              </div>
+                              <p className="text-[9px] text-slate-400 text-center">提交後，我們會在 1-2 個工作天內審核您的申請。</p>
+                            </>
+                          )}
+                          <button type="submit" disabled={wholesaleRegUploading} className="w-full py-3 bg-slate-900 text-white rounded-2xl font-black text-sm disabled:opacity-50">
+                            {wholesaleRegUploading ? '提交中...' : isWholesaleRoute ? '提交批發開戶申請' : t.profile.signupBtn}
+                          </button>
                         </form>
                       )}
                     </div>

@@ -22,6 +22,7 @@ interface GHFoodsStorefrontProps {
   logoText: string;
   processingTypes?: ProcessingType[];
   productGroups?: ProductGroup[];
+  inventoryEnforcementEnabled?: boolean;
 }
 
 type GHView = 'order' | 'cart' | 'history' | 'login';
@@ -32,8 +33,9 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
   getPrice, onLogin, onSubmitOrder, logoUrl, logoIcon, logoText,
   processingTypes = [],
   productGroups = [],
+  inventoryEnforcementEnabled = false,
 }) => {
-  const [view, setView] = useState<GHView>(user ? 'order' : 'login');
+  const [view, setView] = useState<GHView>('order');
   const [search, setSearch] = useState('');
   const [activeCat, setActiveCat] = useState<string | null>(null);
   const [authForm, setAuthForm] = useState({ email: '', password: '' });
@@ -153,7 +155,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
   };
 
   // ── Login Screen ──
-  if (!user || view === 'login') {
+  if (view === 'login') {
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
         <div className="w-full max-w-sm">
@@ -192,6 +194,9 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
             </button>
             <p className="text-center text-xs text-slate-400">如需開戶，請聯絡業務員</p>
           </form>
+          <button onClick={() => setView('order')} className="w-full mt-4 py-2.5 text-slate-500 text-xs font-bold hover:text-amber-600 transition-colors">
+            ← 先瀏覽產品目錄
+          </button>
         </div>
       </div>
     );
@@ -250,30 +255,55 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
               >
                 <Package size={14} className="inline mr-1" />訂貨
               </button>
-              <button
-                onClick={() => setView('cart')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors relative ${view === 'cart' ? 'bg-amber-100 text-amber-700' : 'text-slate-500 hover:bg-slate-100'}`}
-              >
-                <ShoppingCart size={14} className="inline mr-1" />
-                購物車
-                {cartCount > 0 && (
-                  <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
-                    {cartCount}
-                  </span>
-                )}
-              </button>
-              <button
-                onClick={() => setView('history')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${view === 'history' ? 'bg-amber-100 text-amber-700' : 'text-slate-500 hover:bg-slate-100'}`}
-              >
-                <Clock size={14} className="inline mr-1" />記錄
-              </button>
+              {user && (
+                <>
+                  <button
+                    onClick={() => setView('cart')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors relative ${view === 'cart' ? 'bg-amber-100 text-amber-700' : 'text-slate-500 hover:bg-slate-100'}`}
+                  >
+                    <ShoppingCart size={14} className="inline mr-1" />
+                    購物車
+                    {cartCount > 0 && (
+                      <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+                        {cartCount}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => setView('history')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${view === 'history' ? 'bg-amber-100 text-amber-700' : 'text-slate-500 hover:bg-slate-100'}`}
+                  >
+                    <Clock size={14} className="inline mr-1" />記錄
+                  </button>
+                </>
+              )}
               <div className="w-px h-6 bg-slate-200 mx-1" />
-              <span className="text-xs text-slate-500 hidden sm:block">{user.name}</span>
+              {user ? (
+                <span className="text-xs text-slate-500 hidden sm:block">{user.name}</span>
+              ) : (
+                <button onClick={() => setView('login')} className="px-3 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-bold hover:bg-amber-700 transition-colors">
+                  登入
+                </button>
+              )}
             </div>
           </div>
         </div>
       </header>
+
+      {/* ── Guest Login Banner ── */}
+      {!user && view === 'order' && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-3">
+          <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2 min-w-0">
+              <User size={16} className="text-amber-600 flex-shrink-0" />
+              <p className="text-xs font-bold text-amber-700 truncate">批發價格僅供已登記客戶查看，請登入帳戶查看價格及下單。</p>
+            </div>
+            <button onClick={() => setView('login')} className="px-4 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-bold hover:bg-amber-700 transition-colors flex-shrink-0">
+              立即登入
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── Main Content ── */}
       {view === 'order' && (
@@ -363,17 +393,17 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                               <td className="px-3 py-2 hidden md:table-cell">
                                 <span className="text-[10px] text-slate-400 font-bold">點擊展開選擇</span>
                               </td>
-                              <td className="px-3 py-2 text-right text-slate-400 text-xs">多款</td>
+                              <td className="px-3 py-2 text-right text-slate-400 text-xs">{user ? '多款' : ''}</td>
                               <td className="px-3 py-2"></td>
                               <td className="px-3 py-2 text-right font-bold text-slate-800">
-                                {groupCartCount > 0 ? `$${variantGroup!.variants.reduce((sum, v) => { const c = cart.find(ci => ci.id === v.id); return sum + (c ? getPrice(v, c.qty) * c.qty : 0); }, 0)}` : '—'}
+                                {!user ? '' : groupCartCount > 0 ? `$${variantGroup!.variants.reduce((sum, v) => { const c = cart.find(ci => ci.id === v.id); return sum + (c ? getPrice(v, c.qty) * c.qty : 0); }, 0)}` : '—'}
                               </td>
                             </tr>
                             {isExpanded && variantGroup!.variants.map(spec => {
                               const inCart = cart.find(c => c.id === spec.id);
                               const qty = inCart?.qty || 0;
                               const price = getPrice(spec, qty || 1);
-                              const outOfStock = spec.trackInventory && spec.stock <= 0;
+                              const outOfStock = inventoryEnforcementEnabled && spec.trackInventory && spec.stock <= 0;
                               const isByPiece = spec.pricingMode === 'by_piece';
                               return (
                                 <tr key={spec.id} className={`border-b border-slate-50 transition-colors bg-violet-50/20 ${qty > 0 ? 'bg-amber-50/30' : 'hover:bg-violet-50/40'} ${outOfStock ? 'opacity-40' : ''}`}>
@@ -387,13 +417,21 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                                   <td className="px-3 py-2 text-slate-500 text-xs hidden sm:table-cell font-mono">{spec.legacyId || ''}</td>
                                   <td className="px-3 py-2 hidden md:table-cell"></td>
                                   <td className="px-3 py-2 text-right">
-                                    <span className="font-bold text-slate-800">${price}{isByPiece ? '/磅' : ''}</span>
-                                    {isByPiece && spec.packWeightLb && (
-                                      <p className="text-[9px] text-slate-400">~{spec.packWeightLb}磅/件</p>
+                                    {user ? (
+                                      <>
+                                        <span className="font-bold text-slate-800">${price}{isByPiece ? '/磅' : ''}</span>
+                                        {isByPiece && spec.packWeightLb && (
+                                          <p className="text-[9px] text-slate-400">~{spec.packWeightLb}磅/件</p>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <span className="text-[10px] text-amber-600 font-bold">登入查看</span>
                                     )}
                                   </td>
                                   <td className="px-3 py-2">
-                                    {outOfStock ? (
+                                    {!user ? (
+                                      <button onClick={() => setView('login')} className="px-3 py-1 bg-amber-50 text-amber-600 border border-amber-200 rounded text-[10px] font-bold hover:bg-amber-100">登入下單</button>
+                                    ) : outOfStock ? (
                                       <span className="text-xs text-red-400 font-bold block text-center">缺貨</span>
                                     ) : (
                                       <div className="flex items-center justify-center gap-1">
@@ -410,7 +448,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                                     )}
                                   </td>
                                   <td className="px-3 py-2 text-right font-bold text-slate-800">
-                                    {qty > 0 ? (
+                                    {!user ? '—' : qty > 0 ? (
                                       isByPiece ? (
                                         <span className="text-pink-600">~${spec.packWeightLb ? (price * spec.packWeightLb * qty).toFixed(0) : price * qty}<span className="text-[9px] text-slate-400 ml-0.5">預估</span></span>
                                       ) : `$${price * qty}`
@@ -426,7 +464,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                       const inCart = cart.find(c => c.id === p.id);
                       const qty = inCart?.qty || 0;
                       const price = getPrice(p, qty || 1);
-                      const outOfStock = p.trackInventory && p.stock <= 0;
+                      const outOfStock = inventoryEnforcementEnabled && p.trackInventory && p.stock <= 0;
                       const isByPiece = p.pricingMode === 'by_piece';
                       rowIdx++;
 
@@ -451,13 +489,21 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                             ) : '—'}
                           </td>
                           <td className="px-3 py-2 text-right">
-                            <span className="font-bold text-slate-800">${price}{isByPiece ? '/磅' : ''}</span>
-                            {isByPiece && p.packWeightLb && (
-                              <p className="text-[9px] text-slate-400">~{p.packWeightLb}磅/件</p>
+                            {user ? (
+                              <>
+                                <span className="font-bold text-slate-800">${price}{isByPiece ? '/磅' : ''}</span>
+                                {isByPiece && p.packWeightLb && (
+                                  <p className="text-[9px] text-slate-400">~{p.packWeightLb}磅/件</p>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-[10px] text-amber-600 font-bold">登入查看</span>
                             )}
                           </td>
                           <td className="px-3 py-2">
-                            {outOfStock ? (
+                            {!user ? (
+                              <button onClick={() => setView('login')} className="px-3 py-1 bg-amber-50 text-amber-600 border border-amber-200 rounded text-[10px] font-bold hover:bg-amber-100">登入下單</button>
+                            ) : outOfStock ? (
                               <span className="text-xs text-red-400 font-bold block text-center">缺貨</span>
                             ) : (
                               <div className="flex items-center justify-center gap-1">
@@ -474,7 +520,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                             )}
                           </td>
                           <td className="px-3 py-2 text-right font-bold text-slate-800">
-                            {qty > 0 ? (
+                            {!user ? '—' : qty > 0 ? (
                               isByPiece ? (
                                 <span className="text-pink-600">~${p.packWeightLb ? (price * p.packWeightLb * qty).toFixed(0) : price * qty}<span className="text-[9px] text-slate-400 ml-0.5">預估</span></span>
                               ) : `$${price * qty}`
@@ -491,7 +537,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
           </div>
 
           {/* Sticky Cart Summary Bar */}
-          {cartCount > 0 && (
+          {user && cartCount > 0 && (
             <div className="sticky bottom-0 bg-white border-t border-slate-200 px-4 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.05)]">
               <div className="max-w-7xl mx-auto flex items-center justify-between">
                 <div className="flex items-center gap-4">

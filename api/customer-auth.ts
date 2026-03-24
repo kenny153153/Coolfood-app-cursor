@@ -64,6 +64,10 @@ const registerSchema = z.object({
   email: z.string().email().optional().or(z.literal('')).or(z.null()),
   password: z.string().min(6),
   isWholesale: z.boolean().optional(),
+  companyName: z.string().optional(),
+  brNumber: z.string().optional(),
+  brDocUrl: z.string().optional(),
+  storefrontPhotoUrl: z.string().optional(),
 });
 
 const restoreSchema = z.object({
@@ -126,7 +130,7 @@ async function handleLogin(body: z.infer<typeof loginSchema>, supabaseUrl: strin
 }
 
 async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl: string, serviceRoleKey: string) {
-  const { name, phone, email, password, isWholesale } = body;
+  const { name, phone, email, password, isWholesale, companyName, brNumber, brDocUrl, storefrontPhotoUrl } = body;
 
   // Check phone uniqueness
   const phoneCheck = await fetch(
@@ -153,7 +157,7 @@ async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl:
 
   const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
   const newId = `u-${Date.now()}`;
-  const newMember = {
+  const newMember: Record<string, unknown> = {
     id: newId,
     name: name.trim(),
     email: emailVal,
@@ -167,6 +171,12 @@ async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl:
     wholesale_price_tier: isWholesale ? 'P0' : null,
     addresses: null,
   };
+  if (isWholesale) {
+    if (companyName) newMember.company_name = companyName;
+    if (brNumber) newMember.br_number = brNumber;
+    if (brDocUrl) newMember.br_doc_url = brDocUrl;
+    if (storefrontPhotoUrl) newMember.storefront_photo_url = storefrontPhotoUrl;
+  }
 
   const insertRes = await fetch(
     `${supabaseUrl}/rest/v1/members`,
