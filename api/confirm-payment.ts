@@ -179,6 +179,25 @@ export default async function handler(
 
     console.log('[confirm-payment] Order', updateId, 'marked as PAID');
 
+    // ─── Step 2b: Decrement product stock now that payment is confirmed ──
+    (async () => {
+      try {
+        const { data: orderData } = await supabaseAdmin
+          .from('orders').select('line_items, order_type').eq('id', updateId).maybeSingle();
+        if (orderData?.order_type === 'retail' && Array.isArray(orderData.line_items)) {
+          for (const li of orderData.line_items as Array<{ product_id?: string; qty?: number }>) {
+            if (li.product_id && li.qty && li.qty > 0) {
+              const { error: stockErr } = await supabaseAdmin.rpc('decrement_stock', { p_id: li.product_id, p_qty: li.qty });
+              if (stockErr) console.warn(`[confirm-payment] stock decrement failed for ${li.product_id}:`, stockErr.message);
+            }
+          }
+          console.log('[confirm-payment] Stock decremented for', orderData.line_items.length, 'line items');
+        }
+      } catch (e) {
+        console.warn('[confirm-payment] Stock decrement error (non-blocking):', e instanceof Error ? e.message : e);
+      }
+    })();
+
     // ─── Step 3: Auto SF order — get tracking number (fire-and-forget) ─
     const protocol = (req.headers?.['x-forwarded-proto'] as string) || 'https';
     const host = req.headers?.host as string;

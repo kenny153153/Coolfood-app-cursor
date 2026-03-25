@@ -787,6 +787,16 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
       credit_terms: 'cod',
     });
 
+    // Update committed_qty on ingredients for inventory planning
+    for (const l of lineItems) {
+      if (l.product_id && l.qty > 0) {
+        const ingId = getIngredientId(l.product_id);
+        if (ingId) {
+          supabase.rpc('increment_committed_qty', { p_ingredient_id: ingId, p_qty: l.qty }).catch(() => {});
+        }
+      }
+    }
+
     // Auto-save client product preferences for lines with processing info
     if (selectedClient) {
       const prefsToSave = orderLines

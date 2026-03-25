@@ -21,17 +21,19 @@ import { useSite } from './SiteContext';
 import GHFoodsStorefront from './GHFoodsStorefront';
 import AdminSidebar from './AdminSidebar';
 import AdminTopbar from './AdminTopbar';
-import WholesalePricingPanel from './WholesalePricingPanel';
-import WholesaleClientsPanel from './WholesaleClientsPanel';
-import SalesRepPanel from './SalesRepPanel';
-import DispatchPanel from './DispatchPanel';
-import NewOrderPanel from './NewOrderPanel';
-import AccountingPanel from './AccountingPanel';
-import WarehousePanel from './WarehousePanel';
-import ProductionPanel from './ProductionPanel';
-import SalesAnalyticsPanel from './SalesAnalyticsPanel';
-import QuotationPanel from './QuotationPanel';
-import LegacyFeaturesPanel from './LegacyFeaturesPanel';
+import SectionErrorBoundary from './SectionErrorBoundary';
+
+const WholesalePricingPanel = lazy(() => import('./WholesalePricingPanel'));
+const WholesaleClientsPanel = lazy(() => import('./WholesaleClientsPanel'));
+const SalesRepPanel = lazy(() => import('./SalesRepPanel'));
+const DispatchPanel = lazy(() => import('./DispatchPanel'));
+const NewOrderPanel = lazy(() => import('./NewOrderPanel'));
+const AccountingPanel = lazy(() => import('./AccountingPanel'));
+const WarehousePanel = lazy(() => import('./WarehousePanel'));
+const ProductionPanel = lazy(() => import('./ProductionPanel'));
+const SalesAnalyticsPanel = lazy(() => import('./SalesAnalyticsPanel'));
+const QuotationPanel = lazy(() => import('./QuotationPanel'));
+const LegacyFeaturesPanel = lazy(() => import('./LegacyFeaturesPanel'));
 import { buildPickingSlipHtml, buildAggregatePickingHtml, buildInvoiceHtml, getBusinessLabel } from './printUtils';
 import type { PickingOrderData, AggregatePickingData, InvoiceOrderData } from './printUtils';
 import { useI18n, Language } from './i18n';
@@ -63,7 +65,7 @@ import { hashPassword } from './authHelpers';
 import { uploadImage, uploadImages, deleteImage, isMediaUrl } from './imageUpload';
 
 const LazySetupPage = lazy(() => import('./SetupPage'));
-import AdminLanguagePanel from './AdminLanguagePanel';
+const AdminLanguagePanel = lazy(() => import('./AdminLanguagePanel'));
 
 const AI_ENGINE_STATUS = 'Vertex_Paid_Live';
 
@@ -216,68 +218,7 @@ const Toast: React.FC<{ message: string; type: 'success' | 'error'; onClose: () 
   );
 };
 
-/**
- * 三層定價引擎
- * Guest  → 折扣價(如有) 或 售價
- * Member → 上述基礎 × (1 - 會員折扣%)
- * Wallet → 上述會員價 × (1 - 錢包折扣%)
- */
-const getEffectiveUnitPrice = (
-  p: Product, qty: number,
-  tier: PricingTier = 'guest',
-  memberPct: number = 0,
-  walletPct: number = 0,
-  excludedIds?: string[]
-) => {
-  // 1. 基礎價：有手動折扣價且低於售價則用折扣價，否則用售價
-  const hasDiscount = p.memberPrice > 0 && p.memberPrice < p.price;
-  let base = hasDiscount ? p.memberPrice : p.price;
-
-  // 2. 自動折扣（排除的產品不適用）
-  const isExcluded = excludedIds?.includes(p.id);
-  if (!isExcluded) {
-    if (tier === 'wallet') {
-      if (memberPct > 0) base = base * (1 - memberPct / 100);
-      if (walletPct > 0) base = base * (1 - walletPct / 100);
-    } else if (tier === 'member') {
-      if (memberPct > 0) base = base * (1 - memberPct / 100);
-    }
-  }
-
-  // 3. 批量折扣（疊加在最終價上）
-  if (p.bulkDiscount && qty >= p.bulkDiscount.threshold) {
-    if (p.bulkDiscount.type === 'percent') {
-      return Math.round(base * (1 - p.bulkDiscount.value / 100));
-    } else {
-      return p.bulkDiscount.value;
-    }
-  }
-
-  return Math.round(base);
-};
-
-/**
- * 批發定價引擎
- * P0 (直銷) = priceOverrides[id] ?? totalCost / targetMarginFactor
- * Pn (業務) = P0 / tierFactor
- */
-const getWholesaleUnitPrice = (
-  p: Product,
-  linkedIngredient: Ingredient | undefined,
-  costItems: CostItem[],
-  wholesaleRules: WholesalePricingRules,
-  memberPriceTier?: string,
-  priceOverrides?: Record<string, number>,
-): number => {
-  const perLbCost = computeProductCost(p, linkedIngredient, costItems);
-  const packCost = computePackCost(perLbCost, p.packWeightLb, p.pricingMode);
-  const override = priceOverrides?.[p.id];
-  const p0 = override != null ? override : (packCost > 0 ? packCost / wholesaleRules.targetMarginFactor : p.price);
-  if (!memberPriceTier || memberPriceTier === 'P0') return Math.round(p0);
-  const tier = wholesaleRules.priceTiers?.find(t => t.name === memberPriceTier);
-  if (tier) return Math.round(p0 / tier.factor);
-  return Math.round(p0);
-};
+import { roundPrice, getEffectiveUnitPrice, getWholesaleUnitPrice } from './pricingEngine';
 
 const getOrderStatusLabel = (status: OrderStatus | string, t?: { orderStatus: Record<string, string> }) => {
   if (t) {
@@ -3221,7 +3162,45 @@ const App: React.FC = () => {
       const wsContactName = user?.name ?? null;
       const wsCustomerPhone = user?.phoneNumber ?? null;
       const wsAddr = wholesaleDeliveryNote.trim() || null;
-      const wsStatus = paymentMethod === 'cod' ? OrderStatus.PENDING_PAYMENT : OrderStatus.PENDING_PAYMENT;
+
+      // Look up linked wholesale client by member phone → populate client fields
+      let wsClientId: string | null = null;
+      let wsBrand: string | null = isGHFoods ? 'GHFOODS' : 'COOLFOOD';
+      let wsRouteId: string | null = null;
+      let wsClientCode: string | null = null;
+      let wsCreditLimit = 0;
+      if (wsCustomerPhone) {
+        const { data: wcRows } = await supabase
+          .from('wholesale_clients')
+          .select('id, brand, route_id, client_code, credit_limit')
+          .eq('phone', wsCustomerPhone)
+          .eq('is_active', true)
+          .limit(1);
+        if (wcRows && wcRows.length > 0) {
+          const wc = wcRows[0];
+          wsClientId = wc.id;
+          wsBrand = wc.brand || wsBrand;
+          wsRouteId = wc.route_id || null;
+          wsClientCode = wc.client_code || null;
+          wsCreditLimit = Number(wc.credit_limit) || 0;
+        }
+      }
+
+      // Credit limit enforcement: check outstanding AR + this order vs limit
+      if (wsCreditLimit > 0 && wsClientId) {
+        const { data: arRows } = await supabase
+          .from('accounts_receivable')
+          .select('amount, paid_amount')
+          .eq('client_id', wsClientId)
+          .in('status', ['pending', 'overdue']);
+        const outstandingAR = (arRows || []).reduce((sum, r) => sum + (Number(r.amount) - Number(r.paid_amount)), 0);
+        if (outstandingAR + total > wsCreditLimit) {
+          showToast(`已超出信用額度（額度 $${wsCreditLimit.toLocaleString()}，未結 $${outstandingAR.toLocaleString()}，本單 $${total.toLocaleString()}）`, 'error');
+          return;
+        }
+      }
+
+      const wsStatus = paymentMethod === 'cod' ? 'confirmed' : OrderStatus.PENDING_PAYMENT;
 
       const insertRow: Record<string, unknown> = {
         id: orderIdNum,
@@ -3240,6 +3219,10 @@ const App: React.FC = () => {
         order_type: 'wholesale',
         payment_method: paymentMethod,
         member_id: user.id,
+        wholesale_client_id: wsClientId,
+        wholesale_brand: wsBrand,
+        route_id: wsRouteId,
+        client_code: wsClientCode,
       };
       if (wholesaleDeliveryDate) insertRow.delivery_date = wholesaleDeliveryDate;
       if (deliveryAddress?.district) insertRow.delivery_district = deliveryAddress.district;
@@ -3249,21 +3232,36 @@ const App: React.FC = () => {
         showToast(error.message || '訂單提交失敗', 'error');
         return;
       }
+
+      // Auto-create accounts receivable entry (matches NewOrderPanel behaviour)
+      if (wsClientId) {
+        supabase.from('accounts_receivable').insert({
+          client_id: wsClientId,
+          client_name: user.name,
+          brand: wsBrand,
+          order_id: String(orderIdNum),
+          invoice_date: orderDate,
+          amount: total,
+          paid_amount: 0,
+          status: 'pending',
+          credit_terms: paymentMethod === 'cod' ? 'cod' : 'fps',
+        }).then(({ error: arErr }) => {
+          if (arErr) console.warn('[order] AR insert failed:', arErr.message);
+        });
+      }
+
+      // Update committed_qty on ingredients for inventory planning
       if (inventoryOn) {
         for (const item of cart) {
           const prod = products.find(p => p.id === item.id);
-          if (prod?.trackInventory && prod.stock > 0) {
-            supabase.rpc('decrement_stock', { p_id: item.id, p_qty: item.qty }).then(({ error: stockErr }) => {
-              if (stockErr) console.warn(`[stock] Failed to decrement ${item.id}:`, stockErr.message);
+          if (prod?.ingredientId) {
+            supabase.rpc('increment_committed_qty', { p_ingredient_id: prod.ingredientId, p_qty: item.qty }).then(({ error: cErr }) => {
+              if (cErr) console.warn(`[stock] committed_qty update failed for ${prod.ingredientId}:`, cErr.message);
             });
           }
         }
       }
-      setProducts(prev => prev.map(p => {
-        const cartItem = cart.find(c => c.id === p.id);
-        if (inventoryOn && cartItem && p.trackInventory) return { ...p, stock: Math.max(0, p.stock - cartItem.qty) };
-        return p;
-      }));
+
       const newOrder: Order = { id: orderIdDisplay, customerName: user.name, total, status: wsStatus, date: orderDate, items: itemsCount, orderType: 'wholesale', memberId: user.id };
       setOrders(prev => [...prev, newOrder]);
       setCart([]);
@@ -3403,15 +3401,9 @@ const App: React.FC = () => {
       return;
     }
 
+    // Stock is now decremented server-side in confirm-payment after Airwallex verification succeeds.
+    // Optimistic UI update only — real decrement happens on paid confirmation.
     if (inventoryOn) {
-      for (const item of cart) {
-        const prod = products.find(p => p.id === item.id);
-        if (prod?.trackInventory && prod.stock > 0) {
-          supabase.rpc('decrement_stock', { p_id: item.id, p_qty: item.qty }).then(({ error: stockErr }) => {
-            if (stockErr) console.warn(`[stock] Failed to decrement ${item.id}:`, stockErr.message);
-          });
-        }
-      }
       setProducts(prev => prev.map(p => {
         const cartItem = cart.find(c => c.id === p.id);
         if (cartItem && p.trackInventory) return { ...p, stock: Math.max(0, p.stock - cartItem.qty) };
@@ -4270,22 +4262,24 @@ const App: React.FC = () => {
       return renderPermissionDenied(ADMIN_PERMISSION_LABELS[modulePermKey] || adminModule);
     }
 
-    // Functional panels — shared modules
-    if (adminModule === 'dispatch') return <DispatchPanel showToast={showToast} />;
-    if (adminModule === 'new_order') return <NewOrderPanel showToast={showToast} />;
-    if (adminModule === 'accounting') return <AccountingPanel showToast={showToast} />;
-    if (adminModule === 'legacy_features') return <LegacyFeaturesPanel showToast={showToast} />;
-    if (adminModule === 'warehouse_ops') return <WarehousePanel showToast={showToast} products={products} setProducts={setProducts} costItems={costItems} setCostItems={setCostItems} siteConfig={siteConfig} isMediaUrl={isMediaUrl} />;
-    if (adminModule === 'production') return <ProductionPanel showToast={showToast} products={products} ingredients={ingredients} />;
+    const lazyFallback = <div className="flex items-center justify-center py-20"><RefreshCw className="animate-spin text-slate-300" size={24} /></div>;
+
+    // Functional panels — shared modules (lazy-loaded + error boundary per section)
+    if (adminModule === 'dispatch') return <SectionErrorBoundary section="派車"><Suspense fallback={lazyFallback}><DispatchPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
+    if (adminModule === 'new_order') return <SectionErrorBoundary section="新增訂單"><Suspense fallback={lazyFallback}><NewOrderPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
+    if (adminModule === 'accounting') return <SectionErrorBoundary section="會計"><Suspense fallback={lazyFallback}><AccountingPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
+    if (adminModule === 'legacy_features') return <SectionErrorBoundary section="進階功能"><Suspense fallback={lazyFallback}><LegacyFeaturesPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
+    if (adminModule === 'warehouse_ops') return <SectionErrorBoundary section="倉務"><Suspense fallback={lazyFallback}><WarehousePanel showToast={showToast} products={products} setProducts={setProducts} costItems={costItems} setCostItems={setCostItems} siteConfig={siteConfig} isMediaUrl={isMediaUrl} /></Suspense></SectionErrorBoundary>;
+    if (adminModule === 'production') return <SectionErrorBoundary section="生產"><Suspense fallback={lazyFallback}><ProductionPanel showToast={showToast} products={products} ingredients={ingredients} /></Suspense></SectionErrorBoundary>;
 
     // Functional panels — wholesale
-    if (adminModule === 'wholesale_clients') return <WholesaleClientsPanel showToast={showToast} />;
-    if (adminModule === 'sales_reps') return <SalesRepPanel showToast={showToast} />;
-    if (adminModule === 'quotations') return <QuotationPanel showToast={showToast} />;
-    if (moduleWorkspace === 'WHOLESALE' && adminModule === 'pricing') return <WholesalePricingPanel showToast={showToast} />;
+    if (adminModule === 'wholesale_clients') return <SectionErrorBoundary section="批發客戶"><Suspense fallback={lazyFallback}><WholesaleClientsPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
+    if (adminModule === 'sales_reps') return <SectionErrorBoundary section="銷售員"><Suspense fallback={lazyFallback}><SalesRepPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
+    if (adminModule === 'quotations') return <SectionErrorBoundary section="報價"><Suspense fallback={lazyFallback}><QuotationPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
+    if (moduleWorkspace === 'WHOLESALE' && adminModule === 'pricing') return <SectionErrorBoundary section="批發定價"><Suspense fallback={lazyFallback}><WholesalePricingPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
 
     // Remaining placeholder modules
-    if (adminModule === 'global_dashboard') return <SalesAnalyticsPanel showToast={showToast} />;
+    if (adminModule === 'global_dashboard') return <SectionErrorBoundary section="銷售分析"><Suspense fallback={lazyFallback}><SalesAnalyticsPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
     const placeholderModules: string[] = [];
     if (placeholderModules.includes(adminModule)) {
       return renderModulePlaceholder(adminModule);
@@ -4591,7 +4585,7 @@ const App: React.FC = () => {
                   const perLbCost = computeProductCost(p, linkedIng, costItems);
                   if (perLbCost <= 0) return p;
                   const packCost = computePackCost(perLbCost, p.packWeightLb, p.pricingMode);
-                  return { ...p, price: Math.round(packCost / rtFactor) };
+                  return { ...p, price: roundPrice(packCost / rtFactor) };
                 }));
                 if (applyToOverrides) setRetailOverrideIds(new Set());
                 setPendingApplyTab(null);
@@ -4980,7 +4974,7 @@ const App: React.FC = () => {
                           const linkedIng = ingredients.find(i => i.id === p.ingredientId);
                           const perLbCost = computeProductCost(p, linkedIng, costItems);
                           const totalCost = computePackCost(perLbCost, p.packWeightLb, p.pricingMode);
-                          const computedP0 = totalCost > 0 ? Math.round(totalCost / wsRules.targetMarginFactor) : null;
+                          const computedP0 = totalCost > 0 ? roundPrice(totalCost / wsRules.targetMarginFactor) : null;
                           const override = wholesalePriceOverrides[p.id];
                           const actualP0 = override != null ? override : (computedP0 ?? 0);
                           const isOverridden = override != null;
@@ -5021,7 +5015,7 @@ const App: React.FC = () => {
                                 />
                               </td>
                               {wsRules.priceTiers.map(tier => {
-                                const tierPrice = actualP0 > 0 ? Math.round(actualP0 / tier.factor) : null;
+                                const tierPrice = actualP0 > 0 ? roundPrice(actualP0 / tier.factor) : null;
                                 return (
                                   <td key={tier.name} className="text-right px-4 py-3 font-bold text-teal-600">
                                     {tierPrice != null ? `$${tierPrice}` : <span className="text-slate-300">—</span>}
@@ -5829,7 +5823,7 @@ const App: React.FC = () => {
                 </div>
               </div>
               {/* Translation overrides stored in site_config */}
-              <AdminLanguagePanel products={products} setProducts={setProducts} showToast={showToast} />
+              <Suspense fallback={null}><AdminLanguagePanel products={products} setProducts={setProducts} showToast={showToast} /></Suspense>
             </div>
           </div>
         );
@@ -7193,8 +7187,8 @@ const App: React.FC = () => {
                       ? perLbCost * editingProduct.packWeightLb : perLbCost;
                     const rtFactor = siteConfig.pricingRules?.targetMarginFactor || 0.88;
                     const wsFactor = siteConfig.wholesalePricingRules?.targetMarginFactor || 0.88;
-                    const suggestedRetail = packCost > 0 ? Math.round(packCost / rtFactor) : 0;
-                    const suggestedP0 = packCost > 0 ? Math.round(packCost / wsFactor) : 0;
+                    const suggestedRetail = packCost > 0 ? roundPrice(packCost / rtFactor) : 0;
+                    const suggestedP0 = packCost > 0 ? roundPrice(packCost / wsFactor) : 0;
                     return (
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                         <div className="p-2.5 bg-white rounded-xl border border-emerald-100">

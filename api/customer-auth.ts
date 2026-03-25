@@ -256,7 +256,7 @@ export default async function handler(req: Req, res: Res) {
   try {
     if (action === 'login') {
       const ip = getClientIp(req.headers ?? {});
-      const rl = checkRateLimit(`login:${ip}`, 10, 60_000);
+      const rl = await checkRateLimit(`login:${ip}`, 10, 60_000);
       if (!rl.allowed) {
         return res.status(429).json({ error: '嘗試次數過多，請稍後再試', code: 'RATE_LIMITED', retryAfterMs: rl.retryAfterMs });
       }
@@ -271,7 +271,7 @@ export default async function handler(req: Req, res: Res) {
 
     if (action === 'register') {
       const ip = getClientIp(req.headers ?? {});
-      const rl = checkRateLimit(`register:${ip}`, 5, 60_000);
+      const rl = await checkRateLimit(`register:${ip}`, 5, 60_000);
       if (!rl.allowed) {
         return res.status(429).json({ error: '嘗試次數過多，請稍後再試', code: 'RATE_LIMITED' });
       }

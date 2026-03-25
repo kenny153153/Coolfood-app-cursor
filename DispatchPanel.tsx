@@ -64,9 +64,9 @@ const DispatchPanel: React.FC<Props> = ({ showToast }) => {
       supabase.from('orders')
         .select('*')
         .eq('order_type', 'wholesale')
-        .gte('order_date', dispatchDate)
-        .lt('order_date', dispatchDate + 'T23:59:59')
-        .in('status', ['paid', 'preparing', 'shipping']),
+        .gte('delivery_date', dispatchDate)
+        .lt('delivery_date', dispatchDate + 'T23:59:59')
+        .in('status', ['paid', 'confirmed', 'preparing', 'shipping']),
       supabase.from('wholesale_clients').select('id, company_name, phone, route_id, brand, address'),
     ]);
 

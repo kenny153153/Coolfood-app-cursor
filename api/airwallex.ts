@@ -53,7 +53,7 @@ async function getAirwallexToken(): Promise<{ token: string; baseUrl: string }> 
 async function handleCreateIntent(req: any, res: any) {
   // Rate limit payment intent creation per IP
   const ip = getClientIp(req.headers ?? {});
-  const rl = checkRateLimit(`create-intent:${ip}`, 10, 60_000);
+  const rl = await checkRateLimit(`create-intent:${ip}`, 10, 60_000);
   if (!rl.allowed) {
     return res.status(429).json({ error: 'Too many requests', code: 'RATE_LIMITED' });
   }

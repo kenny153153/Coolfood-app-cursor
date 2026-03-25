@@ -69,7 +69,7 @@ const loginSchema = z.object({
 
 async function handleLogin(req: Req, res: Res) {
   const ip = getClientIp(req.headers ?? {});
-  const rl = checkRateLimit(`admin-login:${ip}`, 5, 60_000);
+  const rl = await checkRateLimit(`admin-login:${ip}`, 5, 60_000);
   if (!rl.allowed) {
     return res.status(429).json({ error: '嘗試次數過多，請稍後再試', code: 'RATE_LIMITED', retryAfterMs: rl.retryAfterMs });
   }
@@ -237,7 +237,7 @@ const setupSchema = z.object({
 
 async function handleSetup(req: Req, res: Res) {
   const ip = getClientIp(req.headers ?? {});
-  const rl = checkRateLimit(`setup:${ip}`, 3, 60_000);
+  const rl = await checkRateLimit(`setup:${ip}`, 3, 60_000);
   if (!rl.allowed) {
     return res.status(429).json({ error: '嘗試次數過多', code: 'RATE_LIMITED' });
   }

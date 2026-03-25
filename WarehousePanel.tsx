@@ -6,7 +6,7 @@ import {
   ChevronDown, ChevronRight, AlertTriangle, Check, Star,
   MessageSquare, Building2, Phone, MapPin, Clock, Mail, Scissors,
   PackageCheck, ClipboardCheck, ArrowDownToLine, History,
-  Coins, ClipboardList,
+  Coins, ClipboardList, Download, CheckSquare, Square, Minus,
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import { computeProductCost, computePackCost, mapMaterialProcessingRow } from './supabaseMappers';
@@ -137,6 +137,13 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
   const [filterMaterialType, setFilterMaterialType] = useState<MaterialType | 'all'>('all');
   const [editing, setEditing] = useState<(Partial<Ingredient> & { isNew?: boolean }) | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // ── Selection & inline editing state ──
+  const [selectedIngredientIds, setSelectedIngredientIds] = useState<Set<string>>(new Set());
+  const [editingCostId, setEditingCostId] = useState<string | null>(null);
+  const [editingCostValue, setEditingCostValue] = useState('');
+  const [csvUploading, setCsvUploading] = useState(false);
+  const csvInputRef = useRef<HTMLInputElement>(null);
 
   // ── Units state ──
   const [customUnits, setCustomUnits] = useState<{ id: string; label: string; value: string }[]>([]);
@@ -568,6 +575,145 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     else { showToast('已刪除'); loadIngredients(); }
   };
 
+  // ── Selection helpers ──
+  const toggleIngredientSelection = (id: string) => {
+    setSelectedIngredientIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const toggleSelectAllIngredients = () => {
+    if (selectedIngredientIds.size === filtered.length) {
+      setSelectedIngredientIds(new Set());
+    } else {
+      setSelectedIngredientIds(new Set(filtered.map(i => i.id)));
+    }
+  };
+  const handleBulkDeleteIngredients = async () => {
+    if (selectedIngredientIds.size === 0) return;
+    if (!confirm(`確定刪除已選的 ${selectedIngredientIds.size} 項原材料？此操作無法復原。`)) return;
+    const ids = Array.from(selectedIngredientIds);
+    const { error } = await supabase.from('ingredients').delete().in('id', ids);
+    if (error) showToast(`批量刪除失敗：${error.message}`, 'error');
+    else { showToast(`已刪除 ${ids.length} 項原材料`); setSelectedIngredientIds(new Set()); loadIngredients(); }
+  };
+  const handleBulkCategoryChange = async (category: string) => {
+    if (selectedIngredientIds.size === 0) return;
+    const ids = Array.from(selectedIngredientIds);
+    const { error } = await supabase.from('ingredients').update({ category: category || null }).in('id', ids);
+    if (error) showToast(`批量更新失敗：${error.message}`, 'error');
+    else { showToast(`已更新 ${ids.length} 項原材料類別`); setSelectedIngredientIds(new Set()); loadIngredients(); }
+  };
+
+  // ── Inline cost editing ──
+  const handleInlineCostSave = async (ingredientId: string) => {
+    const val = parseFloat(editingCostValue);
+    if (isNaN(val) || val < 0) { showToast('請輸入有效的成本', 'error'); setEditingCostId(null); return; }
+    const { error } = await supabase.from('ingredients').update({ base_cost_per_lb: val }).eq('id', ingredientId);
+    if (error) { showToast(`成本更新失敗：${error.message}`, 'error'); }
+    else {
+      setIngredients(prev => prev.map(i => i.id === ingredientId ? { ...i, baseCostPerLb: val } : i));
+      showToast('成本已更新');
+    }
+    setEditingCostId(null);
+  };
+
+  // ── CSV helpers ──
+  const downloadCsvTemplate = () => {
+    const header = '名稱,英文名,單位,實際成本(每單位),供應商,類別,原材料類型(meat/third_party),備註';
+    const example1 = '牛腩,Beef Brisket,lb,18.50,陳記肉類,牛肉,meat,凍肉';
+    const example2 = '即食腸粉皮,Instant Rice Roll Sheet,pc,2.80,大昌食品,第三方產品,third_party,';
+    const csvContent = [header, example1, example2].join('\n');
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'raw_materials_template.csv'; a.click();
+    URL.revokeObjectURL(url);
+    showToast('CSV 模板已下載');
+  };
+
+  const exportIngredientsCsv = () => {
+    const header = '名稱,英文名,單位,實際成本(每單位),供應商,類別,原材料類型,備註';
+    const rows = (selectedIngredientIds.size > 0 ? filtered.filter(i => selectedIngredientIds.has(i.id)) : filtered).map(i => {
+      const escape = (s: string) => s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
+      return [
+        escape(i.name), escape(i.nameEn || ''), i.unit, i.baseCostPerLb.toFixed(2),
+        escape(i.supplier || ''), escape(i.category || ''),
+        i.materialType || 'meat', escape(i.notes || ''),
+      ].join(',');
+    });
+    const csvContent = [header, ...rows].join('\n');
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `raw_materials_export_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+    URL.revokeObjectURL(url);
+    showToast(`已匯出 ${rows.length} 項原材料`);
+  };
+
+  const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCsvUploading(true);
+    try {
+      const text = await file.text();
+      const lines = text.split(/\r?\n/).filter(l => l.trim());
+      if (lines.length < 2) { showToast('CSV 檔案需包含表頭和至少一行資料', 'error'); setCsvUploading(false); return; }
+
+      const parseCsvLine = (line: string): string[] => {
+        const result: string[] = [];
+        let current = '';
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          if (inQuotes) {
+            if (ch === '"' && line[i + 1] === '"') { current += '"'; i++; }
+            else if (ch === '"') inQuotes = false;
+            else current += ch;
+          } else {
+            if (ch === '"') inQuotes = true;
+            else if (ch === ',') { result.push(current.trim()); current = ''; }
+            else current += ch;
+          }
+        }
+        result.push(current.trim());
+        return result;
+      };
+
+      const dataLines = lines.slice(1);
+      const payloads: any[] = [];
+      const errors: string[] = [];
+      for (let i = 0; i < dataLines.length; i++) {
+        const cols = parseCsvLine(dataLines[i]);
+        const name = cols[0]?.trim();
+        if (!name) { errors.push(`第 ${i + 2} 行：名稱不可為空`); continue; }
+        const cost = parseFloat(cols[3]) || 0;
+        const matType = (cols[6]?.trim() || 'meat');
+        payloads.push({
+          name,
+          name_en: cols[1]?.trim() || null,
+          unit: cols[2]?.trim() || 'lb',
+          base_cost_per_lb: cost,
+          supplier: cols[4]?.trim() || null,
+          category: cols[5]?.trim() || null,
+          material_type: ['meat', 'third_party'].includes(matType) ? matType : 'meat',
+          notes: cols[7]?.trim() || null,
+        });
+      }
+      if (errors.length > 0) { showToast(errors.slice(0, 3).join('\n'), 'error'); }
+      if (payloads.length > 0) {
+        const { error } = await supabase.from('ingredients').insert(payloads);
+        if (error) showToast(`匯入失敗：${error.message}`, 'error');
+        else { showToast(`成功匯入 ${payloads.length} 項原材料`); loadIngredients(); }
+      }
+    } catch (err: any) {
+      showToast(`CSV 解析失敗：${err.message}`, 'error');
+    }
+    setCsvUploading(false);
+    if (csvInputRef.current) csvInputRef.current.value = '';
+  };
+
   // ── Units CRUD ──
   const handleSaveUnits = async () => {
     setUnitsSaving(true);
@@ -631,6 +777,9 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       notes: editingPO.notes || null,
     };
 
+    const wasSubmitted = !editingPO.isNew && purchaseOrders.find(p => p.id === editingPO.id)?.status === 'submitted';
+    const nowSubmitted = (editingPO.status || 'draft') === 'submitted';
+
     if (editingPO.isNew) {
       const { error } = await supabase.from('purchase_orders').insert(payload);
       if (error) { showToast(`儲存失敗：${error.message}`, 'error'); setPOSaving(false); return; }
@@ -640,6 +789,16 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       if (error) { showToast(`儲存失敗：${error.message}`, 'error'); setPOSaving(false); return; }
       showToast('採購訂單已更新');
     }
+
+    // Update incoming_qty when PO transitions to submitted
+    if (nowSubmitted && !wasSubmitted) {
+      for (const l of lines) {
+        if (l.ingredientId && l.qty > 0) {
+          supabase.rpc('increment_incoming_qty', { p_ingredient_id: l.ingredientId, p_qty: l.qty }).catch(() => {});
+        }
+      }
+    }
+
     setEditingPO(null); setPOSaving(false); loadPurchaseOrders();
   };
 
@@ -767,6 +926,9 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
             const newQty = (curr?.stock_qty || 0) + item.receivedQty;
             await supabase.from('ingredients').update({ stock_qty: newQty }).eq('id', item.ingredientId);
           }
+
+          // Decrement incoming_qty now that goods are received
+          supabase.rpc('decrement_incoming_qty', { p_ingredient_id: item.ingredientId, p_qty: item.receivedQty }).catch(() => {});
 
           // Create stock lot
           const lotStatus = item.reservedForClientId ? 'reserved' : 'available';
@@ -1417,10 +1579,46 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                 {MATERIAL_TYPES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
               </select>
             </div>
-            <button onClick={() => setEditing({ isNew: true, unit: 'lb', baseCostPerLb: 0, materialType: 'meat' })} className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-black hover:bg-slate-800">
-              <Plus size={14} /> 新增原材料
-            </button>
+            <div className="flex items-center gap-2">
+              <button onClick={downloadCsvTemplate} className="flex items-center gap-1.5 px-3 py-2.5 border border-slate-200 bg-white rounded-xl text-xs font-black text-slate-600 hover:bg-slate-50" title="下載 CSV 模板">
+                <Download size={13} /> CSV 模板
+              </button>
+              <button onClick={() => csvInputRef.current?.click()} disabled={csvUploading} className="flex items-center gap-1.5 px-3 py-2.5 border border-slate-200 bg-white rounded-xl text-xs font-black text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="匯入 CSV">
+                {csvUploading ? <RefreshCw size={13} className="animate-spin" /> : <Upload size={13} />} 匯入 CSV
+              </button>
+              <input ref={csvInputRef} type="file" accept=".csv" className="hidden" onChange={handleCsvUpload} />
+              <button onClick={exportIngredientsCsv} className="flex items-center gap-1.5 px-3 py-2.5 border border-slate-200 bg-white rounded-xl text-xs font-black text-slate-600 hover:bg-slate-50" title="匯出 CSV">
+                <FileText size={13} /> 匯出{selectedIngredientIds.size > 0 ? ` (${selectedIngredientIds.size})` : ''}
+              </button>
+              <button onClick={() => setEditing({ isNew: true, unit: 'lb', baseCostPerLb: 0, materialType: 'meat' })} className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-black hover:bg-slate-800">
+                <Plus size={14} /> 新增原材料
+              </button>
+            </div>
           </div>
+
+          {/* Bulk actions bar */}
+          {selectedIngredientIds.size > 0 && (
+            <div className="flex items-center gap-3 px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl">
+              <span className="text-xs font-black text-blue-700">已選 {selectedIngredientIds.size} 項</span>
+              <div className="h-4 w-px bg-blue-200" />
+              <select
+                defaultValue=""
+                onChange={e => { if (e.target.value) handleBulkCategoryChange(e.target.value); e.target.value = ''; }}
+                className="px-2 py-1.5 bg-white border border-blue-200 rounded-lg text-xs font-bold text-blue-700"
+              >
+                <option value="" disabled>批量改類別...</option>
+                <option value="">清除類別</option>
+                {categories.map(c => <option key={c.id} value={c.name}>{c.emoji} {c.name}</option>)}
+              </select>
+              <button onClick={handleBulkDeleteIngredients} className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-100 text-rose-700 rounded-lg text-xs font-black hover:bg-rose-200">
+                <Trash2 size={12} /> 批量刪除
+              </button>
+              <div className="flex-1" />
+              <button onClick={() => setSelectedIngredientIds(new Set())} className="text-xs font-bold text-blue-500 hover:underline">
+                取消選擇
+              </button>
+            </div>
+          )}
 
           {loading ? (
             <div className="flex items-center justify-center py-20"><RefreshCw size={24} className="animate-spin text-slate-300" /></div>
@@ -1434,13 +1632,25 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                    <th className="px-3 py-3 w-10 text-center">
+                      <button onClick={toggleSelectAllIngredients} className="p-0.5 rounded hover:bg-slate-200 transition-colors">
+                        {selectedIngredientIds.size === filtered.length && filtered.length > 0
+                          ? <CheckSquare size={15} className="text-blue-600" />
+                          : selectedIngredientIds.size > 0
+                          ? <Minus size={15} className="text-blue-400" />
+                          : <Square size={15} className="text-slate-300" />}
+                      </button>
+                    </th>
                     <th className="px-5 py-3 text-left">名稱</th>
                     <th className="px-4 py-3 text-left">類別</th>
                     <th className="px-4 py-3 text-center">單位</th>
                     <th className="px-4 py-3 text-right">庫存</th>
                     <th className="px-4 py-3 text-right">待出</th>
                     <th className="px-4 py-3 text-right">待入</th>
-                    <th className="px-4 py-3 text-right">成本/單位</th>
+                    <th className="px-4 py-3 text-right">
+                      <span className="text-amber-600">實際成本</span>
+                      <span className="block text-[8px] text-slate-300 normal-case tracking-normal font-bold">EXACT COST / 單位</span>
+                    </th>
                     <th className="px-4 py-3 text-left">供應商</th>
                     <th className="px-4 py-3 text-center">類型</th>
                     <th className="px-4 py-3 w-20"></th>
@@ -1449,8 +1659,17 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                 <tbody>
                   {filtered.map(ing => {
                     const cat = categories.find(c => c.name === ing.category);
+                    const isSelected = selectedIngredientIds.has(ing.id);
+                    const isEditingCost = editingCostId === ing.id;
                     return (
-                      <tr key={ing.id} className="border-t border-slate-50 hover:bg-slate-50/50 group">
+                      <tr key={ing.id} className={`border-t border-slate-50 hover:bg-slate-50/50 group ${isSelected ? 'bg-blue-50/40' : ''}`}>
+                        <td className="px-3 py-3 text-center">
+                          <button onClick={() => toggleIngredientSelection(ing.id)} className="p-0.5 rounded hover:bg-slate-200 transition-colors">
+                            {isSelected
+                              ? <CheckSquare size={15} className="text-blue-600" />
+                              : <Square size={15} className="text-slate-300" />}
+                          </button>
+                        </td>
                         <td className="px-5 py-3">
                           <p className="font-black text-slate-800">{ing.name}</p>
                           {ing.nameEn && <p className="text-[10px] text-slate-400">{ing.nameEn}</p>}
@@ -1474,7 +1693,31 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                         <td className="px-4 py-3 text-right">
                           <span className="font-bold text-[10px] text-blue-400">{(ing.incomingQty || 0) > 0 ? (ing.incomingQty || 0).toFixed(1) : '—'}</span>
                         </td>
-                        <td className="px-4 py-3 text-right font-black text-slate-800">${ing.baseCostPerLb.toFixed(2)}</td>
+                        <td className="px-4 py-3 text-right">
+                          {isEditingCost ? (
+                            <input
+                              autoFocus
+                              type="number"
+                              step="0.01"
+                              value={editingCostValue}
+                              onChange={e => setEditingCostValue(e.target.value)}
+                              onBlur={() => handleInlineCostSave(ing.id)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') handleInlineCostSave(ing.id);
+                                if (e.key === 'Escape') setEditingCostId(null);
+                              }}
+                              className="w-24 px-2 py-1 text-right bg-amber-50 border-2 border-amber-400 rounded-lg font-black text-sm text-amber-800 outline-none"
+                            />
+                          ) : (
+                            <button
+                              onClick={() => { setEditingCostId(ing.id); setEditingCostValue(ing.baseCostPerLb.toFixed(2)); }}
+                              className="font-black text-amber-700 bg-amber-50 px-2 py-0.5 rounded-lg hover:bg-amber-100 transition-colors cursor-text border border-transparent hover:border-amber-300"
+                              title="點擊直接修改實際成本"
+                            >
+                              ${ing.baseCostPerLb.toFixed(2)}
+                            </button>
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-xs font-bold text-slate-500">{ing.supplier || '—'}</td>
                         <td className="px-4 py-3 text-center">
                           <span className={`px-2 py-0.5 rounded text-[10px] font-black ${(ing.materialType || 'meat') === 'meat' ? 'bg-rose-50 text-rose-600' : 'bg-blue-50 text-blue-600'}`}>
@@ -1502,7 +1745,10 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                   })}
                 </tbody>
               </table>
-              <div className="px-5 py-3 border-t border-slate-100 text-[10px] font-bold text-slate-400">共 {filtered.length} 項原材料</div>
+              <div className="px-5 py-3 border-t border-slate-100 flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-400">共 {filtered.length} 項原材料</span>
+                <span className="text-[10px] font-bold text-amber-500">實際成本 = 全站統一基礎成本（點擊數字直接修改）</span>
+              </div>
             </div>
           )}
         </div>
@@ -2799,8 +3045,8 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">成本 (每單位)</label>
-                  <input type="number" value={editing.baseCostPerLb || ''} onChange={e => setEditing({ ...editing, baseCostPerLb: parseFloat(e.target.value) || 0 })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm" step="0.01" />
+                  <label className="block text-[10px] font-bold text-amber-600 uppercase tracking-widest mb-1">實際成本 EXACT COST (每單位)</label>
+                  <input type="number" value={editing.baseCostPerLb || ''} onChange={e => setEditing({ ...editing, baseCostPerLb: parseFloat(e.target.value) || 0 })} className="w-full p-3 bg-amber-50 rounded-xl font-black border border-amber-200 text-sm text-amber-800" step="0.01" />
                 </div>
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">供應商</label>

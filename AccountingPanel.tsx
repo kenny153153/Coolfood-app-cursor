@@ -47,6 +47,7 @@ const ACCOUNT_TYPE_MAP: Record<AccountType, { label: string; color: string }> = 
 const GL_ACCOUNTS = {
   bankCash:   { code: '1100', name: '銀行/現金' },
   ar:         { code: '1200', name: '應收賬款' },
+  inventory:  { code: '1300', name: '存貨' },
   ap:         { code: '2100', name: '應付賬款' },
   sales:      { code: '4000', name: '銷售收入' },
   otherInc:   { code: '4100', name: '其他收入' },
@@ -434,7 +435,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
   };
 
   const buildAPLines = (ap: { amount: number; paidAmount: number; supplierName: string }): JELine[] => [
-    { accountCode: GL_ACCOUNTS.cogs.code, accountName: GL_ACCOUNTS.cogs.name, debit: ap.amount, credit: 0, description: ap.supplierName },
+    { accountCode: GL_ACCOUNTS.inventory.code, accountName: GL_ACCOUNTS.inventory.name, debit: ap.amount, credit: 0, description: ap.supplierName },
     ...(ap.amount - ap.paidAmount > 0 ? [{ accountCode: GL_ACCOUNTS.ap.code, accountName: GL_ACCOUNTS.ap.name, debit: 0, credit: ap.amount - ap.paidAmount }] : []),
     ...(ap.paidAmount > 0 ? [{ accountCode: GL_ACCOUNTS.bankCash.code, accountName: GL_ACCOUNTS.bankCash.name, debit: 0, credit: ap.paidAmount }] : []),
   ];

@@ -321,13 +321,31 @@ const ProductionPanel: React.FC<Props> = ({
     if (error) { showToast(`操作失敗：${error.message}`, 'error'); return; }
 
     if (action === 'approved') {
+      // Deduct ingredient stock for each input
+      for (const inp of (reviewOrder.inputs || [])) {
+        if (inp.ingredientId && inp.totalWeightKg > 0) {
+          const { error: ingErr } = await supabase.rpc('decrement_ingredient_stock', {
+            p_ingredient_id: inp.ingredientId,
+            p_qty: inp.totalWeightKg,
+          });
+          if (ingErr) {
+            // Fallback: manual update
+            const { data: ing } = await supabase.from('ingredients').select('stock_qty').eq('id', inp.ingredientId).maybeSingle();
+            if (ing) {
+              await supabase.from('ingredients').update({
+                stock_qty: Math.max(0, Number(ing.stock_qty) - inp.totalWeightKg),
+              }).eq('id', inp.ingredientId);
+            }
+          }
+        }
+      }
+
       // Deduct packaging material stock
       for (const out of (reviewOrder.outputs || [])) {
         if (out.packagingMaterialId && out.packagingQuantity > 0) {
           await supabase.rpc('decrement_stock', { row_id: out.packagingMaterialId, qty: out.packagingQuantity })
             .then(() => {})
             .catch(() => {
-              // Fallback: manual update
               const pkg = packagingMaterials.find(p => p.id === out.packagingMaterialId);
               if (pkg) {
                 supabase.from('packaging_materials').update({
