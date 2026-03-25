@@ -63,7 +63,7 @@ const DEFAULT_EN: Record<string, Record<string, string>> = {
     emailOrPhone: 'Email or Phone', password: 'Password', loginBtn: 'Login',
     name: 'Name', phone: 'Phone', emailOptional: 'Email (optional)',
     passwordMin6: 'Password (min 6 chars)', signupBtn: 'Sign Up',
-    walletBalance: 'Wallet Balance', points: 'Points', addresses: 'Saved Addresses',
+    points: 'Points', addresses: 'Saved Addresses',
     addAddress: 'Add Address', openAdmin: 'Open Admin', logout: 'Logout',
   },
   address: {
@@ -121,7 +121,7 @@ const ZH_LABELS: Record<string, Record<string, string>> = {
     emailOrPhone: '電郵或電話', password: '密碼', loginBtn: '登入',
     name: '姓名', phone: '電話', emailOptional: '電郵（選填）',
     passwordMin6: '密碼（至少 6 字）', signupBtn: '註冊',
-    walletBalance: '錢包餘額', points: '累積積分', addresses: '收貨地址/聯絡人',
+    points: '累積積分', addresses: '收貨地址/聯絡人',
     addAddress: '新增地址/聯絡人', openAdmin: '開啟管理後台', logout: '退出登入',
   },
   address: {

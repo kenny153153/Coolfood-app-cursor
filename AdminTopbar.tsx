@@ -13,6 +13,7 @@ const MODULE_TITLES: Record<string, string> = {
   inventory: '產品/分類',
   orders: '訂單管理',
   members: '會員管理',
+  coupons: '優惠券/積分管理',
   slideshow: '廣告輪播',
   pricing: '價錢設定',
   recipes: '食譜',

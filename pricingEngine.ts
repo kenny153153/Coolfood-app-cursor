@@ -2,29 +2,17 @@ import type { Product, WholesalePricingRules, CostItem } from './types';
 import type { Ingredient } from './types';
 import { computeProductCost, computePackCost } from './supabaseMappers';
 
-export type PricingTier = 'guest' | 'member' | 'wallet';
+export type PricingTier = 'guest' | 'member';
 
 export const roundPrice = (v: number) => Math.round(v * 100) / 100;
 
 export const getEffectiveUnitPrice = (
   p: Product, qty: number,
   tier: PricingTier = 'guest',
-  memberPct: number = 0,
-  walletPct: number = 0,
-  excludedIds?: string[]
 ) => {
-  const hasDiscount = p.memberPrice > 0 && p.memberPrice < p.price;
-  let base = hasDiscount ? p.memberPrice : p.price;
-
-  const isExcluded = excludedIds?.includes(p.id);
-  if (!isExcluded) {
-    if (tier === 'wallet') {
-      if (memberPct > 0) base = base * (1 - memberPct / 100);
-      if (walletPct > 0) base = base * (1 - walletPct / 100);
-    } else if (tier === 'member') {
-      if (memberPct > 0) base = base * (1 - memberPct / 100);
-    }
-  }
+  const base = (tier === 'member' && p.memberPrice > 0 && p.memberPrice < p.price)
+    ? p.memberPrice
+    : p.price;
 
   if (p.bulkDiscount && qty >= p.bulkDiscount.threshold) {
     if (p.bulkDiscount.type === 'percent') {

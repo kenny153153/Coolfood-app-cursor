@@ -31,6 +31,13 @@ import {
   StockLot,
   StockLotStatus,
   SupabaseStockLotRow,
+  Coupon,
+  CouponType,
+  SupabaseCouponRow,
+  MemberCoupon,
+  MemberCouponStatus,
+  MemberCouponSource,
+  SupabaseMemberCouponRow,
 } from './types';
 
 export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
@@ -229,7 +236,6 @@ export const mapMemberRowToUser = (row: SupabaseMemberRow): User => ({
   email: row.email ?? undefined,
   phoneNumber: row.phone_number ?? undefined,
   points: row.points,
-  walletBalance: row.wallet_balance,
   tier: row.tier,
   role: row.role,
   memberType: (row.member_type === 'wholesale' ? 'wholesale' : 'retail') as MemberType,
@@ -244,7 +250,6 @@ export const mapUserToMemberRow = (user: User, passwordHash?: string | null): Su
     email: user.email?.trim() || null,
     phone_number: user.phoneNumber?.trim() ?? '',
     points: user.points,
-    wallet_balance: user.walletBalance,
     tier: user.tier,
     role: user.role,
     member_type: user.memberType || 'retail',
@@ -465,4 +470,60 @@ export const mapProductGroupToRow = (group: ProductGroup): Omit<SupabaseProductG
   image: group.image ?? null,
   category: group.category ?? null,
   is_active: group.isActive,
+});
+
+// ── Coupon mappers ──
+
+const VALID_COUPON_TYPES: CouponType[] = ['fixed_amount', 'percentage', 'free_delivery', 'free_product'];
+
+export const mapCouponRowToCoupon = (row: SupabaseCouponRow): Coupon => ({
+  id: row.id,
+  name: row.name,
+  description: row.description ?? undefined,
+  couponType: (VALID_COUPON_TYPES.includes(row.coupon_type as CouponType) ? row.coupon_type as CouponType : 'fixed_amount'),
+  discountValue: row.discount_value,
+  linkedProductId: row.linked_product_id ?? undefined,
+  minSpend: row.min_spend,
+  pointsCost: row.points_cost ?? undefined,
+  expiryDays: row.expiry_days,
+  isWelcomeCoupon: row.is_welcome_coupon,
+  isPointsShop: row.is_points_shop,
+  maxDistribution: row.max_distribution ?? undefined,
+  distributedCount: row.distributed_count,
+  isActive: row.is_active,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+export const mapCouponToRow = (c: Coupon): Omit<SupabaseCouponRow, 'created_at' | 'updated_at'> => ({
+  id: c.id,
+  name: c.name,
+  description: c.description ?? null,
+  coupon_type: c.couponType,
+  discount_value: c.discountValue,
+  linked_product_id: c.linkedProductId ?? null,
+  min_spend: c.minSpend,
+  points_cost: c.pointsCost ?? null,
+  expiry_days: c.expiryDays,
+  is_welcome_coupon: c.isWelcomeCoupon,
+  is_points_shop: c.isPointsShop,
+  max_distribution: c.maxDistribution ?? null,
+  distributed_count: c.distributedCount,
+  is_active: c.isActive,
+});
+
+const VALID_MC_STATUSES: MemberCouponStatus[] = ['available', 'used', 'expired'];
+const VALID_MC_SOURCES: MemberCouponSource[] = ['admin', 'welcome', 'points_shop'];
+
+export const mapMemberCouponRow = (row: SupabaseMemberCouponRow): MemberCoupon => ({
+  id: row.id,
+  memberId: row.member_id,
+  couponId: row.coupon_id,
+  status: (VALID_MC_STATUSES.includes(row.status as MemberCouponStatus) ? row.status as MemberCouponStatus : 'available'),
+  source: (VALID_MC_SOURCES.includes(row.source as MemberCouponSource) ? row.source as MemberCouponSource : 'admin'),
+  usedAt: row.used_at ?? undefined,
+  usedOrderId: row.used_order_id ?? undefined,
+  expiresAt: row.expires_at ?? undefined,
+  createdAt: row.created_at,
+  coupon: row.coupons ? mapCouponRowToCoupon(row.coupons) : undefined,
 });

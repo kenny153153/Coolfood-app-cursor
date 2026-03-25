@@ -160,7 +160,8 @@ export type AdminModuleId =
   | 'global_dashboard' | 'new_order'
   | 'dispatch' | 'warehouse_ops' | 'accounting' | 'production'
   | 'whatsapp_orders' | 'tricolor_print' | 'wholesale_clients'
-  | 'sales_reps' | 'quotations' | 'legacy_features';
+  | 'sales_reps' | 'quotations' | 'legacy_features'
+  | 'coupons';
 
 export interface BulkDiscount {
   threshold: number;
@@ -297,7 +298,6 @@ export interface User {
   email?: string;
   phoneNumber?: string;
   points: number;
-  walletBalance: number;
   tier: 'Bronze' | 'Silver' | 'Gold' | 'VIP';
   role: string;
   memberType: MemberType;                // 零售 / 批發
@@ -433,7 +433,6 @@ export interface SupabaseMemberRow {
   password_hash?: string | null;
   phone_number: string;
   points: number;
-  wallet_balance: number;
   tier: 'Bronze' | 'Silver' | 'Gold' | 'VIP';
   role: string;
   admin_permissions?: Record<string, boolean | ModulePermission> | null;
@@ -469,13 +468,11 @@ export interface SupabaseSlideshowRow {
   sort_order: number;
 }
 
-export type PricingTier = 'guest' | 'member' | 'wallet';
+export type PricingTier = 'guest' | 'member';
 
 export interface GlobalPricingRules {
   targetMarginFactor?: number;    // 零售目標利潤率因子（如 0.88 = 12% 毛利）→ 建議售價 = 成本 ÷ factor
   retailOverrideIds?: string[];   // 已手動調整價格的產品 ID 列表（用於衝突提示）
-  memberDiscountPercent: number;  // 會員折扣 %（如 5 = 減 5%）
-  walletDiscountPercent: number;  // 錢包折扣 %（如 5 = 再減 5%）
   autoApplyMemberPrice: boolean;
   roundToNearest: number;         // 四捨五入至最接近整數
   excludedProductIds?: string[];  // 不參與自動折扣的產品 ID
@@ -1407,4 +1404,85 @@ export interface Quotation {
   convertedOrderId?: string;
   createdAt?: string;
   updatedAt?: string;
+}
+
+// ─── Coupon & Points types ───────────────────────────────────────
+
+export type CouponType = 'fixed_amount' | 'percentage' | 'free_delivery' | 'free_product';
+
+export interface Coupon {
+  id: string;
+  name: string;
+  description?: string;
+  couponType: CouponType;
+  discountValue: number;
+  linkedProductId?: string;
+  linkedProductName?: string;
+  minSpend: number;
+  pointsCost?: number;
+  expiryDays: number;
+  isWelcomeCoupon: boolean;
+  isPointsShop: boolean;
+  maxDistribution?: number;
+  distributedCount: number;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SupabaseCouponRow {
+  id: string;
+  name: string;
+  description?: string | null;
+  coupon_type: string;
+  discount_value: number;
+  linked_product_id?: string | null;
+  min_spend: number;
+  points_cost?: number | null;
+  expiry_days: number;
+  is_welcome_coupon: boolean;
+  is_points_shop: boolean;
+  max_distribution?: number | null;
+  distributed_count: number;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type MemberCouponStatus = 'available' | 'used' | 'expired';
+export type MemberCouponSource = 'admin' | 'welcome' | 'points_shop';
+
+export interface MemberCoupon {
+  id: string;
+  memberId: string;
+  couponId: string;
+  status: MemberCouponStatus;
+  source: MemberCouponSource;
+  usedAt?: string;
+  usedOrderId?: string;
+  expiresAt?: string;
+  createdAt?: string;
+  coupon?: Coupon;
+}
+
+export interface SupabaseMemberCouponRow {
+  id: string;
+  member_id: string;
+  coupon_id: string;
+  status: string;
+  source: string;
+  used_at?: string | null;
+  used_order_id?: string | null;
+  expires_at?: string | null;
+  created_at?: string;
+  coupons?: SupabaseCouponRow;
+}
+
+export interface PointsConfig {
+  dollarsPerPoint: number;
+}
+
+export interface WelcomeCouponsConfig {
+  enabled: boolean;
+  couponTemplateIds: string[];
 }

@@ -47,7 +47,7 @@ function getSupabaseConfig() {
   return { supabaseUrl, serviceRoleKey };
 }
 
-const SAFE_MEMBER_COLS = 'id,name,email,phone_number,points,wallet_balance,tier,role,admin_permissions,member_type,wholesale_price_tier,addresses';
+const SAFE_MEMBER_COLS = 'id,name,email,phone_number,points,tier,role,admin_permissions,member_type,wholesale_price_tier,addresses';
 const AUTH_MEMBER_COLS = `${SAFE_MEMBER_COLS},password_hash`;
 
 const loginSchema = z.object({
@@ -164,7 +164,6 @@ async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl:
     password_hash: passwordHash,
     phone_number: phone,
     points: 0,
-    wallet_balance: 0,
     tier: 'Bronze',
     role: 'customer',
     member_type: isWholesale ? 'wholesale' : 'retail',
@@ -211,6 +210,53 @@ async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl:
   const inserted = Array.isArray(rows) ? rows[0] : rows;
   const sessionToken = generateSessionToken(inserted.id, inserted.password_hash);
   const { password_hash: _, ...safeProfile } = inserted;
+
+  // Assign welcome coupons (fire-and-forget)
+  (async () => {
+    try {
+      const cfgRes = await fetch(
+        `${supabaseUrl}/rest/v1/site_config?id=eq.welcome_coupons_config&select=value`,
+        { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
+      );
+      const cfgRows = await cfgRes.json();
+      const welcomeCfg = Array.isArray(cfgRows) && cfgRows[0]?.value;
+      if (!welcomeCfg?.enabled || !Array.isArray(welcomeCfg.couponTemplateIds) || welcomeCfg.couponTemplateIds.length === 0) return;
+
+      for (const couponId of welcomeCfg.couponTemplateIds) {
+        const cpnRes = await fetch(
+          `${supabaseUrl}/rest/v1/coupons?id=eq.${encodeURIComponent(couponId)}&select=expiry_days,is_active`,
+          { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
+        );
+        const cpns = await cpnRes.json();
+        const cpn = Array.isArray(cpns) ? cpns[0] : null;
+        if (!cpn?.is_active) continue;
+
+        const expiresAt = new Date(Date.now() + (cpn.expiry_days || 30) * 86400000).toISOString();
+        const mcId = `mc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+        await fetch(`${supabaseUrl}/rest/v1/member_coupons`, {
+          method: 'POST',
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal',
+          },
+          body: JSON.stringify({
+            id: mcId,
+            member_id: inserted.id,
+            coupon_id: couponId,
+            status: 'available',
+            source: 'welcome',
+            expires_at: expiresAt,
+          }),
+        });
+      }
+    } catch (e) {
+      console.warn('[customer-auth] Welcome coupon assignment failed:', e instanceof Error ? e.message : e);
+    }
+  })();
+
   return { status: 200, body: { user: safeProfile, sessionToken } };
 }
 

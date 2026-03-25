@@ -179,11 +179,13 @@ export default async function handler(
 
     console.log('[confirm-payment] Order', updateId, 'marked as PAID');
 
-    // ─── Step 2b: Decrement product stock now that payment is confirmed ──
+    // ─── Step 2b: Stock decrement + points accrual + coupon marking ──
     (async () => {
       try {
         const { data: orderData } = await supabaseAdmin
-          .from('orders').select('line_items, order_type').eq('id', updateId).maybeSingle();
+          .from('orders').select('line_items, order_type, subtotal, member_id, coupon_id').eq('id', updateId).maybeSingle();
+
+        // Stock decrement
         if (orderData?.order_type === 'retail' && Array.isArray(orderData.line_items)) {
           for (const li of orderData.line_items as Array<{ product_id?: string; qty?: number }>) {
             if (li.product_id && li.qty && li.qty > 0) {
@@ -193,8 +195,47 @@ export default async function handler(
           }
           console.log('[confirm-payment] Stock decremented for', orderData.line_items.length, 'line items');
         }
+
+        // Points accrual for retail members
+        if (orderData?.order_type === 'retail' && orderData.member_id && orderData.subtotal > 0) {
+          try {
+            const { data: ptsCfg } = await supabaseAdmin
+              .from('site_config').select('value').eq('id', 'points_config').maybeSingle();
+            const dollarsPerPoint = ptsCfg?.value?.dollarsPerPoint || 10;
+            const pointsEarned = Math.floor(orderData.subtotal / dollarsPerPoint);
+
+            if (pointsEarned > 0) {
+              const { data: memberData } = await supabaseAdmin
+                .from('members').select('points').eq('id', orderData.member_id).maybeSingle();
+              const currentPoints = memberData?.points || 0;
+              await supabaseAdmin.from('members')
+                .update({ points: currentPoints + pointsEarned })
+                .eq('id', orderData.member_id);
+              await supabaseAdmin.from('orders')
+                .update({ points_earned: pointsEarned })
+                .eq('id', updateId);
+              console.log(`[confirm-payment] Awarded ${pointsEarned} points to member ${orderData.member_id}`);
+            }
+          } catch (ptsErr) {
+            console.warn('[confirm-payment] Points accrual failed (non-blocking):', ptsErr instanceof Error ? ptsErr.message : ptsErr);
+          }
+        }
+
+        // Mark coupon as used
+        if (orderData?.coupon_id && orderData.member_id) {
+          try {
+            await supabaseAdmin.from('member_coupons')
+              .update({ status: 'used', used_at: new Date().toISOString(), used_order_id: orderId })
+              .eq('member_id', orderData.member_id)
+              .eq('coupon_id', orderData.coupon_id)
+              .eq('status', 'available');
+            console.log(`[confirm-payment] Coupon ${orderData.coupon_id} marked as used`);
+          } catch (cpnErr) {
+            console.warn('[confirm-payment] Coupon marking failed (non-blocking):', cpnErr instanceof Error ? cpnErr.message : cpnErr);
+          }
+        }
       } catch (e) {
-        console.warn('[confirm-payment] Stock decrement error (non-blocking):', e instanceof Error ? e.message : e);
+        console.warn('[confirm-payment] Post-payment processing error (non-blocking):', e instanceof Error ? e.message : e);
       }
     })();
 

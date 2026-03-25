@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense, laz
 import { 
   ShoppingBag, Package, Truck, CreditCard, Settings, CheckCircle,
   AlertTriangle, X, ChevronRight, LogOut, Edit, Plus, Minus,
-  Search, MessageCircle, Clock, ChevronLeft, BookOpen, Wallet,
+  Search, MessageCircle, Clock, ChevronLeft, BookOpen,
   Tag, Sparkles, User, Bell, Trash2, Lock, Cpu, Database, Wifi, 
   RefreshCw, BarChart3, Users, ClipboardList, ArrowUpRight, DollarSign,
   MoreHorizontal, MapPin, ShieldCheck, Key, Image as ImageIcon,
@@ -11,11 +11,11 @@ import {
   Printer, ExternalLink, Calendar, Hash, UserCheck, CreditCard as CardIcon,
   Award, Smartphone, Mail, Save, PlusCircle, Download, Upload, Zap,
   Layers, Percent, Globe, Crosshair, Scissors, Phone, Square, CheckSquare, Coins,
-  UtensilsCrossed, Play, CookingPot, Pencil
+  UtensilsCrossed, Play, CookingPot, Pencil, Star, Ticket, Gift
 } from 'lucide-react';
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
-import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, WholesalePriceTier, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel, MemberType, IngredientCategory, AdminPermissions, AdminAccount, AdminRole, Workspace, AdminModuleId, ProcessingType, ProductType, ProductGroup, ProductClassification, PricingMode, StaffRoleTemplate, ModulePermission, CrudOp } from './types';
+import { Product, CartItem, User as UserType, Order, OrderStatus, SupabaseOrderRow, SupabaseMemberRow, OrderLineItem, SiteConfig, Recipe, Category, UserAddress, GlobalPricingRules, WholesalePricingRules, WholesalePriceTier, DeliveryRules, DeliveryTier, BulkDiscount, SlideshowItem, ShippingConfig, PricingTier, CostItem, StandaloneRecipe, RecipeIngredientRaw, RecipeStep, SupabaseRecipeRow, RecipeCategory, Ingredient, SaleChannel, MemberType, IngredientCategory, AdminPermissions, AdminAccount, AdminRole, Workspace, AdminModuleId, ProcessingType, ProductType, ProductGroup, ProductClassification, PricingMode, StaffRoleTemplate, ModulePermission, CrudOp, Coupon, CouponType, MemberCoupon, PointsConfig, WelcomeCouponsConfig } from './types';
 import { WorkspaceProvider } from './WorkspaceContext';
 import { useSite } from './SiteContext';
 import GHFoodsStorefront from './GHFoodsStorefront';
@@ -60,6 +60,9 @@ import {
   mapProcessingTypeRow,
   mapProductGroupRow,
   mapProductGroupToRow,
+  mapCouponRowToCoupon,
+  mapCouponToRow,
+  mapMemberCouponRow,
 } from './supabaseMappers';
 import { hashPassword } from './authHelpers';
 import { uploadImage, uploadImages, deleteImage, isMediaUrl } from './imageUpload';
@@ -626,7 +629,7 @@ const App: React.FC = () => {
   const [adminLoginForm, setAdminLoginForm] = useState({ username: '', password: '' });
   const [isAppLoading, setIsAppLoading] = useState(true);
   
-  const [view, setView] = useState<'store' | 'orders' | 'profile' | 'checkout' | 'success'>(
+  const [view, setView] = useState<'store' | 'orders' | 'coupons' | 'profile' | 'checkout' | 'success'>(
     () => (typeof window !== 'undefined' && (window.location.pathname === '/success' || window.location.hash === '#success') ? 'success' : 'store')
   );
   const [isRedirectingToPayment, setIsRedirectingToPayment] = useState(false);
@@ -657,8 +660,6 @@ const App: React.FC = () => {
     accentColor: 'blue',
     pricingRules: {
       targetMarginFactor: 0.88,
-      memberDiscountPercent: 0,
-      walletDiscountPercent: 0,
       autoApplyMemberPrice: true,
       roundToNearest: 1,
       excludedProductIds: [],
@@ -710,6 +711,19 @@ const App: React.FC = () => {
   };
   const [shippingConfigs, setShippingConfigs] = useState<Record<string, ShippingConfig>>(SHIPPING_FALLBACKS);
   const [upsellProductIds, setUpsellProductIds] = useState<string[]>([]);
+
+  // ── 優惠券 & 積分系統 ──
+  const [coupons, setCoupons] = useState<Coupon[]>([]);
+  const [memberCoupons, setMemberCoupons] = useState<MemberCoupon[]>([]);
+  const [selectedCoupon, setSelectedCoupon] = useState<MemberCoupon | null>(null);
+  const [editingCoupon, setEditingCoupon] = useState<Coupon | null>(null);
+  const [pointsConfig, setPointsConfig] = useState<PointsConfig>({ dollarsPerPoint: 10 });
+  const [welcomeCouponsConfig, setWelcomeCouponsConfig] = useState<WelcomeCouponsConfig>({ enabled: false, couponTemplateIds: [] });
+  const [couponAdminTab, setCouponAdminTab] = useState<'coupons' | 'distribute' | 'points' | 'welcome'>('coupons');
+  const [couponDistributeSearch, setCouponDistributeSearch] = useState('');
+  const [couponDistributeSelected, setCouponDistributeSelected] = useState<Set<string>>(new Set());
+  const [couponDistributeCouponId, setCouponDistributeCouponId] = useState('');
+  const [frontendCouponTab, setFrontendCouponTab] = useState<'my' | 'shop'>('my');
   
   // ── 食譜系統 ──
   const [recipes, setRecipes] = useState<StandaloneRecipe[]>([]);
@@ -976,6 +990,7 @@ const App: React.FC = () => {
       const params = new URLSearchParams(window.location.search);
       if (params.has('order') || params.has('payment_intent_id')) {
         setCart([]);
+        setSelectedCoupon(null);
         setCheckoutStep('details');
       }
     }
@@ -1118,7 +1133,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadCoreData = async () => {
       const membersPromise = isAdminRoute
-        ? supabase.from('members').select('id, name, email, phone_number, points, wallet_balance, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses')
+        ? supabase.from('members').select('id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses')
         : Promise.resolve({ data: null, error: null });
       const [productsRes, categoriesRes, membersRes, slideshowRes] = await Promise.all([
         supabase.from('products').select('*'),
@@ -1246,10 +1261,18 @@ const App: React.FC = () => {
           if (cfgMap.wholesale_price_overrides && typeof cfgMap.wholesale_price_overrides === 'object') {
             setWholesalePriceOverrides(cfgMap.wholesale_price_overrides);
           }
+          if (cfgMap.points_config) setPointsConfig(cfgMap.points_config);
+          if (cfgMap.welcome_coupons_config) setWelcomeCouponsConfig(cfgMap.welcome_coupons_config);
         }
       } catch {
         console.warn('[site_config] Failed to load, using defaults');
       }
+
+      // Load coupons
+      try {
+        const { data: cpnRows } = await supabase.from('coupons').select('*').order('created_at', { ascending: false });
+        if (cpnRows) setCoupons(cpnRows.map(mapCouponRowToCoupon));
+      } catch { console.warn('[coupons] Failed to load'); }
 
       setIsAppLoading(false);
     };
@@ -1290,6 +1313,23 @@ const App: React.FC = () => {
     };
     restoreUser();
   }, []);
+
+  // Load member coupons when user logs in
+  useEffect(() => {
+    if (!user) { setMemberCoupons([]); setSelectedCoupon(null); return; }
+    const loadMemberCoupons = async () => {
+      try {
+        const { data } = await supabase
+          .from('member_coupons')
+          .select('*, coupons(*)')
+          .eq('member_id', user.id)
+          .eq('status', 'available')
+          .order('created_at', { ascending: false });
+        if (data) setMemberCoupons(data.map(mapMemberCouponRow));
+      } catch { console.warn('[member_coupons] Failed to load'); }
+    };
+    loadMemberCoupons();
+  }, [user?.id, user?.points]);
 
   // Load staff roles on admin route, then restore admin session via server-side verification
   useEffect(() => {
@@ -1809,24 +1849,18 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const isUsingWallet = user && user.walletBalance > 0;
-
   const inventoryOn = siteConfig.inventoryEnforcementEnabled === true;
   const hideWholesalePrice = isWholesaleRoute && !user;
 
-  // ── 定價上下文（三層：訪客 / 會員 / 錢包）──
-  const pricingTier: PricingTier = isUsingWallet ? 'wallet' : user ? 'member' : 'guest';
-  const memberPct = siteConfig.pricingRules?.memberDiscountPercent || 0;
-  const walletPct = siteConfig.pricingRules?.walletDiscountPercent || 0;
-  const pricingExcluded = siteConfig.pricingRules?.excludedProductIds;
+  // ── 定價上下文（兩層：訪客 / 會員）──
+  const pricingTier: PricingTier = user ? 'member' : 'guest';
 
-  // 便利包裝：快速取得當前使用者看到的價格
   const getPrice = (p: Product, qty: number = 1) => {
     if (isWholesaleRoute) {
       const linkedIng = ingredients.find(i => i.id === p.ingredientId);
       return getWholesaleUnitPrice(p, linkedIng, costItems, siteConfig.wholesalePricingRules!, user?.wholesalePriceTier, wholesalePriceOverrides);
     }
-    return getEffectiveUnitPrice(p, qty, pricingTier, memberPct, walletPct, pricingExcluded);
+    return getEffectiveUnitPrice(p, qty, pricingTier);
   };
   
   const pricingData = useMemo(() => {
@@ -1853,22 +1887,38 @@ const App: React.FC = () => {
       };
     }
     cart.forEach(item => {
-      subtotal += getEffectiveUnitPrice(item, item.qty, pricingTier, memberPct, walletPct, pricingExcluded) * item.qty;
+      subtotal += getEffectiveUnitPrice(item, item.qty, pricingTier) * item.qty;
     });
 
-    // 動態運費：根據配送方式從 shipping_configs 讀取 fee / threshold
+    // Coupon discount (applied to subtotal)
+    let couponDiscount = 0;
+    if (selectedCoupon?.coupon && subtotal >= (selectedCoupon.coupon.minSpend || 0)) {
+      const c = selectedCoupon.coupon;
+      if (c.couponType === 'fixed_amount') {
+        couponDiscount = Math.min(c.discountValue, subtotal);
+      } else if (c.couponType === 'percentage') {
+        couponDiscount = Math.round(subtotal * c.discountValue / 100 * 100) / 100;
+      }
+    }
+    const postCouponSubtotal = subtotal - couponDiscount;
+
+    // Free delivery based on post-coupon subtotal
     const configKey = deliveryMethod === 'home' ? 'sf_delivery' : 'sf_locker';
     const sc = shippingConfigs[configKey] || SHIPPING_FALLBACKS[configKey];
-    const deliveryFee = subtotal >= sc.threshold ? 0 : sc.fee;
+    let deliveryFee = postCouponSubtotal >= sc.threshold ? 0 : sc.fee;
+    if (selectedCoupon?.coupon?.couponType === 'free_delivery' && subtotal >= (selectedCoupon.coupon.minSpend || 0)) {
+      deliveryFee = 0;
+    }
 
-    // 雙門檻資料供免運進度條使用
     const lockerConfig = shippingConfigs['sf_locker'] || SHIPPING_FALLBACKS['sf_locker'];
     const deliveryConfig = shippingConfigs['sf_delivery'] || SHIPPING_FALLBACKS['sf_delivery'];
 
     return { 
       subtotal, 
+      couponDiscount,
+      postCouponSubtotal,
       deliveryFee, 
-      total: subtotal + deliveryFee,
+      total: postCouponSubtotal + deliveryFee,
       shippingThreshold: sc.threshold,
       shippingFee: sc.fee,
       lockerThreshold: lockerConfig.threshold,
@@ -1876,7 +1926,7 @@ const App: React.FC = () => {
       deliveryThreshold: deliveryConfig.threshold,
       deliveryFee_delivery: deliveryConfig.fee,
     };
-  }, [cart, pricingTier, memberPct, walletPct, pricingExcluded, deliveryMethod, shippingConfigs, isWholesaleRoute, ingredients, costItems, siteConfig.wholesalePricingRules, user?.wholesalePriceTier]);
+  }, [cart, pricingTier, deliveryMethod, shippingConfigs, isWholesaleRoute, ingredients, costItems, siteConfig.wholesalePricingRules, user?.wholesalePriceTier, selectedCoupon]);
 
   // ── 湊單推薦產品（已過濾掉購物車中的商品）──
   const upsellProducts = useMemo(() => {
@@ -3326,6 +3376,8 @@ const App: React.FC = () => {
       order_type: 'retail',
       payment_method: 'card',
       member_id: user?.id ?? null,
+      coupon_id: selectedCoupon?.couponId ?? null,
+      coupon_discount: pricingData.couponDiscount ?? 0,
     };
     if (deliveryMethod === 'home' && deliveryAddress) {
       insertRow.delivery_district = deliveryAddress.district ?? null;
@@ -3677,16 +3729,8 @@ const App: React.FC = () => {
 
   const applyGlobalPricingRules = () => {
     if (!siteConfig.pricingRules) return;
-    const { memberDiscountPercent, roundToNearest, excludedProductIds, excludedCategoryIds } = siteConfig.pricingRules;
-    const updated = products.map(p => {
-      if (excludedProductIds?.includes(p.id)) return p;
-      if (excludedCategoryIds?.some(cid => p.categories.includes(cid))) return p;
-      const newMemberPrice = Math.round((p.price * (1 - memberDiscountPercent / 100)) / roundToNearest) * roundToNearest;
-      return { ...p, memberPrice: newMemberPrice };
-    });
-    setProducts(updated);
-    upsertProducts(updated);
-    showToast('價格規則已套用');
+    const { roundToNearest } = siteConfig.pricingRules;
+    showToast('定價規則已套用（全局折扣已移至優惠券系統）');
   };
 
   const effectiveInventoryChannel: 'all' | 'retail' | 'wholesale' = moduleWorkspace === 'COOLFOOD_RETAIL' ? 'retail' : moduleWorkspace === 'WHOLESALE' ? 'wholesale' : inventoryChannelFilter;
@@ -4173,7 +4217,7 @@ const App: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 animate-fade-in pb-12">
            <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm">
              <h4 className="text-lg font-black mb-4">定價管理</h4>
-             <p className="text-sm text-slate-400 mb-4">會員折扣、錢包折扣與產品排除已移至獨立模組。</p>
+             <p className="text-sm text-slate-400 mb-4">定價設定與產品排除管理。</p>
              <button onClick={() => setAdminModule('pricing')} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-sm active:scale-95 transition-all">前往價錢設定</button>
            </div>
         </div>
@@ -4508,7 +4552,7 @@ const App: React.FC = () => {
                   </div>
                   )}
                 </div>
-                <button onClick={() => { setEditingMember({ id: `u-${Date.now()}`, name: '', email: '', phoneNumber: '', points: 0, walletBalance: 0, tier: 'Bronze', role: 'customer', memberType: 'retail', addresses: [] }); setEditingMemberPassword(''); }} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl"><Plus size={16}/> 新增會員</button>
+                <button onClick={() => { setEditingMember({ id: `u-${Date.now()}`, name: '', email: '', phoneNumber: '', points: 0, tier: 'Bronze', role: 'customer', memberType: 'retail', addresses: [] }); setEditingMemberPassword(''); }} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl"><Plus size={16}/> 新增會員</button>
              </div>
              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {filteredAdminMembers.length === 0 && (
@@ -4531,8 +4575,7 @@ const App: React.FC = () => {
                          </div>
                          <button onClick={() => { setEditingMember(m); setEditingMemberPassword(''); }} className="p-3 bg-slate-50 rounded-2xl text-slate-400 hover:text-blue-600 transition-colors"><MoreHorizontal size={20}/></button>
                       </div>
-                      <div className="grid grid-cols-2 gap-4">
-                         <div className="space-y-1"><p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">錢包</p><p className="font-black text-slate-900">${m.walletBalance}</p></div>
+                      <div className="grid grid-cols-1 gap-4">
                          <div className="space-y-1"><p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">積分</p><p className="font-black text-slate-900">{m.points} pts</p></div>
                       </div>
                       <div className="space-y-2 pt-4 border-t border-slate-50">
@@ -4542,6 +4585,232 @@ const App: React.FC = () => {
                    </div>
                 ))}
              </div>
+          </div>
+        );
+      case 'coupons':
+        return (
+          <div className="space-y-6 animate-fade-in">
+            <div className="flex gap-2 flex-wrap">
+              {(['coupons', 'distribute', 'points', 'welcome'] as const).map(tab => (
+                <button key={tab} onClick={() => setCouponAdminTab(tab)} className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all ${couponAdminTab === tab ? 'bg-slate-900 text-white shadow-lg' : 'bg-white text-slate-400 border border-slate-200'}`}>
+                  {tab === 'coupons' ? '優惠券管理' : tab === 'distribute' ? '派發優惠券' : tab === 'points' ? '積分設定' : '新會員優惠'}
+                </button>
+              ))}
+            </div>
+
+            {couponAdminTab === 'coupons' && (
+              <div className="space-y-6">
+                <div className="flex justify-between items-center">
+                  <p className="text-sm font-bold text-slate-500">建立和管理優惠券模板</p>
+                  <button onClick={() => setEditingCoupon({ id: `cpn-${Date.now()}`, name: '', couponType: 'fixed_amount', discountValue: 0, minSpend: 100, expiryDays: 30, isWelcomeCoupon: false, isPointsShop: false, distributedCount: 0, isActive: true })} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl"><Plus size={16}/> 新增優惠券</button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {coupons.map(c => (
+                    <div key={c.id} className="bg-white rounded-[2rem] border border-slate-100 shadow-sm p-6 space-y-3">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <p className="font-black text-slate-900">{c.name}</p>
+                          <p className="text-[10px] text-slate-400 font-bold mt-0.5">
+                            {c.couponType === 'fixed_amount' && `減 $${c.discountValue}`}
+                            {c.couponType === 'percentage' && `${c.discountValue}% 折扣`}
+                            {c.couponType === 'free_delivery' && '免運費'}
+                            {c.couponType === 'free_product' && '免費贈品'}
+                          </p>
+                        </div>
+                        <div className="flex gap-1">
+                          <button onClick={() => setEditingCoupon(c)} className="p-2 rounded-xl text-slate-400 hover:text-blue-600 hover:bg-blue-50"><Edit size={14}/></button>
+                          <button onClick={async () => { if (!confirm('確定刪除？')) return; await supabase.from('coupons').delete().eq('id', c.id); setCoupons(prev => prev.filter(x => x.id !== c.id)); showToast('已刪除'); }} className="p-2 rounded-xl text-slate-400 hover:text-rose-500 hover:bg-rose-50"><Trash2 size={14}/></button>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <span className="text-[9px] font-bold bg-slate-50 text-slate-400 px-2 py-0.5 rounded-full">滿${c.minSpend}</span>
+                        <span className="text-[9px] font-bold bg-slate-50 text-slate-400 px-2 py-0.5 rounded-full">{c.expiryDays}天</span>
+                        {c.isPointsShop && <span className="text-[9px] font-bold bg-amber-50 text-amber-500 px-2 py-0.5 rounded-full">{c.pointsCost} 積分兌換</span>}
+                        {c.isWelcomeCoupon && <span className="text-[9px] font-bold bg-emerald-50 text-emerald-500 px-2 py-0.5 rounded-full">新會員</span>}
+                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${c.isActive ? 'bg-emerald-50 text-emerald-500' : 'bg-rose-50 text-rose-400'}`}>{c.isActive ? '啟用' : '停用'}</span>
+                      </div>
+                      <p className="text-[10px] text-slate-300 font-bold">已派發: {c.distributedCount}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {couponAdminTab === 'distribute' && (
+              <div className="space-y-6">
+                <p className="text-sm font-bold text-slate-500">選擇優惠券和會員，批量派發</p>
+                <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm p-6 space-y-4">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 mb-1 block">選擇優惠券</label>
+                    <select value={couponDistributeCouponId} onChange={e => setCouponDistributeCouponId(e.target.value)} className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100">
+                      <option value="">-- 請選擇 --</option>
+                      {coupons.filter(c => c.isActive).map(c => <option key={c.id} value={c.id}>{c.name} ({c.couponType === 'fixed_amount' ? `$${c.discountValue} off` : c.couponType === 'percentage' ? `${c.discountValue}%` : c.couponType})</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 mb-1 block">搜尋會員</label>
+                    <input value={couponDistributeSearch} onChange={e => setCouponDistributeSearch(e.target.value)} placeholder="搜尋姓名、電話..." className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100" />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => { const retailIds = members.filter(m => m.memberType === 'retail').map(m => m.id); setCouponDistributeSelected(new Set(retailIds)); }} className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-black">全選零售</button>
+                    <button onClick={() => setCouponDistributeSelected(new Set())} className="px-3 py-1.5 bg-slate-50 text-slate-400 rounded-lg text-[10px] font-black">清除</button>
+                    <span className="text-[10px] text-slate-400 font-bold ml-auto">已選: {couponDistributeSelected.size}</span>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto space-y-1">
+                    {members.filter(m => m.memberType === 'retail' && (!couponDistributeSearch || m.name.includes(couponDistributeSearch) || (m.phoneNumber || '').includes(couponDistributeSearch))).map(m => (
+                      <label key={m.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-slate-50 cursor-pointer">
+                        <input type="checkbox" checked={couponDistributeSelected.has(m.id)} onChange={e => { const next = new Set(couponDistributeSelected); e.target.checked ? next.add(m.id) : next.delete(m.id); setCouponDistributeSelected(next); }} className="rounded" />
+                        <span className="text-xs font-bold text-slate-700">{m.name}</span>
+                        <span className="text-[10px] text-slate-300 font-bold">{m.phoneNumber}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <button
+                    disabled={!couponDistributeCouponId || couponDistributeSelected.size === 0}
+                    onClick={async () => {
+                      const cpn = coupons.find(c => c.id === couponDistributeCouponId);
+                      if (!cpn) return;
+                      const memberIds = Array.from(couponDistributeSelected);
+                      const expiresAt = new Date(Date.now() + (cpn.expiryDays || 30) * 86400000).toISOString();
+                      const rows = memberIds.map(mid => ({
+                        id: `mc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                        member_id: mid,
+                        coupon_id: cpn.id,
+                        status: 'available',
+                        source: 'admin',
+                        expires_at: expiresAt,
+                      }));
+                      const { error } = await supabase.from('member_coupons').insert(rows);
+                      if (error) { showToast('派發失敗: ' + error.message, 'error'); return; }
+                      await supabase.from('coupons').update({ distributed_count: cpn.distributedCount + memberIds.length }).eq('id', cpn.id);
+                      setCoupons(prev => prev.map(c => c.id === cpn.id ? { ...c, distributedCount: c.distributedCount + memberIds.length } : c));
+                      showToast(`已派發 ${memberIds.length} 張優惠券`);
+                      setCouponDistributeSelected(new Set());
+                    }}
+                    className="w-full py-3 bg-slate-900 text-white rounded-2xl font-black text-xs shadow-xl disabled:opacity-30"
+                  >
+                    派發給 {couponDistributeSelected.size} 位會員
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {couponAdminTab === 'points' && (
+              <div className="space-y-6">
+                <p className="text-sm font-bold text-slate-500">設定消費金額與積分的兌換比例</p>
+                <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm p-6 space-y-4">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 mb-1 block">每消費多少元 = 1 積分</label>
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-black text-slate-400">$</span>
+                      <input type="number" min={1} value={pointsConfig.dollarsPerPoint} onChange={e => setPointsConfig({ ...pointsConfig, dollarsPerPoint: Math.max(1, Number(e.target.value) || 10) })} className="flex-1 p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100" />
+                      <span className="text-sm font-black text-slate-400">= 1 積分</span>
+                    </div>
+                    <p className="text-[10px] text-slate-300 font-bold mt-2">例：客人消費 $300，比例設為 $10 = 1 積分，則獲得 30 積分（無條件捨去）</p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      await supabase.from('site_config').upsert({ id: 'points_config', value: pointsConfig });
+                      showToast('積分設定已保存');
+                    }}
+                    className="w-full py-3 bg-slate-900 text-white rounded-2xl font-black text-xs shadow-xl"
+                  >
+                    保存積分設定
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {couponAdminTab === 'welcome' && (
+              <div className="space-y-6">
+                <p className="text-sm font-bold text-slate-500">新會員註冊時自動派發優惠券</p>
+                <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm p-6 space-y-4">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input type="checkbox" checked={welcomeCouponsConfig.enabled} onChange={e => setWelcomeCouponsConfig(prev => ({ ...prev, enabled: e.target.checked }))} className="rounded" />
+                    <span className="text-sm font-bold text-slate-700">啟用新會員自動派發優惠券</span>
+                  </label>
+                  {welcomeCouponsConfig.enabled && (
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-500 block">選擇要自動派發的優惠券（可多選）</label>
+                      {coupons.filter(c => c.isActive).map(c => (
+                        <label key={c.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-slate-50 cursor-pointer">
+                          <input type="checkbox" checked={welcomeCouponsConfig.couponTemplateIds.includes(c.id)} onChange={e => {
+                            setWelcomeCouponsConfig(prev => ({
+                              ...prev,
+                              couponTemplateIds: e.target.checked
+                                ? [...prev.couponTemplateIds, c.id]
+                                : prev.couponTemplateIds.filter(id => id !== c.id)
+                            }));
+                          }} className="rounded" />
+                          <span className="text-xs font-bold text-slate-700">{c.name}</span>
+                          <span className="text-[10px] text-slate-300">
+                            {c.couponType === 'fixed_amount' ? `$${c.discountValue} off` : c.couponType === 'percentage' ? `${c.discountValue}%` : c.couponType}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  <button
+                    onClick={async () => {
+                      await supabase.from('site_config').upsert({ id: 'welcome_coupons_config', value: welcomeCouponsConfig });
+                      showToast('新會員優惠設定已保存');
+                    }}
+                    className="w-full py-3 bg-slate-900 text-white rounded-2xl font-black text-xs shadow-xl"
+                  >
+                    保存設定
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── Coupon Edit Modal ── */}
+            {editingCoupon && (
+              <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setEditingCoupon(null)}>
+                <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                  <div className="p-8 space-y-5">
+                    <h3 className="text-lg font-black text-slate-900">{coupons.some(c => c.id === editingCoupon.id) ? '編輯優惠券' : '新增優惠券'}</h3>
+                    <div><label className="text-[10px] font-bold text-slate-500 mb-1 block">優惠券名稱</label><input value={editingCoupon.name} onChange={e => setEditingCoupon({ ...editingCoupon, name: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100" /></div>
+                    <div><label className="text-[10px] font-bold text-slate-500 mb-1 block">描述（選填）</label><input value={editingCoupon.description || ''} onChange={e => setEditingCoupon({ ...editingCoupon, description: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100" /></div>
+                    <div><label className="text-[10px] font-bold text-slate-500 mb-1 block">類型</label>
+                      <select value={editingCoupon.couponType} onChange={e => setEditingCoupon({ ...editingCoupon, couponType: e.target.value as CouponType })} className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100">
+                        <option value="fixed_amount">固定金額折扣</option>
+                        <option value="percentage">百分比折扣</option>
+                        <option value="free_delivery">免運費</option>
+                        <option value="free_product">免費贈品</option>
+                      </select>
+                    </div>
+                    {(editingCoupon.couponType === 'fixed_amount' || editingCoupon.couponType === 'percentage') && (
+                      <div><label className="text-[10px] font-bold text-slate-500 mb-1 block">{editingCoupon.couponType === 'fixed_amount' ? '折扣金額 ($)' : '折扣百分比 (%)'}</label><input type="number" min={0} value={editingCoupon.discountValue} onChange={e => setEditingCoupon({ ...editingCoupon, discountValue: Number(e.target.value) || 0 })} className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100" /></div>
+                    )}
+                    {editingCoupon.couponType === 'free_product' && (
+                      <div><label className="text-[10px] font-bold text-slate-500 mb-1 block">關聯產品 ID</label><input value={editingCoupon.linkedProductId || ''} onChange={e => setEditingCoupon({ ...editingCoupon, linkedProductId: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100" placeholder="輸入產品 ID" /></div>
+                    )}
+                    <div><label className="text-[10px] font-bold text-slate-500 mb-1 block">最低消費 ($)</label><input type="number" min={0} value={editingCoupon.minSpend} onChange={e => setEditingCoupon({ ...editingCoupon, minSpend: Number(e.target.value) || 0 })} className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100" /></div>
+                    <div><label className="text-[10px] font-bold text-slate-500 mb-1 block">有效期（天）</label><input type="number" min={1} value={editingCoupon.expiryDays} onChange={e => setEditingCoupon({ ...editingCoupon, expiryDays: Number(e.target.value) || 30 })} className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100" /></div>
+                    <label className="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked={editingCoupon.isPointsShop} onChange={e => setEditingCoupon({ ...editingCoupon, isPointsShop: e.target.checked })} className="rounded" /><span className="text-sm font-bold text-slate-700">在積分商店上架</span></label>
+                    {editingCoupon.isPointsShop && (
+                      <div><label className="text-[10px] font-bold text-slate-500 mb-1 block">兌換所需積分</label><input type="number" min={1} value={editingCoupon.pointsCost || 0} onChange={e => setEditingCoupon({ ...editingCoupon, pointsCost: Number(e.target.value) || 0 })} className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100" /></div>
+                    )}
+                    <label className="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked={editingCoupon.isActive} onChange={e => setEditingCoupon({ ...editingCoupon, isActive: e.target.checked })} className="rounded" /><span className="text-sm font-bold text-slate-700">啟用</span></label>
+                  </div>
+                  <div className="p-8 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+                    <button onClick={() => setEditingCoupon(null)} className="px-6 py-3 bg-white text-slate-500 rounded-2xl font-black text-xs border border-slate-200">取消</button>
+                    <button onClick={async () => {
+                      if (!editingCoupon.name.trim()) { showToast('請輸入名稱', 'error'); return; }
+                      const row = mapCouponToRow(editingCoupon);
+                      const { error } = await supabase.from('coupons').upsert({ ...row, updated_at: new Date().toISOString() });
+                      if (error) { showToast('保存失敗: ' + error.message, 'error'); return; }
+                      setCoupons(prev => {
+                        const exists = prev.find(c => c.id === editingCoupon.id);
+                        return exists ? prev.map(c => c.id === editingCoupon.id ? editingCoupon : c) : [editingCoupon, ...prev];
+                      });
+                      setEditingCoupon(null);
+                      showToast('優惠券已保存');
+                    }} className="px-8 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs shadow-xl flex items-center gap-2"><Save size={14}/> 保存</button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         );
       case 'pricing': {
@@ -4575,8 +4844,7 @@ const App: React.FC = () => {
               const rtExampleCost = 100;
               const rtSuggestedPrice = rtExampleCost / rtFactor;
               const rtMarginPct = Math.round((1 - rtFactor) * 100);
-              const mPct = siteConfig.pricingRules?.memberDiscountPercent || 0;
-              const wPct = siteConfig.pricingRules?.walletDiscountPercent || 0;
+              // Global % discounts removed; pricing is now per-product memberPrice + coupon system
 
               const applyRetailFactor = (applyToOverrides: boolean) => {
                 setProducts(prev => prev.map(p => {
@@ -4638,11 +4906,7 @@ const App: React.FC = () => {
                       </div>
                       <div className="flex justify-between items-center p-2.5 bg-blue-50 rounded-xl">
                         <span className="text-blue-600 font-bold">👤 會員價</span>
-                        <span className="font-black text-blue-700">${(rtSuggestedPrice * (1 - mPct / 100)).toFixed(1)}</span>
-                      </div>
-                      <div className="flex justify-between items-center p-2.5 bg-purple-50 rounded-xl">
-                        <span className="text-purple-600 font-bold">💳 錢包價</span>
-                        <span className="font-black text-purple-700">${(rtSuggestedPrice * (1 - mPct / 100) * (1 - wPct / 100)).toFixed(1)}</span>
+                        <span className="font-black text-blue-700">(由產品折扣價決定)</span>
                       </div>
                     </div>
                   </div>
@@ -4664,34 +4928,9 @@ const App: React.FC = () => {
                 )}
 
                 {/* ── 零售定價規則卡片 ── */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
-                    <div className="flex items-center gap-2"><div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><Tag size={18}/></div><h4 className="font-black text-sm">會員折扣</h4></div>
-                    <p className="text-[10px] text-slate-400 font-bold">登入會員後，在售價/折扣價基礎上自動減價</p>
-                    <div className="flex items-center gap-2">
-                      <input type="number" min="0" max="50" step="1" value={siteConfig.pricingRules?.memberDiscountPercent || ''} onChange={e => setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, memberDiscountPercent: Number(e.target.value) || 0}})} placeholder="0" className="flex-1 p-4 bg-slate-50 rounded-2xl font-black text-xl text-center border border-slate-100 focus:ring-2 focus:ring-blue-100" />
-                      <span className="text-2xl font-black text-slate-300">%</span>
-                    </div>
-                    <p className="text-[9px] text-slate-300 font-bold">填 0 或留空 = 會員不額外減價</p>
-                  </div>
-                  <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
-                    <div className="flex items-center gap-2"><div className="p-2.5 bg-purple-50 text-purple-600 rounded-xl"><Wallet size={18}/></div><h4 className="font-black text-sm">錢包折扣</h4></div>
-                    <p className="text-[10px] text-slate-400 font-bold">使用預付錢包餘額付款時，在會員價基礎上再減</p>
-                    <div className="flex items-center gap-2">
-                      <input type="number" min="0" max="50" step="1" value={siteConfig.pricingRules?.walletDiscountPercent || ''} onChange={e => setSiteConfig({...siteConfig, pricingRules: {...siteConfig.pricingRules!, walletDiscountPercent: Number(e.target.value) || 0}})} placeholder="0" className="flex-1 p-4 bg-slate-50 rounded-2xl font-black text-xl text-center border border-slate-100 focus:ring-2 focus:ring-purple-100" />
-                      <span className="text-2xl font-black text-slate-300">%</span>
-                    </div>
-                    <p className="text-[9px] text-slate-300 font-bold">疊加在會員折扣之上，填 0 = 不額外減</p>
-                  </div>
-                  <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
-                    <div className="flex items-center gap-2"><div className="p-2.5 bg-slate-100 text-slate-600 rounded-xl"><Zap size={18}/></div><h4 className="font-black text-sm">折扣預覽</h4></div>
-                    <p className="text-[10px] text-slate-400 font-bold">以 $100 售價為例</p>
-                    <div className="space-y-2 text-xs">
-                      <div className="flex justify-between items-center p-2.5 bg-slate-50 rounded-xl"><span className="text-slate-500 font-bold">🛒 訪客</span><span className="font-black text-slate-900">$100</span></div>
-                      <div className="flex justify-between items-center p-2.5 bg-blue-50 rounded-xl"><span className="text-blue-600 font-bold">👤 會員</span><span className="font-black text-blue-700">${Math.round(100 * (1 - mPct / 100))}</span></div>
-                      <div className="flex justify-between items-center p-2.5 bg-purple-50 rounded-xl"><span className="text-purple-600 font-bold">💳 錢包</span><span className="font-black text-purple-700">${Math.round(100 * (1 - mPct / 100) * (1 - wPct / 100))}</span></div>
-                    </div>
-                  </div>
+                <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2"><div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><Tag size={18}/></div><h4 className="font-black text-sm">定價說明</h4></div>
+                  <p className="text-[10px] text-slate-400 font-bold">會員定價：訪客看「售價」，會員看「折扣價」（如有設定）。折扣透過優惠券系統派發（前往「優惠券/積分」管理）。</p>
                 </div>
 
                 {/* ── 零售全產品定價矩陣 ── */}
@@ -4748,7 +4987,6 @@ const App: React.FC = () => {
                           <th className="text-right px-4 py-3">售價</th>
                           <th className="text-right px-4 py-3">折扣價</th>
                           <th className="text-right px-4 py-3 text-blue-500">會員價</th>
-                          <th className="text-right px-4 py-3 text-purple-500">錢包價</th>
                           {showCostColumns && <th className="text-right px-4 py-3 text-amber-500">成本</th>}
                           {showCostColumns && <th className="text-right px-4 py-3 text-emerald-500">毛利%</th>}
                         </tr>
@@ -4758,8 +4996,7 @@ const App: React.FC = () => {
                           const excluded = siteConfig.pricingRules?.excludedProductIds?.includes(p.id) || false;
                           const hasDiscount = p.memberPrice > 0 && p.memberPrice < p.price;
                           const base = hasDiscount ? p.memberPrice : p.price;
-                          const memberP = excluded ? base : Math.round(base * (1 - mPct / 100));
-                          const walletP = excluded ? base : Math.round(base * (1 - mPct / 100) * (1 - wPct / 100));
+                          const memberP = hasDiscount ? p.memberPrice : p.price;
                           const linkedIng = ingredients.find(i => i.id === p.ingredientId);
                           const perLbCost = computeProductCost(p, linkedIng, costItems);
                           const totalCost = computePackCost(perLbCost, p.packWeightLb, p.pricingMode);
@@ -4809,10 +5046,7 @@ const App: React.FC = () => {
                                 />
                               </td>
                               <td className="text-right px-4 py-3">
-                                {!excluded && mPct > 0 ? <span className="font-black text-blue-600">${memberP}</span> : <span className="text-slate-300">{excluded ? '排除' : `$${base}`}</span>}
-                              </td>
-                              <td className="text-right px-4 py-3">
-                                {!excluded && (mPct > 0 || wPct > 0) ? <span className="font-black text-purple-600">${walletP}</span> : <span className="text-slate-300">{excluded ? '排除' : `$${base}`}</span>}
+                                {hasDiscount ? <span className="font-black text-blue-600">${memberP}</span> : <span className="text-slate-300">${base}</span>}
                               </td>
                               {showCostColumns && (
                                 <td className="text-right px-4 py-3 font-bold text-amber-600">{totalCost > 0 ? `$${totalCost.toFixed(1)}` : <span className="text-slate-300">—</span>}</td>
@@ -5166,7 +5400,7 @@ const App: React.FC = () => {
              </div>
              <div className="bg-white p-10 rounded-[3.5rem] border border-slate-100 shadow-sm space-y-6">
                 <div className="flex items-center gap-3"><div className="p-3 bg-amber-50 text-amber-600 rounded-2xl"><Percent size={20}/></div><h3 className="text-xl font-black">定價管理</h3></div>
-                <p className="text-sm text-slate-400 font-bold">會員折扣、錢包折扣、產品級別排除等定價設定已移至獨立模組。</p>
+                <p className="text-sm text-slate-400 font-bold">定價設定已移至獨立模組。優惠券系統請前往「優惠券/積分」管理。</p>
                 <button onClick={() => setAdminModule('pricing')} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2"><DollarSign size={16}/> 前往價錢設定</button>
              </div>
              {/* ── 運費設置卡片 ── */}
@@ -8127,12 +8361,12 @@ const App: React.FC = () => {
                          </div>
                       </div>
                       <div className="space-y-6">
-                         <div className="flex items-center gap-3 mb-2 text-blue-600 font-black uppercase tracking-widest text-xs"><Wallet size={18}/> 錢包管理</div>
+                         <div className="flex items-center gap-3 mb-2 text-blue-600 font-black uppercase tracking-widest text-xs"><Star size={18}/> 積分管理</div>
                          <div className="p-8 bg-slate-50 rounded-[3rem] border border-slate-100 space-y-6">
-                            <div className="text-center"><p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest">當前餘額</p><p className="text-4xl font-black text-slate-900">${editingMember.walletBalance}</p></div>
+                            <div className="text-center"><p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest">當前積分</p><p className="text-4xl font-black text-slate-900">{editingMember.points} pts</p></div>
                             <div className="grid grid-cols-3 gap-2">
-                               {[100, 500, -100].map(val => (
-                                  <button key={val} onClick={() => { setEditingMember({...editingMember, walletBalance: editingMember.walletBalance + val}); }} className="py-3 bg-white border border-slate-100 rounded-2xl font-black text-xs uppercase shadow-sm">{val > 0 ? `+${val}` : val}</button>
+                               {[50, 100, -50].map(val => (
+                                  <button key={val} onClick={() => { setEditingMember({...editingMember, points: Math.max(0, editingMember.points + val)}); }} className="py-3 bg-white border border-slate-100 rounded-2xl font-black text-xs uppercase shadow-sm">{val > 0 ? `+${val}` : val}</button>
                                ))}
                             </div>
                          </div>
@@ -8856,10 +9090,67 @@ const App: React.FC = () => {
 
           <UpsellNudge />
 
-          {/* ─── Section 4: Summary & Pay ─── */}
+          {/* ─── Section 4: Coupon Selector ─── */}
+          {user && (
+            <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-5 pt-5 pb-4">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5"><Ticket size={12} /> {t.coupon.selectCoupon}</p>
+              </div>
+              <div className="px-5 pb-5">
+                {selectedCoupon ? (
+                  <div className="flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+                    <div className="flex items-center gap-2">
+                      <Ticket size={16} className="text-emerald-600" />
+                      <span className="text-xs font-black text-emerald-700">{selectedCoupon.coupon?.name}</span>
+                      {selectedCoupon.coupon?.couponType === 'fixed_amount' && <span className="text-xs font-bold text-emerald-600">-${selectedCoupon.coupon.discountValue}</span>}
+                      {selectedCoupon.coupon?.couponType === 'percentage' && <span className="text-xs font-bold text-emerald-600">-{selectedCoupon.coupon.discountValue}%</span>}
+                      {selectedCoupon.coupon?.couponType === 'free_delivery' && <span className="text-xs font-bold text-emerald-600">{t.coupon.freeDelivery}</span>}
+                      {selectedCoupon.coupon?.couponType === 'free_product' && <span className="text-xs font-bold text-emerald-600">{t.coupon.freeProduct}</span>}
+                    </div>
+                    <button onClick={() => { setSelectedCoupon(null); showToast(t.coupon.couponRemoved); }} className="p-1.5 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50"><X size={14}/></button>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {memberCoupons.filter(mc => {
+                      if (mc.status !== 'available' || !mc.coupon) return false;
+                      if (mc.expiresAt && new Date(mc.expiresAt) < new Date()) return false;
+                      return subtotal >= (mc.coupon.minSpend || 0);
+                    }).length === 0 ? (
+                      <p className="text-xs text-slate-300 font-bold">{t.coupon.noCouponsAvailable}</p>
+                    ) : (
+                      memberCoupons.filter(mc => {
+                        if (mc.status !== 'available' || !mc.coupon) return false;
+                        if (mc.expiresAt && new Date(mc.expiresAt) < new Date()) return false;
+                        return subtotal >= (mc.coupon.minSpend || 0);
+                      }).map(mc => (
+                        <button key={mc.id} onClick={() => { setSelectedCoupon(mc); showToast(t.coupon.couponApplied); }}
+                          className="w-full flex items-center justify-between p-3 bg-slate-50 border border-slate-100 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all">
+                          <div className="flex items-center gap-2">
+                            <Ticket size={14} className="text-blue-500" />
+                            <span className="text-xs font-bold text-slate-700">{mc.coupon?.name}</span>
+                          </div>
+                          <span className="text-xs font-black text-blue-600">
+                            {mc.coupon?.couponType === 'fixed_amount' && `-$${mc.coupon.discountValue}`}
+                            {mc.coupon?.couponType === 'percentage' && `-${mc.coupon.discountValue}%`}
+                            {mc.coupon?.couponType === 'free_delivery' && t.coupon.freeDelivery}
+                            {mc.coupon?.couponType === 'free_product' && t.coupon.freeProduct}
+                          </span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* ─── Section 5: Summary & Pay ─── */}
           <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
             <div className="px-5 pt-5 pb-5 space-y-3">
               <div className="flex justify-between text-xs font-bold text-slate-400"><span>{lang === 'en' ? 'Subtotal' : '商品小計'}</span><span className="text-slate-700">${subtotal}</span></div>
+              {pricingData.couponDiscount > 0 && (
+                <div className="flex justify-between text-xs font-bold text-emerald-600"><span>{t.coupon.couponDiscount}</span><span>-${pricingData.couponDiscount}</span></div>
+              )}
               <div className="flex justify-between text-xs font-bold text-slate-400"><span>{lang === 'en' ? 'Shipping' : '運費'}</span><span className={deliveryFee === 0 ? 'text-emerald-600 font-black' : 'text-slate-700'}>{deliveryFee === 0 ? (lang === 'en' ? 'Free' : '免運費') : `$${deliveryFee}`}</span></div>
               <FreeShippingNudge />
               <div className="pt-3 border-t border-slate-100 flex justify-between items-end">
@@ -8888,7 +9179,7 @@ const App: React.FC = () => {
           <button onClick={() => setLang(lang === 'zh-HK' ? 'en' : 'zh-HK')} className="px-2.5 py-1.5 bg-slate-100 text-slate-600 rounded-full border border-slate-200 text-[10px] font-black uppercase tracking-wider hover:bg-slate-200 transition-colors">{lang === 'zh-HK' ? 'EN' : '中'}</button>
           <a href={`https://wa.me/${SHOP_WHATSAPP}`} target="_blank" rel="noreferrer" className="p-2 bg-green-50 text-green-600 rounded-full border border-green-100"><MessageCircle size={18} fill="currentColor" /></a>
           {user ? (
-             <button onClick={() => setView('profile')} className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-full border border-slate-100"><Wallet size={14} className={textAccentClass} /><span className="text-xs font-bold text-slate-700">${user.walletBalance}</span></button>
+             <button onClick={() => setView('profile')} className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-full border border-slate-100"><Star size={14} className={textAccentClass} /><span className="text-xs font-bold text-slate-700">{user.points} pts</span></button>
           ) : (
             <button onClick={() => setView('profile')} className={`text-xs font-bold ${textAccentClass} px-3 py-1.5 rounded-full bg-blue-50`}>{t.store.login}</button>
           )}
@@ -9426,6 +9717,128 @@ const App: React.FC = () => {
              </div>
             );
           })()}
+          {view === 'coupons' && (
+            <div className="flex-1 bg-slate-50 p-6 overflow-y-auto pb-24 animate-fade-in">
+              {!user ? (
+                <div className="flex flex-col items-center justify-center gap-6 min-h-[60vh]">
+                  <div className="w-24 h-24 bg-slate-100 rounded-full flex items-center justify-center"><Ticket size={40} className="text-slate-300" /></div>
+                  <div className="text-center space-y-2">
+                    <h2 className="text-xl font-black text-slate-800">{t.coupon.loginToView}</h2>
+                  </div>
+                  <button onClick={() => setView('profile')} className={`px-8 py-3 ${accentClass} text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all`}>{t.coupon.loginNow}</button>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <div className={`p-6 rounded-[2.5rem] ${accentClass} text-white shadow-xl`}>
+                    <div className="flex items-center justify-between">
+                      <div><h2 className="text-lg font-black">{user.name}</h2><p className="text-[10px] font-bold opacity-70 uppercase tracking-widest">{user.tier} MEMBER</p></div>
+                      <div className="text-right"><p className="text-[9px] font-bold opacity-70 uppercase tracking-widest">{t.profile.points}</p><p className="text-2xl font-black">{user.points} pts</p></div>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <button onClick={() => setFrontendCouponTab('my')} className={`flex-1 py-3 rounded-2xl text-xs font-black transition-all ${frontendCouponTab === 'my' ? `${accentClass} text-white shadow-lg` : 'bg-white text-slate-400 border border-slate-200'}`}>{t.coupon.myCoupons}</button>
+                    <button onClick={() => setFrontendCouponTab('shop')} className={`flex-1 py-3 rounded-2xl text-xs font-black transition-all ${frontendCouponTab === 'shop' ? `${accentClass} text-white shadow-lg` : 'bg-white text-slate-400 border border-slate-200'}`}>{t.coupon.pointsShop}</button>
+                  </div>
+
+                  {frontendCouponTab === 'my' && (
+                    <div className="space-y-3">
+                      {memberCoupons.length === 0 && (
+                        <div className="text-center text-slate-400 font-bold py-10">{t.coupon.noCoupons}</div>
+                      )}
+                      {memberCoupons.filter(mc => mc.status === 'available').map(mc => {
+                        const c = mc.coupon;
+                        if (!c) return null;
+                        const isExpired = mc.expiresAt && new Date(mc.expiresAt) < new Date();
+                        if (isExpired) return null;
+                        return (
+                          <div key={mc.id} className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+                            <div className="flex">
+                              <div className={`w-24 flex-shrink-0 flex flex-col items-center justify-center ${accentClass} text-white p-4`}>
+                                {c.couponType === 'fixed_amount' && <><p className="text-2xl font-black">${c.discountValue}</p><p className="text-[8px] font-bold uppercase">{t.coupon.off}</p></>}
+                                {c.couponType === 'percentage' && <><p className="text-2xl font-black">{c.discountValue}%</p><p className="text-[8px] font-bold uppercase">{t.coupon.off}</p></>}
+                                {c.couponType === 'free_delivery' && <><Truck size={28}/><p className="text-[8px] font-bold uppercase mt-1">{t.coupon.freeDelivery}</p></>}
+                                {c.couponType === 'free_product' && <><Gift size={28}/><p className="text-[8px] font-bold uppercase mt-1">{t.coupon.freeProduct}</p></>}
+                              </div>
+                              <div className="flex-1 p-4">
+                                <p className="font-black text-slate-900 text-sm">{c.name}</p>
+                                {c.description && <p className="text-[11px] text-slate-400 font-bold mt-1">{c.description}</p>}
+                                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                  <span className="text-[9px] font-bold text-slate-300 bg-slate-50 px-2 py-0.5 rounded-full">{t.coupon.minSpend.replace('${min}', String(c.minSpend))}</span>
+                                  {mc.expiresAt && <span className="text-[9px] font-bold text-slate-300 bg-slate-50 px-2 py-0.5 rounded-full">{t.coupon.expiresAt.replace('{date}', new Date(mc.expiresAt).toLocaleDateString())}</span>}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {frontendCouponTab === 'shop' && (
+                    <div className="space-y-3">
+                      {coupons.filter(c => c.isPointsShop && c.isActive && (c.pointsCost ?? 0) > 0).length === 0 && (
+                        <div className="text-center text-slate-400 font-bold py-10">暫時沒有可兌換的優惠券</div>
+                      )}
+                      {coupons.filter(c => c.isPointsShop && c.isActive && (c.pointsCost ?? 0) > 0).map(c => {
+                        const canAfford = user.points >= (c.pointsCost ?? 0);
+                        const alreadyRedeemed = memberCoupons.some(mc => mc.couponId === c.id && mc.source === 'points_shop');
+                        return (
+                          <div key={c.id} className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+                            <div className="flex">
+                              <div className="w-24 flex-shrink-0 flex flex-col items-center justify-center bg-amber-500 text-white p-4">
+                                <Star size={24}/>
+                                <p className="text-sm font-black mt-1">{c.pointsCost}</p>
+                                <p className="text-[8px] font-bold uppercase">pts</p>
+                              </div>
+                              <div className="flex-1 p-4">
+                                <p className="font-black text-slate-900 text-sm">{c.name}</p>
+                                {c.description && <p className="text-[11px] text-slate-400 font-bold mt-1">{c.description}</p>}
+                                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                  {c.couponType === 'fixed_amount' && <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">-${c.discountValue}</span>}
+                                  {c.couponType === 'percentage' && <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">-{c.discountValue}%</span>}
+                                  {c.couponType === 'free_delivery' && <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">{t.coupon.freeDelivery}</span>}
+                                  {c.couponType === 'free_product' && <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">{t.coupon.freeProduct}</span>}
+                                  <span className="text-[9px] font-bold text-slate-300 bg-slate-50 px-2 py-0.5 rounded-full">{t.coupon.minSpend.replace('${min}', String(c.minSpend))}</span>
+                                </div>
+                                <button
+                                  disabled={!canAfford || alreadyRedeemed}
+                                  onClick={async () => {
+                                    if (!canAfford || alreadyRedeemed) return;
+                                    if (!confirm(t.coupon.redeemConfirm.replace('{points}', String(c.pointsCost)))) return;
+                                    try {
+                                      const res = await fetch('/api/coupon-api', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ action: 'redeem-points', memberId: user.id, couponId: c.id }),
+                                      });
+                                      const json = await res.json();
+                                      if (res.ok && json.success) {
+                                        setUser({ ...user, points: json.newPoints });
+                                        showToast(t.coupon.redeemed);
+                                      } else {
+                                        showToast(json.error || 'Failed', 'error');
+                                      }
+                                    } catch { showToast('Error', 'error'); }
+                                  }}
+                                  className={`mt-3 w-full py-2.5 rounded-xl text-xs font-black transition-all ${
+                                    alreadyRedeemed ? 'bg-slate-100 text-slate-300' :
+                                    canAfford ? `${accentClass} text-white shadow-md active:scale-95` : 'bg-slate-100 text-slate-300'
+                                  }`}
+                                >
+                                  {alreadyRedeemed ? '已兌換' : canAfford ? t.coupon.redeem : t.coupon.notEnoughPoints}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           {view === 'profile' && !user && (
              <div className="flex-1 bg-slate-50 p-6 overflow-y-auto pb-24 animate-fade-in">
                 <div className="max-w-md mx-auto pt-4">
@@ -9522,9 +9935,8 @@ const App: React.FC = () => {
              <div className="flex-1 bg-slate-50 p-6 space-y-6 overflow-y-auto pb-24">
                 <div className={`p-8 rounded-[3rem] ${accentClass} text-white shadow-2xl relative overflow-hidden group`}>
                    <div className="relative z-10"><h2 className="text-2xl font-black mb-2 tracking-tight">{user.name}</h2><p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-60 mb-8">{user.tier} MEMBER</p>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="bg-white/10 p-5 rounded-3xl border border-white/10 backdrop-blur-sm shadow-inner group-hover:bg-white/20 transition-colors"><p className="text-[9px] font-bold uppercase mb-1 tracking-widest">{t.profile.walletBalance}</p><p className="text-2xl font-black">${user.walletBalance}</p></div>
-                        <div className="bg-white/10 p-5 rounded-3xl border border-white/10 backdrop-blur-sm shadow-inner group-hover:bg-white/20 transition-colors"><p className="text-[9px] font-bold uppercase mb-1 tracking-widest">{t.profile.points}</p><p className="text-2xl font-black">{user.points}</p></div>
+                      <div className="grid grid-cols-1 gap-4">
+                        <div className="bg-white/10 p-5 rounded-3xl border border-white/10 backdrop-blur-sm shadow-inner group-hover:bg-white/20 transition-colors"><p className="text-[9px] font-bold uppercase mb-1 tracking-widest">{t.profile.points}</p><p className="text-2xl font-black">{user.points} pts</p></div>
                       </div>
                    </div>
                    <div className="absolute -bottom-10 -right-10 opacity-10 group-hover:rotate-12 transition-transform duration-1000"><ShoppingBag size={200}/></div>
@@ -9564,9 +9976,10 @@ const App: React.FC = () => {
           {!isAdminRoute && (
             <nav className="fixed bottom-0 inset-x-0 h-16 bg-white/95 backdrop-blur-xl border-t border-slate-100 flex items-center justify-around z-50">
               {[
-                { id: 'store', label: t.nav.store, icon: <ShoppingBag size={24} strokeWidth={2.5} /> },
-                { id: 'orders', label: t.nav.orders, icon: <Clock size={24} strokeWidth={2.5} /> },
-                { id: 'profile', label: t.nav.profile, icon: <User size={24} strokeWidth={2.5} /> }
+                { id: 'store', label: t.nav.store, icon: <ShoppingBag size={22} strokeWidth={2.5} /> },
+                { id: 'orders', label: t.nav.orders, icon: <Clock size={22} strokeWidth={2.5} /> },
+                { id: 'coupons', label: t.nav.coupons, icon: <Ticket size={22} strokeWidth={2.5} /> },
+                { id: 'profile', label: t.nav.profile, icon: <User size={22} strokeWidth={2.5} /> }
               ].map(item => (<button key={item.id} onClick={() => setView(item.id as any)} className={`flex flex-col items-center gap-1.5 transition-all duration-300 ${view === item.id ? `${textAccentClass} scale-110` : 'text-slate-300 hover:text-slate-400'}`}>{item.icon}<span className="text-[8px] font-black uppercase tracking-widest">{item.label}</span></button>))}
             </nav>
           )}

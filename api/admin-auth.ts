@@ -275,7 +275,6 @@ async function handleSetup(req: Req, res: Res) {
           role: 'admin',
           password_hash: passwordHash,
           tier: 'VIP',
-          wallet_balance: 0,
           points: 0,
         }),
       }

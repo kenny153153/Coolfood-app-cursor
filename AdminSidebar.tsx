@@ -5,7 +5,7 @@ import {
   Globe, Settings, ShieldCheck, LogOut,
   ChevronLeft, ChevronDown,
   ClipboardList, Cpu, Wallet, Image as ImageIcon,
-  PlusCircle, Factory, FileText, Layers,
+  PlusCircle, Factory, FileText, Layers, Ticket,
 } from 'lucide-react';
 import { useWorkspace, WORKSPACE_META } from './WorkspaceContext';
 import type { AdminPermissions, AdminAccount, Workspace, AdminModuleId } from './types';
@@ -32,6 +32,7 @@ const RETAIL_ITEMS: SidebarItem[] = [
   { id: 'inventory', label: '產品/分類', icon: <Package size={18}/> },
   { id: 'orders', label: '訂單管理', icon: <Truck size={18}/> },
   { id: 'members', label: '會員管理', icon: <Users size={18}/> },
+  { id: 'coupons', label: '優惠券/積分', icon: <Ticket size={18}/> },
   { id: 'slideshow', label: '廣告輪播', icon: <ImageIcon size={18}/> },
   { id: 'pricing', label: '價錢設定', icon: <DollarSign size={18}/> },
   { id: 'recipes', label: '食譜', icon: <BookOpen size={18}/> },
