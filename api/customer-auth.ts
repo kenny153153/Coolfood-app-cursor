@@ -47,7 +47,7 @@ function getSupabaseConfig() {
   return { supabaseUrl, serviceRoleKey };
 }
 
-const SAFE_MEMBER_COLS = 'id,name,email,phone_number,points,tier,role,admin_permissions,member_type,wholesale_price_tier,addresses';
+const SAFE_MEMBER_COLS = 'id,name,email,phone_number,points,tier,role,admin_permissions,member_type,wholesale_price_tier,wholesale_status,company_name,business_type,branch_count,br_doc_url,storefront_photo_url,storefront_preparing,delivery_address,br_update_required,addresses';
 const AUTH_MEMBER_COLS = `${SAFE_MEMBER_COLS},password_hash`;
 
 const loginSchema = z.object({
@@ -65,9 +65,11 @@ const registerSchema = z.object({
   password: z.string().min(6),
   isWholesale: z.boolean().optional(),
   companyName: z.string().optional(),
-  brNumber: z.string().optional(),
+  businessType: z.string().optional(),
+  branchCount: z.string().optional(),
   brDocUrl: z.string().optional(),
   storefrontPhotoUrl: z.string().optional(),
+  storefrontPreparing: z.boolean().optional(),
 });
 
 const restoreSchema = z.object({
@@ -130,7 +132,7 @@ async function handleLogin(body: z.infer<typeof loginSchema>, supabaseUrl: strin
 }
 
 async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl: string, serviceRoleKey: string) {
-  const { name, phone, email, password, isWholesale, companyName, brNumber, brDocUrl, storefrontPhotoUrl } = body;
+  const { name, phone, email, password, isWholesale, companyName, businessType, branchCount, brDocUrl, storefrontPhotoUrl, storefrontPreparing } = body;
 
   // Check phone uniqueness
   const phoneCheck = await fetch(
@@ -168,13 +170,16 @@ async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl:
     role: 'customer',
     member_type: isWholesale ? 'wholesale' : 'retail',
     wholesale_price_tier: isWholesale ? 'P0' : null,
+    wholesale_status: isWholesale ? 'pending' : null,
     addresses: null,
   };
   if (isWholesale) {
     if (companyName) newMember.company_name = companyName;
-    if (brNumber) newMember.br_number = brNumber;
+    if (businessType) newMember.business_type = businessType;
+    if (branchCount) newMember.branch_count = branchCount;
     if (brDocUrl) newMember.br_doc_url = brDocUrl;
     if (storefrontPhotoUrl) newMember.storefront_photo_url = storefrontPhotoUrl;
+    if (storefrontPreparing) newMember.storefront_preparing = true;
   }
 
   const insertRes = await fetch(

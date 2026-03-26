@@ -752,7 +752,7 @@ const App: React.FC = () => {
   const [adminProductSearch, setAdminProductSearch] = useState('');
   const [adminOrderSearch, setAdminOrderSearch] = useState('');
   const [adminMemberSearch, setAdminMemberSearch] = useState('');
-  const [adminMemberTypeFilter, setAdminMemberTypeFilter] = useState<'all' | 'retail' | 'wholesale'>('all');
+  const [adminMemberTypeFilter, setAdminMemberTypeFilter] = useState<'all' | 'retail' | 'wholesale' | 'pending'>('all');
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
   const [batchProcessing, setBatchProcessing] = useState(false);
   const [sfValidationModal, setSfValidationModal] = useState<{ problematic: { id: string; reason: string }[]; valid: SupabaseOrderRow[] } | null>(null);
@@ -795,7 +795,7 @@ const App: React.FC = () => {
   const [confirmation, setConfirmation] = useState<{ title: string, message: string, onConfirm: () => void } | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
-  const [authForm, setAuthForm] = useState({ email: '', password: '', name: '', phone: '', companyName: '', brNumber: '' });
+  const [authForm, setAuthForm] = useState({ email: '', password: '', name: '', phone: '', companyName: '', businessType: '', branchCount: '1', storefrontPreparing: false });
   const [wholesaleRegFiles, setWholesaleRegFiles] = useState<{ brDoc: File | null; storefrontPhoto: File | null }>({ brDoc: null, storefrontPhoto: null });
   const [wholesaleRegUploading, setWholesaleRegUploading] = useState(false);
   const [editingMemberPassword, setEditingMemberPassword] = useState('');
@@ -1133,7 +1133,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadCoreData = async () => {
       const membersPromise = isAdminRoute
-        ? supabase.from('members').select('id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, addresses')
+        ? supabase.from('members').select('id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, wholesale_status, company_name, business_type, branch_count, br_doc_url, storefront_photo_url, storefront_preparing, delivery_address, br_update_required, addresses')
         : Promise.resolve({ data: null, error: null });
       const [productsRes, categoriesRes, membersRes, slideshowRes] = await Promise.all([
         supabase.from('products').select('*'),
@@ -1949,7 +1949,7 @@ const App: React.FC = () => {
 
   const openAuthModal = (mode: 'login' | 'signup' = 'login') => {
     setAuthMode(mode);
-    setAuthForm({ email: '', password: '', name: '', phone: '', companyName: '', brNumber: '' });
+    setAuthForm({ email: '', password: '', name: '', phone: '', companyName: '', businessType: '', branchCount: '1', storefrontPreparing: false });
     setShowAuthModal(true);
   };
 
@@ -1978,7 +1978,7 @@ const App: React.FC = () => {
         if (json.sessionToken) localStorage.setItem('coolfood_session_token', json.sessionToken);
       } catch { /* ignore */ }
       setShowAuthModal(false);
-      setAuthForm({ email: '', password: '', name: '', phone: '', companyName: '', brNumber: '' });
+      setAuthForm({ email: '', password: '', name: '', phone: '', companyName: '', businessType: '', branchCount: '1', storefrontPreparing: false });
       setView('profile');
       showToast('歡迎回來！');
     } catch {
@@ -1999,19 +1999,15 @@ const App: React.FC = () => {
     }
     if (isWholesaleRoute) {
       if (!authForm.companyName.trim()) {
-        showToast('請填寫公司名稱', 'error');
-        return;
-      }
-      if (!authForm.brNumber.trim()) {
-        showToast('請填寫商業登記證 (BR) 號碼', 'error');
+        showToast('請填寫餐廳/公司名稱', 'error');
         return;
       }
       if (!wholesaleRegFiles.brDoc) {
         showToast('請上傳商業登記證 (BR) 副本', 'error');
         return;
       }
-      if (!wholesaleRegFiles.storefrontPhoto) {
-        showToast('請上傳餐廳門口相片', 'error');
+      if (!authForm.storefrontPreparing && !wholesaleRegFiles.storefrontPhoto) {
+        showToast('請上傳餐廳門口相片，或選擇「正在籌備中」', 'error');
         return;
       }
     }
@@ -2020,12 +2016,14 @@ const App: React.FC = () => {
       let brDocUrl: string | null = null;
       let storefrontPhotoUrl: string | null = null;
 
-      if (isWholesaleRoute && wholesaleRegFiles.brDoc && wholesaleRegFiles.storefrontPhoto) {
+      if (isWholesaleRoute && wholesaleRegFiles.brDoc) {
         const timestamp = Date.now();
         const brPath = `wholesale-registrations/${timestamp}/br-doc.webp`;
-        const photoPath = `wholesale-registrations/${timestamp}/storefront-photo.webp`;
         brDocUrl = await uploadImage(wholesaleRegFiles.brDoc, brPath);
-        storefrontPhotoUrl = await uploadImage(wholesaleRegFiles.storefrontPhoto, photoPath);
+        if (wholesaleRegFiles.storefrontPhoto && !authForm.storefrontPreparing) {
+          const photoPath = `wholesale-registrations/${timestamp}/storefront-photo.webp`;
+          storefrontPhotoUrl = await uploadImage(wholesaleRegFiles.storefrontPhoto, photoPath);
+        }
       }
 
       const res = await fetch('/api/customer-auth', {
@@ -2039,9 +2037,11 @@ const App: React.FC = () => {
           password: authForm.password,
           isWholesale: isWholesaleRoute,
           companyName: isWholesaleRoute ? authForm.companyName.trim() : undefined,
-          brNumber: isWholesaleRoute ? authForm.brNumber.trim() : undefined,
+          businessType: isWholesaleRoute ? authForm.businessType || undefined : undefined,
+          branchCount: isWholesaleRoute ? authForm.branchCount : undefined,
           brDocUrl: brDocUrl || undefined,
           storefrontPhotoUrl: storefrontPhotoUrl || undefined,
+          storefrontPreparing: isWholesaleRoute ? authForm.storefrontPreparing : undefined,
         }),
       });
       const json = await res.json();
@@ -2058,7 +2058,7 @@ const App: React.FC = () => {
       } catch { /* ignore */ }
       setMembers(prev => [...prev, u]);
       setShowAuthModal(false);
-      setAuthForm({ email: '', password: '', name: '', phone: '', companyName: '', brNumber: '' });
+      setAuthForm({ email: '', password: '', name: '', phone: '', companyName: '', businessType: '', branchCount: '1', storefrontPreparing: false });
       setWholesaleRegFiles({ brDoc: null, storefrontPhoto: null });
       setWholesaleRegUploading(false);
       setView('profile');
@@ -3209,20 +3209,24 @@ const App: React.FC = () => {
         showToast('批發客戶請先登入', 'error');
         return;
       }
+      if (user.memberType === 'wholesale' && user.wholesaleStatus && user.wholesaleStatus !== 'approved') {
+        showToast(user.wholesaleStatus === 'pending' ? '您的批發帳戶正在審核中，審核通過後即可下單。' : '您的批發帳戶申請未獲批准，如有疑問請聯絡我們。', 'error');
+        return;
+      }
       const wsContactName = user?.name ?? null;
       const wsCustomerPhone = user?.phoneNumber ?? null;
-      const wsAddr = wholesaleDeliveryNote.trim() || null;
+      const wsAddr = user?.deliveryAddress || null;
+      const wsNote = wholesaleDeliveryNote.trim() || null;
 
       // Look up linked wholesale client by member phone → populate client fields
       let wsClientId: string | null = null;
       let wsBrand: string | null = isGHFoods ? 'GHFOODS' : 'COOLFOOD';
       let wsRouteId: string | null = null;
-      let wsClientCode: string | null = null;
       let wsCreditLimit = 0;
       if (wsCustomerPhone) {
         const { data: wcRows } = await supabase
           .from('wholesale_clients')
-          .select('id, brand, route_id, client_code, credit_limit')
+          .select('id, brand, route_id, credit_limit')
           .eq('phone', wsCustomerPhone)
           .eq('is_active', true)
           .limit(1);
@@ -3231,7 +3235,6 @@ const App: React.FC = () => {
           wsClientId = wc.id;
           wsBrand = wc.brand || wsBrand;
           wsRouteId = wc.route_id || null;
-          wsClientCode = wc.client_code || null;
           wsCreditLimit = Number(wc.credit_limit) || 0;
         }
       }
@@ -3264,7 +3267,7 @@ const App: React.FC = () => {
         items_count: itemsCount,
         line_items: lineItems,
         delivery_method: 'own_van',
-        delivery_address: wsAddr,
+        delivery_address: wsNote ? (wsAddr ? `${wsAddr}\n備註: ${wsNote}` : wsNote) : wsAddr,
         contact_name: wsContactName,
         order_type: 'wholesale',
         payment_method: paymentMethod,
@@ -3272,7 +3275,6 @@ const App: React.FC = () => {
         wholesale_client_id: wsClientId,
         wholesale_brand: wsBrand,
         route_id: wsRouteId,
-        client_code: wsClientCode,
       };
       if (wholesaleDeliveryDate) insertRow.delivery_date = wholesaleDeliveryDate;
       if (deliveryAddress?.district) insertRow.delivery_district = deliveryAddress.district;
@@ -3806,6 +3808,23 @@ const App: React.FC = () => {
     );
   }, [products, storeSearch, isWholesaleRoute]);
 
+  const filteredStoreRecipes = useMemo(() => {
+    let filtered = recipeCategoryFilter.length > 0
+      ? recipes.filter(r => recipeCategoryFilter.every(cid => r.categoryIds.includes(cid)))
+      : recipes;
+    if (storeSearch.trim()) {
+      const q = storeSearch.trim().toLowerCase();
+      filtered = filtered.filter(r =>
+        r.title.toLowerCase().includes(q) ||
+        (r.description || '').toLowerCase().includes(q) ||
+        r.tags.some(tag => tag.toLowerCase().includes(q)) ||
+        r.ingredientsRaw.some(ing => (ing.name || '').toLowerCase().includes(q)) ||
+        r.linkedProductIds.some(pid => { const p = products.find(x => x.id === pid); return p && p.name.toLowerCase().includes(q); })
+      );
+    }
+    return filtered;
+  }, [recipes, recipeCategoryFilter, storeSearch, products]);
+
   const effectiveOrdersType: 'all' | 'retail' | 'wholesale' = moduleWorkspace === 'COOLFOOD_RETAIL' ? 'retail' : moduleWorkspace === 'WHOLESALE' ? 'wholesale' : ordersTypeFilter;
 
   const filteredAdminOrders = useMemo(() => {
@@ -3817,13 +3836,16 @@ const App: React.FC = () => {
     });
   }, [orders, adminOrderSearch, ordersStatusFilter, effectiveOrdersType]);
 
-  const effectiveMemberType: 'all' | 'retail' | 'wholesale' = moduleWorkspace === 'COOLFOOD_RETAIL' ? 'retail' : moduleWorkspace === 'WHOLESALE' ? 'wholesale' : adminMemberTypeFilter;
+  const effectiveMemberType: 'all' | 'retail' | 'wholesale' | 'pending' = moduleWorkspace === 'COOLFOOD_RETAIL' ? 'retail' : moduleWorkspace === 'WHOLESALE' ? 'wholesale' : adminMemberTypeFilter;
+
+  const pendingWholesaleCount = useMemo(() => members.filter(m => m.memberType === 'wholesale' && m.wholesaleStatus === 'pending').length, [members]);
 
   const filteredAdminMembers = useMemo(() => {
     return members.filter(m => {
       const matchesSearch = m.name.toLowerCase().includes(adminMemberSearch.toLowerCase()) || 
         (m.email?.toLowerCase() ?? '').includes(adminMemberSearch.toLowerCase()) ||
         (m.phoneNumber && m.phoneNumber.includes(adminMemberSearch));
+      if (effectiveMemberType === 'pending') return matchesSearch && m.memberType === 'wholesale' && m.wholesaleStatus === 'pending';
       const matchesType = effectiveMemberType === 'all' || (m.memberType || 'retail') === effectiveMemberType;
       return matchesSearch && matchesType;
     });
@@ -4546,8 +4568,13 @@ const App: React.FC = () => {
                   </div>
                   {!moduleWorkspace && (
                   <div className="flex gap-1">
-                    {([{ id: 'all' as const, label: '全部' }, { id: 'retail' as const, label: '零售' }, { id: 'wholesale' as const, label: '批發' }]).map(f => (
-                      <button key={f.id} onClick={() => setAdminMemberTypeFilter(f.id)} className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all ${adminMemberTypeFilter === f.id ? 'bg-slate-900 text-white shadow-lg' : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-50'}`}>{f.label}</button>
+                    {([{ id: 'all' as const, label: '全部' }, { id: 'retail' as const, label: '零售' }, { id: 'wholesale' as const, label: '批發' }, { id: 'pending' as const, label: '待審核' }]).map(f => (
+                      <button key={f.id} onClick={() => setAdminMemberTypeFilter(f.id)} className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all relative ${adminMemberTypeFilter === f.id ? (f.id === 'pending' ? 'bg-orange-500 text-white shadow-lg' : 'bg-slate-900 text-white shadow-lg') : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-50'}`}>
+                        {f.label}
+                        {f.id === 'pending' && pendingWholesaleCount > 0 && (
+                          <span className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white text-[9px] font-black rounded-full flex items-center justify-center">{pendingWholesaleCount}</span>
+                        )}
+                      </button>
                     ))}
                   </div>
                   )}
@@ -4567,9 +4594,12 @@ const App: React.FC = () => {
                             <div className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all ${m.memberType === 'wholesale' ? 'bg-orange-100 text-orange-500 group-hover:bg-orange-500 group-hover:text-white' : 'bg-slate-100 text-slate-400 group-hover:bg-blue-600 group-hover:text-white'}`}><User size={28}/></div>
                             <div>
                               <p className="font-black text-slate-900">{m.name}</p>
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
                                 <TierBadge tier={m.tier}/>
                                 <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-md ${m.memberType === 'wholesale' ? 'bg-orange-100 text-orange-600' : 'bg-blue-50 text-blue-400'}`}>{m.memberType === 'wholesale' ? `批發 ${m.wholesalePriceTier || 'P0'}` : '零售'}</span>
+                                {m.memberType === 'wholesale' && m.wholesaleStatus === 'pending' && <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-600 animate-pulse">待審核</span>}
+                                {m.memberType === 'wholesale' && m.wholesaleStatus === 'rejected' && <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-red-100 text-red-600">已拒絕</span>}
+                                {m.memberType === 'wholesale' && m.brUpdateRequired && <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-red-50 text-red-500 border border-red-200">待更新 BR</span>}
                               </div>
                             </div>
                          </div>
@@ -4579,6 +4609,7 @@ const App: React.FC = () => {
                          <div className="space-y-1"><p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">積分</p><p className="font-black text-slate-900">{m.points} pts</p></div>
                       </div>
                       <div className="space-y-2 pt-4 border-t border-slate-50">
+                         {m.companyName && <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><Package size={14} className="text-orange-400"/> {m.companyName}</div>}
                          <div className="flex items-center gap-2 text-xs font-bold text-slate-400"><Smartphone size={14}/> {m.phoneNumber ?? '—'}</div>
                          <div className="flex items-center gap-2 text-xs font-bold text-slate-400"><Mail size={14}/> {m.email ?? '—'}</div>
                       </div>
@@ -8358,6 +8389,15 @@ const App: React.FC = () => {
                                 <p className="text-[9px] text-slate-300 font-bold mt-1">決定此批發會員看到的售價等級</p>
                               </div>
                             )}
+                            {editingMember.memberType === 'wholesale' && (
+                              <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">批發審核狀態</label>
+                                <div className="flex gap-2">
+                                  {([{ id: 'pending' as const, label: '待審核', color: 'bg-amber-500' }, { id: 'approved' as const, label: '已批准', color: 'bg-emerald-500' }, { id: 'rejected' as const, label: '已拒絕', color: 'bg-red-500' }]).map(s => (
+                                    <button key={s.id} type="button" onClick={() => setEditingMember({...editingMember, wholesaleStatus: s.id})} className={`flex-1 py-2.5 rounded-2xl text-xs font-black transition-all ${editingMember.wholesaleStatus === s.id ? `${s.color} text-white shadow-lg` : 'bg-white border border-slate-100 text-slate-500'}`}>{s.label}</button>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                          </div>
                       </div>
                       <div className="space-y-6">
@@ -8370,6 +8410,75 @@ const App: React.FC = () => {
                                ))}
                             </div>
                          </div>
+                         {editingMember.memberType === 'wholesale' && (
+                           <div className="space-y-3">
+                             <div className="flex items-center gap-3 mb-2 text-orange-500 font-black uppercase tracking-widest text-xs">批發開戶資料</div>
+                             <div className="p-6 bg-orange-50 rounded-[3rem] border border-orange-100 space-y-4">
+                               {editingMember.companyName && <div><p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">餐廳/公司</p><p className="font-bold text-slate-800">{editingMember.companyName}</p></div>}
+                               {editingMember.businessType && <div><p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">業務類型</p><p className="font-bold text-slate-800">{editingMember.businessType}</p></div>}
+                               {editingMember.branchCount && <div><p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">分店數目</p><p className="font-bold text-slate-800">{editingMember.branchCount} 間</p></div>}
+                               {editingMember.storefrontPreparing && <div><span className="px-2 py-1 bg-amber-100 text-amber-700 rounded-lg text-[10px] font-black">正在籌備中</span></div>}
+
+                               <div className="pt-3 border-t border-orange-200">
+                                 <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">送貨地址（按 BR 填寫）</label>
+                                 <textarea value={editingMember.deliveryAddress || ''} onChange={e => {
+                                   const oldAddr = members.find(m => m.id === editingMember.id)?.deliveryAddress || '';
+                                   const newAddr = e.target.value;
+                                   const addrChanged = oldAddr && newAddr !== oldAddr;
+                                   setEditingMember({...editingMember, deliveryAddress: newAddr || undefined, brUpdateRequired: addrChanged ? true : editingMember.brUpdateRequired });
+                                 }} className="w-full p-3 bg-white rounded-2xl font-bold text-sm border border-slate-100 min-h-[60px] resize-none" placeholder="請根據 BR 上的地址填寫" />
+                                 {editingMember.brUpdateRequired && (
+                                   <div className="mt-2 p-2.5 bg-red-50 rounded-xl border border-red-200 flex items-center justify-between gap-2">
+                                     <p className="text-[10px] font-bold text-red-600">地址已更改 — 需客戶提交新 BR</p>
+                                     <button type="button" onClick={() => setEditingMember({...editingMember, brUpdateRequired: false})} className="px-2 py-1 bg-white border border-red-200 rounded-lg text-[9px] font-black text-red-500 hover:bg-red-50 flex-shrink-0">已收到新 BR</button>
+                                   </div>
+                                 )}
+                               </div>
+
+                               <div className="pt-3 border-t border-orange-200">
+                                 <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2">商業登記證 (BR)</p>
+                                 {editingMember.brDocUrl && (
+                                   <a href={editingMember.brDocUrl} target="_blank" rel="noopener noreferrer" className="block mb-2">
+                                     <img src={editingMember.brDocUrl} alt="BR" className="w-full max-w-xs rounded-xl border border-slate-200 hover:opacity-80 transition-opacity" />
+                                   </a>
+                                 )}
+                                 <label className={`flex items-center justify-center gap-2 w-full p-3 rounded-xl border-2 border-dashed cursor-pointer transition-colors ${editingMember.brDocUrl ? 'border-slate-200 bg-white hover:border-orange-300' : 'border-orange-300 bg-orange-50 hover:border-orange-400'}`}>
+                                   <span className="text-xs font-bold text-slate-500"><Upload size={14} className="inline mr-1" />{editingMember.brDocUrl ? '重新上傳 BR' : '上傳 BR'}</span>
+                                   <input type="file" accept="image/*" className="hidden" onChange={async e => {
+                                     const file = e.target.files?.[0];
+                                     if (!file) return;
+                                     try {
+                                       const path = `wholesale-registrations/${editingMember.id}/br-doc-${Date.now()}.webp`;
+                                       const url = await uploadImage(file, path);
+                                       if (url) { setEditingMember({...editingMember, brDocUrl: url, brUpdateRequired: false}); showToast('BR 已更新'); }
+                                     } catch { showToast('上傳失敗', 'error'); }
+                                   }} />
+                                 </label>
+                               </div>
+
+                               <div className="pt-3 border-t border-orange-200">
+                                 <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2">門口相片</p>
+                                 {editingMember.storefrontPhotoUrl && (
+                                   <a href={editingMember.storefrontPhotoUrl} target="_blank" rel="noopener noreferrer" className="block mb-2">
+                                     <img src={editingMember.storefrontPhotoUrl} alt="Storefront" className="w-full max-w-xs rounded-xl border border-slate-200 hover:opacity-80 transition-opacity" />
+                                   </a>
+                                 )}
+                                 <label className={`flex items-center justify-center gap-2 w-full p-3 rounded-xl border-2 border-dashed cursor-pointer transition-colors ${editingMember.storefrontPhotoUrl ? 'border-slate-200 bg-white hover:border-orange-300' : 'border-orange-300 bg-orange-50 hover:border-orange-400'}`}>
+                                   <span className="text-xs font-bold text-slate-500"><Upload size={14} className="inline mr-1" />{editingMember.storefrontPhotoUrl ? '重新上傳門口相片' : '上傳門口相片'}</span>
+                                   <input type="file" accept="image/*" className="hidden" onChange={async e => {
+                                     const file = e.target.files?.[0];
+                                     if (!file) return;
+                                     try {
+                                       const path = `wholesale-registrations/${editingMember.id}/storefront-${Date.now()}.webp`;
+                                       const url = await uploadImage(file, path);
+                                       if (url) { setEditingMember({...editingMember, storefrontPhotoUrl: url}); showToast('門口相片已更新'); }
+                                     } catch { showToast('上傳失敗', 'error'); }
+                                   }} />
+                                 </label>
+                               </div>
+                             </div>
+                           </div>
+                         )}
                       </div>
                    </div>
                 </div>
@@ -8813,20 +8922,24 @@ const App: React.FC = () => {
               </div>
             </section>
 
-            {/* ─── Delivery Info (Own Van) ─── */}
+            {/* ─── Delivery Info ─── */}
             <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
               <div className="px-5 pt-5 pb-3">
-                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5"><Truck size={12} /> 自家送貨</p>
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5"><Truck size={12} /> 送貨資料</p>
               </div>
               <div className="px-5 pb-5 space-y-3">
                 <div>
                   <label className="text-[10px] font-bold text-slate-500 mb-1 block">送貨地址</label>
-                  <textarea
-                    value={wholesaleDeliveryNote}
-                    onChange={e => setWholesaleDeliveryNote(e.target.value)}
-                    placeholder="請輸入送貨地址（餐廳名稱、街道、樓層等）"
-                    className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100 min-h-[80px] resize-none"
-                  />
+                  {user?.deliveryAddress ? (
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                      <p className="text-sm font-bold text-slate-800 leading-relaxed">{user.deliveryAddress}</p>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-amber-50 rounded-xl border border-amber-100">
+                      <p className="text-xs font-bold text-amber-700">送貨地址尚未設定，我們會在審核後按 BR 地址安排送貨。</p>
+                    </div>
+                  )}
+                  <p className="text-[9px] text-slate-400 font-bold mt-1.5">如需更改送貨地址，請聯絡客服。</p>
                 </div>
                 <div>
                   <label className="text-[10px] font-bold text-slate-500 mb-1 block">送貨日期</label>
@@ -8836,6 +8949,15 @@ const App: React.FC = () => {
                     onChange={e => setWholesaleDeliveryDate(e.target.value)}
                     min={new Date().toISOString().slice(0, 10)}
                     className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 mb-1 block">備註（選填）</label>
+                  <textarea
+                    value={wholesaleDeliveryNote}
+                    onChange={e => setWholesaleDeliveryNote(e.target.value)}
+                    placeholder="送貨備註（如有特別要求）"
+                    className="w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border border-slate-100 min-h-[60px] resize-none"
                   />
                 </div>
               </div>
@@ -9185,6 +9307,22 @@ const App: React.FC = () => {
           )}
         </div>
       </header>
+      {user && isWholesaleRoute && user.memberType === 'wholesale' && user.wholesaleStatus === 'pending' && (
+        <div className="bg-orange-50 border-b border-orange-200 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Clock size={16} className="text-orange-500 flex-shrink-0" />
+            <p className="text-xs font-bold text-orange-700">您的批發帳戶正在審核中，審核通過後即可下單。我們會在 1-2 個工作天內完成審核。</p>
+          </div>
+        </div>
+      )}
+      {user && isWholesaleRoute && user.memberType === 'wholesale' && user.wholesaleStatus === 'rejected' && (
+        <div className="bg-red-50 border-b border-red-200 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <X size={16} className="text-red-500 flex-shrink-0" />
+            <p className="text-xs font-bold text-red-700">您的批發帳戶申請未獲批准，如有疑問請聯絡我們。</p>
+          </div>
+        </div>
+      )}
       {hideWholesalePrice && (
         <div className="bg-amber-50 border-b border-amber-200 px-4 py-3">
           <div className="flex items-center justify-between gap-3">
@@ -9196,7 +9334,7 @@ const App: React.FC = () => {
       <div className="px-3 py-2 bg-white border-b border-slate-100">
         <div className="relative">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" />
-          <input value={storeSearch} onChange={e => setStoreSearch(e.target.value)} placeholder="搜尋產品..." className="w-full pl-9 pr-8 py-2.5 bg-slate-50 rounded-xl text-sm font-bold text-slate-800 border border-slate-100 focus:border-blue-300 focus:bg-white transition-all outline-none" />
+          <input value={storeSearch} onChange={e => setStoreSearch(e.target.value)} placeholder={storeMode === 'recipes' ? '搜尋食譜 / 食材...' : '搜尋產品...'} className="w-full pl-9 pr-8 py-2.5 bg-slate-50 rounded-xl text-sm font-bold text-slate-800 border border-slate-100 focus:border-blue-300 focus:bg-white transition-all outline-none" />
           {storeSearch && <button onClick={() => setStoreSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded-full bg-slate-200 text-slate-400 active:scale-90"><X size={12} /></button>}
         </div>
       </div>
@@ -9222,7 +9360,7 @@ const App: React.FC = () => {
             <div className="flex items-center gap-2 sticky top-0 bg-white py-2 z-10 border-b border-slate-50">
               <BookOpen size={16} className="text-amber-600" />
               <h3 className="font-bold text-slate-900 text-sm">{t.recipes.allRecipes}</h3>
-              <span className="text-[10px] text-slate-400 font-bold">({recipeCategoryFilter.length > 0 ? recipes.filter(r => recipeCategoryFilter.every(cid => r.categoryIds.includes(cid))).length : recipes.length})</span>
+              <span className="text-[10px] text-slate-400 font-bold">({filteredStoreRecipes.length})</span>
             </div>
             {/* Filter bars – row 1: cooking methods, row 2: meat types */}
             {recipeCategories.length > 0 && (
@@ -9262,11 +9400,9 @@ const App: React.FC = () => {
               </div>
             )}
             {(() => {
-              const filtered = recipeCategoryFilter.length > 0
-                ? recipes.filter(r => recipeCategoryFilter.every(cid => r.categoryIds.includes(cid)))
-                : recipes;
+              const filtered = filteredStoreRecipes;
               if (filtered.length === 0) return (
-                <div className="bg-slate-50 border border-slate-100 rounded-3xl p-8 text-center text-slate-400 font-bold">{recipeCategoryFilter.length > 0 ? '此分類暫無食譜' : t.recipes.noRecipes}</div>
+                <div className="bg-slate-50 border border-slate-100 rounded-3xl p-8 text-center text-slate-400 font-bold">{storeSearch.trim() ? '搜尋無結果' : recipeCategoryFilter.length > 0 ? '此分類暫無食譜' : t.recipes.noRecipes}</div>
               );
               return (
                 <div className="space-y-3">
@@ -9514,6 +9650,48 @@ const App: React.FC = () => {
             } catch { /* ignore */ }
             showToast('歡迎回來！');
           } catch { showToast('登入失敗，請稍後再試', 'error'); }
+        }}
+        onRegister={async (form, files) => {
+          if (!form.name.trim() || !form.phone.trim() || !form.password) { showToast('請填寫姓名、電話及密碼', 'error'); return; }
+          if (form.password.length < 6) { showToast('密碼至少 6 個字元', 'error'); return; }
+          if (!form.companyName.trim()) { showToast('請填寫餐廳/公司名稱', 'error'); return; }
+          if (!files.brDoc) { showToast('請上傳商業登記證 (BR) 副本', 'error'); return; }
+          if (!form.storefrontPreparing && !files.storefrontPhoto) { showToast('請上傳餐廳門口相片，或選擇「正在籌備中」', 'error'); return; }
+          try {
+            const timestamp = Date.now();
+            const brDocUrl = await uploadImage(files.brDoc, `wholesale-registrations/${timestamp}/br-doc.webp`);
+            let storefrontPhotoUrl: string | null = null;
+            if (files.storefrontPhoto && !form.storefrontPreparing) {
+              storefrontPhotoUrl = await uploadImage(files.storefrontPhoto, `wholesale-registrations/${timestamp}/storefront-photo.webp`);
+            }
+            const res = await fetch('/api/customer-auth', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'register',
+                name: form.name.trim(),
+                phone: form.phone.trim(),
+                password: form.password,
+                isWholesale: true,
+                companyName: form.companyName.trim(),
+                businessType: form.businessType || undefined,
+                branchCount: form.branchCount,
+                brDocUrl: brDocUrl || undefined,
+                storefrontPhotoUrl: storefrontPhotoUrl || undefined,
+                storefrontPreparing: form.storefrontPreparing || undefined,
+              }),
+            });
+            const json = await res.json();
+            if (!res.ok) { showToast(json.error || '註冊失敗', 'error'); return; }
+            const u = mapMemberRowToUser(json.user as SupabaseMemberRow);
+            setUser(u);
+            try {
+              localStorage.setItem('coolfood_member_id', u.id);
+              if (json.sessionToken) localStorage.setItem('coolfood_session_token', json.sessionToken);
+            } catch { /* ignore */ }
+            setMembers(prev => [...prev, u]);
+            showToast('註冊申請已提交，我們會盡快審核！');
+          } catch { showToast('註冊失敗，請稍後再試', 'error'); }
         }}
         onSubmitOrder={handleSubmitOrder}
         logoUrl={siteConfig.logoUrl}
@@ -9864,8 +10042,8 @@ const App: React.FC = () => {
                       ) : (
                         <form onSubmit={handleSignup} className="space-y-4">
                           <div>
-                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{t.profile.name}</label>
-                            <input value={authForm.name} onChange={e => setAuthForm({ ...authForm, name: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder={t.profile.name} required />
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{isWholesaleRoute ? '聯絡人姓名 *' : t.profile.name}</label>
+                            <input value={authForm.name} onChange={e => setAuthForm({ ...authForm, name: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder={isWholesaleRoute ? '聯絡人姓名' : t.profile.name} required />
                           </div>
                           <div>
                             <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{t.profile.phone}</label>
@@ -9885,12 +10063,30 @@ const App: React.FC = () => {
                                 <p className="text-[10px] font-black text-orange-500 uppercase tracking-widest mb-3">批發開戶資料</p>
                               </div>
                               <div>
-                                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">公司名稱 *</label>
-                                <input value={authForm.companyName} onChange={e => setAuthForm({ ...authForm, companyName: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder="貴公司名稱" required />
+                                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">餐廳 / 公司名稱 *</label>
+                                <input value={authForm.companyName} onChange={e => setAuthForm({ ...authForm, companyName: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder="貴餐廳或公司名稱" required />
                               </div>
                               <div>
-                                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">商業登記證號碼 (BR) *</label>
-                                <input value={authForm.brNumber} onChange={e => setAuthForm({ ...authForm, brNumber: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder="如：12345678-000-00-00-0" required />
+                                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">業務類型</label>
+                                <select value={authForm.businessType} onChange={e => setAuthForm({ ...authForm, businessType: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100">
+                                  <option value="">請選擇</option>
+                                  <option value="餐廳">餐廳</option>
+                                  <option value="茶餐廳/冰室">茶餐廳 / 冰室</option>
+                                  <option value="酒樓">酒樓</option>
+                                  <option value="咖啡店/甜品店">咖啡店 / 甜品店</option>
+                                  <option value="外賣店">外賣店</option>
+                                  <option value="食品加工/中央廚房">食品加工 / 中央廚房</option>
+                                  <option value="其他">其他</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">分店數目</label>
+                                <select value={authForm.branchCount} onChange={e => setAuthForm({ ...authForm, branchCount: e.target.value })} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100">
+                                  <option value="1">1 間</option>
+                                  <option value="2-3">2–3 間</option>
+                                  <option value="4-10">4–10 間</option>
+                                  <option value="10+">10 間以上</option>
+                                </select>
                               </div>
                               <div>
                                 <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">上傳商業登記證 (BR) 副本 *</label>
@@ -9904,18 +10100,27 @@ const App: React.FC = () => {
                                 </label>
                               </div>
                               <div>
-                                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">餐廳門口相片 *</label>
+                                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">門口 / 招牌相片 {authForm.storefrontPreparing ? '' : '*'}</label>
                                 <p className="text-[9px] text-slate-400 mb-2">用於核實經營地址，請拍攝清晰的門口招牌相片</p>
-                                <label className={`flex items-center justify-center gap-2 w-full p-4 rounded-2xl border-2 border-dashed cursor-pointer transition-colors ${wholesaleRegFiles.storefrontPhoto ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-slate-50 hover:border-orange-300'}`}>
-                                  {wholesaleRegFiles.storefrontPhoto ? (
-                                    <span className="text-xs font-bold text-emerald-600">✓ {wholesaleRegFiles.storefrontPhoto.name}</span>
-                                  ) : (
-                                    <span className="text-xs font-bold text-slate-400">點擊上傳餐廳門口相片</span>
-                                  )}
-                                  <input type="file" accept="image/*" className="hidden" onChange={e => { if (e.target.files?.[0]) setWholesaleRegFiles(prev => ({ ...prev, storefrontPhoto: e.target.files![0] })); }} />
+                                {!authForm.storefrontPreparing && (
+                                  <label className={`flex items-center justify-center gap-2 w-full p-4 rounded-2xl border-2 border-dashed cursor-pointer transition-colors ${wholesaleRegFiles.storefrontPhoto ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-slate-50 hover:border-orange-300'}`}>
+                                    {wholesaleRegFiles.storefrontPhoto ? (
+                                      <span className="text-xs font-bold text-emerald-600">✓ {wholesaleRegFiles.storefrontPhoto.name}</span>
+                                    ) : (
+                                      <span className="text-xs font-bold text-slate-400">點擊上傳餐廳門口相片</span>
+                                    )}
+                                    <input type="file" accept="image/*" className="hidden" onChange={e => { if (e.target.files?.[0]) setWholesaleRegFiles(prev => ({ ...prev, storefrontPhoto: e.target.files![0] })); }} />
+                                  </label>
+                                )}
+                                <label className="flex items-center gap-2 mt-2 cursor-pointer">
+                                  <input type="checkbox" checked={authForm.storefrontPreparing} onChange={e => setAuthForm({ ...authForm, storefrontPreparing: e.target.checked })} className="w-4 h-4 rounded border-slate-300 text-orange-500 focus:ring-orange-400" />
+                                  <span className="text-xs font-bold text-slate-500">正在籌備中（暫未有門口相片）</span>
                                 </label>
                               </div>
-                              <p className="text-[9px] text-slate-400 text-center">提交後，我們會在 1-2 個工作天內審核您的申請。</p>
+                              <div className="bg-slate-50 rounded-xl p-3 space-y-1">
+                                <p className="text-[9px] text-slate-500 text-center font-bold">送貨地址將按商業登記證上的地址安排，無需另外填寫。</p>
+                                <p className="text-[9px] text-slate-400 text-center">提交後，我們會在 1-2 個工作天內審核您的申請，届時會以電話通知。</p>
+                              </div>
                             </>
                           )}
                           <button type="submit" disabled={wholesaleRegUploading} className="w-full py-3 bg-slate-900 text-white rounded-2xl font-black text-sm disabled:opacity-50">
@@ -9942,6 +10147,22 @@ const App: React.FC = () => {
                    <div className="absolute -bottom-10 -right-10 opacity-10 group-hover:rotate-12 transition-transform duration-1000"><ShoppingBag size={200}/></div>
                 </div>
                 <div className="space-y-3">
+                  {isWholesaleRoute ? (
+                    <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden p-6 space-y-3">
+                      <div className="flex items-center gap-3"><MapPin size={20} className="text-orange-500"/><span className="font-bold text-slate-700">送貨地址</span></div>
+                      {user.deliveryAddress ? (
+                        <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                          <p className="text-sm font-bold text-slate-800 leading-relaxed">{user.deliveryAddress}</p>
+                        </div>
+                      ) : (
+                        <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100">
+                          <p className="text-xs font-bold text-amber-700">送貨地址尚未設定，我們會在審核後按 BR 地址安排。</p>
+                        </div>
+                      )}
+                      <p className="text-[9px] text-slate-400 font-bold">如需更改送貨地址，請聯絡客服。</p>
+                      {user.companyName && <div className="pt-2 border-t border-slate-100"><p className="text-[10px] text-slate-400 font-bold">公司：{user.companyName}</p></div>}
+                    </div>
+                  ) : (
                   <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden transition-all">
                     <button onClick={() => setShowAddressDropdown(!showAddressDropdown)} className="w-full flex justify-between items-center p-6 font-bold text-slate-700 hover:bg-slate-50 transition-colors">
                       <div className="flex items-center gap-3"><MapPin size={20} className="text-blue-500"/> {t.profile.addresses}</div>
@@ -9965,6 +10186,7 @@ const App: React.FC = () => {
                       </div>
                     )}
                   </div>
+                  )}
                   {/* Admin access: navigate to yoursite.com/#admin */}
                 </div>
                 <button onClick={() => { setUser(null); try { localStorage.removeItem('coolfood_member_id'); localStorage.removeItem('coolfood_session_token'); } catch { /* ignore */ } setView('store'); showToast(t.profile.loggedOut); }} className="w-full py-5 bg-white text-rose-500 rounded-[2rem] font-black border border-rose-50 shadow-sm active:scale-95 transition-all hover:bg-rose-50">{t.profile.logout}</button>

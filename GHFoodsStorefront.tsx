@@ -1,7 +1,17 @@
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
-import { Search, ShoppingCart, X, Plus, Minus, Trash2, ChevronDown, Send, LogOut, Phone, Truck, Clock, DollarSign, Package, User, Coins, ChevronRight, Check, Scissors } from 'lucide-react';
+import { Search, ShoppingCart, X, Plus, Minus, Trash2, ChevronDown, Send, LogOut, Phone, Truck, Clock, DollarSign, Package, User, Coins, ChevronRight, Check, Scissors, Upload } from 'lucide-react';
 import type { Product, CartItem, User as UserType, Category, Order, OrderStatus, OrderLineItem, Ingredient, CostItem, WholesalePricingRules, ProcessingType, ProductGroup } from './types';
+
+interface WholesaleRegForm {
+  name: string;
+  phone: string;
+  password: string;
+  companyName: string;
+  businessType: string;
+  branchCount: string;
+  storefrontPreparing: boolean;
+}
 
 interface GHFoodsStorefrontProps {
   products: Product[];
@@ -16,6 +26,7 @@ interface GHFoodsStorefrontProps {
   wholesalePriceOverrides: Record<string, number>;
   getPrice: (p: Product, qty?: number) => number;
   onLogin: (form: { email: string; password: string }) => void | Promise<void>;
+  onRegister?: (form: WholesaleRegForm, files: { brDoc: File | null; storefrontPhoto: File | null }) => void | Promise<void>;
   onSubmitOrder: () => void;
   logoUrl?: string;
   logoIcon: string;
@@ -30,7 +41,7 @@ type GHView = 'order' | 'cart' | 'history' | 'login';
 const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
   products, categories, cart, setCart, user, orders,
   ingredients, costItems, wholesaleRules, wholesalePriceOverrides,
-  getPrice, onLogin, onSubmitOrder, logoUrl, logoIcon, logoText,
+  getPrice, onLogin, onRegister, onSubmitOrder, logoUrl, logoIcon, logoText,
   processingTypes = [],
   productGroups = [],
   inventoryEnforcementEnabled = false,
@@ -39,6 +50,10 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
   const [search, setSearch] = useState('');
   const [activeCat, setActiveCat] = useState<string | null>(null);
   const [authForm, setAuthForm] = useState({ email: '', password: '' });
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [signupForm, setSignupForm] = useState<WholesaleRegForm>({ name: '', phone: '', password: '', companyName: '', businessType: '', branchCount: '1', storefrontPreparing: false });
+  const [regFiles, setRegFiles] = useState<{ brDoc: File | null; storefrontPhoto: File | null }>({ brDoc: null, storefrontPhoto: null });
+  const [regUploading, setRegUploading] = useState(false);
   const [deliveryNote, setDeliveryNote] = useState('');
   const [deliveryDate, setDeliveryDate] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<'fps' | 'cod'>('cod');
@@ -154,7 +169,25 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
     setTimeout(() => setShowOrderSuccess(false), 3000);
   };
 
-  // ── Login Screen ──
+  const handleSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!signupForm.name.trim() || !signupForm.phone.trim() || !signupForm.password) return;
+    if (signupForm.password.length < 6) return;
+    if (!signupForm.companyName.trim()) return;
+    if (!regFiles.brDoc) return;
+    if (!signupForm.storefrontPreparing && !regFiles.storefrontPhoto) return;
+    if (!onRegister) return;
+    setRegUploading(true);
+    try {
+      await onRegister(signupForm, regFiles);
+      setSignupForm({ name: '', phone: '', password: '', companyName: '', businessType: '', branchCount: '1', storefrontPreparing: false });
+      setRegFiles({ brDoc: null, storefrontPhoto: null });
+    } finally {
+      setRegUploading(false);
+    }
+  };
+
+  // ── Login / Signup Screen ──
   if (view === 'login') {
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
@@ -166,34 +199,107 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
             <h1 className="text-2xl font-black text-slate-900">{logoText}</h1>
             <p className="text-sm text-slate-500 mt-1">批發訂貨系統</p>
           </div>
-          <form onSubmit={handleLogin} className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-500 mb-1.5">電話 / 帳號</label>
-              <input
-                type="text"
-                value={authForm.email}
-                onChange={e => setAuthForm(f => ({ ...f, email: e.target.value }))}
-                className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:border-amber-400 focus:ring-1 focus:ring-amber-400 outline-none"
-                placeholder="輸入電話號碼"
-                required
-              />
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+            <div className="flex border-b border-slate-200">
+              <button type="button" onClick={() => setAuthMode('login')} className={`flex-1 py-3 font-bold text-sm transition-colors ${authMode === 'login' ? 'text-amber-700 border-b-2 border-amber-600 bg-amber-50/30' : 'text-slate-400'}`}>登入</button>
+              <button type="button" onClick={() => setAuthMode('signup')} className={`flex-1 py-3 font-bold text-sm transition-colors ${authMode === 'signup' ? 'text-amber-700 border-b-2 border-amber-600 bg-amber-50/30' : 'text-slate-400'}`}>開戶申請</button>
             </div>
-            <div>
-              <label className="block text-xs font-bold text-slate-500 mb-1.5">密碼</label>
-              <input
-                type="password"
-                value={authForm.password}
-                onChange={e => setAuthForm(f => ({ ...f, password: e.target.value }))}
-                className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:border-amber-400 focus:ring-1 focus:ring-amber-400 outline-none"
-                placeholder="密碼"
-                required
-              />
+            <div className="p-6">
+              {authMode === 'login' ? (
+                <form onSubmit={handleLogin} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 mb-1.5">電話 / 帳號</label>
+                    <input type="text" value={authForm.email} onChange={e => setAuthForm(f => ({ ...f, email: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:border-amber-400 focus:ring-1 focus:ring-amber-400 outline-none" placeholder="輸入電話號碼" required />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 mb-1.5">密碼</label>
+                    <input type="password" value={authForm.password} onChange={e => setAuthForm(f => ({ ...f, password: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:border-amber-400 focus:ring-1 focus:ring-amber-400 outline-none" placeholder="密碼" required />
+                  </div>
+                  <button type="submit" className="w-full py-3 bg-amber-600 text-white rounded-lg font-bold text-sm hover:bg-amber-700 transition-colors">登入</button>
+                </form>
+              ) : (
+                <form onSubmit={handleSignup} className="space-y-3">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">聯絡人姓名 *</label>
+                    <input value={signupForm.name} onChange={e => setSignupForm(f => ({ ...f, name: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:border-amber-400 outline-none" placeholder="聯絡人姓名" required />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">電話號碼 *</label>
+                    <input type="tel" value={signupForm.phone} onChange={e => setSignupForm(f => ({ ...f, phone: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:border-amber-400 outline-none" placeholder="電話號碼" required />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">密碼（最少 6 位）*</label>
+                    <input type="password" value={signupForm.password} onChange={e => setSignupForm(f => ({ ...f, password: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:border-amber-400 outline-none" placeholder="密碼" minLength={6} required />
+                  </div>
+                  <div className="pt-2 border-t border-slate-100">
+                    <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest mb-3">批發開戶資料</p>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">餐廳 / 公司名稱 *</label>
+                    <input value={signupForm.companyName} onChange={e => setSignupForm(f => ({ ...f, companyName: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:border-amber-400 outline-none" placeholder="貴餐廳或公司名稱" required />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">業務類型</label>
+                    <select value={signupForm.businessType} onChange={e => setSignupForm(f => ({ ...f, businessType: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:border-amber-400 outline-none">
+                      <option value="">請選擇</option>
+                      <option value="餐廳">餐廳</option>
+                      <option value="茶餐廳/冰室">茶餐廳 / 冰室</option>
+                      <option value="酒樓">酒樓</option>
+                      <option value="咖啡店/甜品店">咖啡店 / 甜品店</option>
+                      <option value="外賣店">外賣店</option>
+                      <option value="食品加工/中央廚房">食品加工 / 中央廚房</option>
+                      <option value="其他">其他</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">分店數目</label>
+                    <select value={signupForm.branchCount} onChange={e => setSignupForm(f => ({ ...f, branchCount: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:border-amber-400 outline-none">
+                      <option value="1">1 間</option>
+                      <option value="2-3">2–3 間</option>
+                      <option value="4-10">4–10 間</option>
+                      <option value="10+">10 間以上</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">上傳商業登記證 (BR) 副本 *</label>
+                    <label className={`flex items-center justify-center gap-2 w-full p-3 rounded-lg border-2 border-dashed cursor-pointer transition-colors ${regFiles.brDoc ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-slate-50 hover:border-amber-300'}`}>
+                      {regFiles.brDoc ? (
+                        <span className="text-xs font-bold text-emerald-600">✓ {regFiles.brDoc.name}</span>
+                      ) : (
+                        <span className="text-xs font-bold text-slate-400"><Upload size={14} className="inline mr-1" />點擊上傳 BR 圖片</span>
+                      )}
+                      <input type="file" accept="image/*" className="hidden" onChange={e => { if (e.target.files?.[0]) setRegFiles(prev => ({ ...prev, brDoc: e.target.files![0] })); }} />
+                    </label>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">門口 / 招牌相片 {signupForm.storefrontPreparing ? '' : '*'}</label>
+                    <p className="text-[9px] text-slate-400 mb-1.5">用於核實經營地址，請拍攝清晰的門口招牌相片</p>
+                    {!signupForm.storefrontPreparing && (
+                      <label className={`flex items-center justify-center gap-2 w-full p-3 rounded-lg border-2 border-dashed cursor-pointer transition-colors ${regFiles.storefrontPhoto ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-slate-50 hover:border-amber-300'}`}>
+                        {regFiles.storefrontPhoto ? (
+                          <span className="text-xs font-bold text-emerald-600">✓ {regFiles.storefrontPhoto.name}</span>
+                        ) : (
+                          <span className="text-xs font-bold text-slate-400"><Upload size={14} className="inline mr-1" />點擊上傳餐廳門口相片</span>
+                        )}
+                        <input type="file" accept="image/*" className="hidden" onChange={e => { if (e.target.files?.[0]) setRegFiles(prev => ({ ...prev, storefrontPhoto: e.target.files![0] })); }} />
+                      </label>
+                    )}
+                    <label className="flex items-center gap-2 mt-1.5 cursor-pointer">
+                      <input type="checkbox" checked={signupForm.storefrontPreparing} onChange={e => setSignupForm(f => ({ ...f, storefrontPreparing: e.target.checked }))} className="w-4 h-4 rounded border-slate-300 text-amber-500 focus:ring-amber-400" />
+                      <span className="text-xs font-bold text-slate-500">正在籌備中（暫未有門口相片）</span>
+                    </label>
+                  </div>
+                  <button type="submit" disabled={regUploading} className="w-full py-3 bg-amber-600 text-white rounded-lg font-bold text-sm hover:bg-amber-700 transition-colors disabled:opacity-50">
+                    {regUploading ? '提交中...' : '提交批發開戶申請'}
+                  </button>
+                  <div className="bg-slate-50 rounded-lg p-2.5 space-y-1">
+                    <p className="text-[9px] text-slate-500 text-center font-bold">送貨地址將按商業登記證上的地址安排，無需另外填寫。</p>
+                    <p className="text-[9px] text-slate-400 text-center">提交後，我們會在 1-2 個工作天內審核您的申請，届時會以電話通知。</p>
+                  </div>
+                </form>
+              )}
             </div>
-            <button type="submit" className="w-full py-3 bg-amber-600 text-white rounded-lg font-bold text-sm hover:bg-amber-700 transition-colors">
-              登入
-            </button>
-            <p className="text-center text-xs text-slate-400">如需開戶，請聯絡業務員</p>
-          </form>
+          </div>
           <button onClick={() => setView('order')} className="w-full mt-4 py-2.5 text-slate-500 text-xs font-bold hover:text-amber-600 transition-colors">
             ← 先瀏覽產品目錄
           </button>
@@ -301,6 +407,24 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
             <button onClick={() => setView('login')} className="px-4 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-bold hover:bg-amber-700 transition-colors flex-shrink-0">
               立即登入
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Pending Approval Banner ── */}
+      {user && user.wholesaleStatus === 'pending' && view === 'order' && (
+        <div className="bg-orange-50 border-b border-orange-200 px-4 py-3">
+          <div className="max-w-7xl mx-auto flex items-center gap-2">
+            <Clock size={16} className="text-orange-500 flex-shrink-0" />
+            <p className="text-xs font-bold text-orange-700">您的批發帳戶正在審核中，審核通過後即可下單。我們會在 1-2 個工作天內完成審核。</p>
+          </div>
+        </div>
+      )}
+      {user && user.wholesaleStatus === 'rejected' && view === 'order' && (
+        <div className="bg-red-50 border-b border-red-200 px-4 py-3">
+          <div className="max-w-7xl mx-auto flex items-center gap-2">
+            <X size={16} className="text-red-500 flex-shrink-0" />
+            <p className="text-xs font-bold text-red-700">您的批發帳戶申請未獲批准，如有疑問請聯絡我們。</p>
           </div>
         </div>
       )}
@@ -648,12 +772,25 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                   <Truck size={14} /> 送貨資料
                 </h3>
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1">送貨地址 / 備註</label>
+                  <label className="block text-xs font-bold text-slate-500 mb-1">送貨地址</label>
+                  {user?.deliveryAddress ? (
+                    <div className="px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg">
+                      <p className="text-sm font-bold text-slate-800 leading-relaxed">{user.deliveryAddress}</p>
+                    </div>
+                  ) : (
+                    <div className="px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-lg">
+                      <p className="text-xs font-bold text-amber-700">送貨地址尚未設定，我們會在審核後按 BR 地址安排送貨。</p>
+                    </div>
+                  )}
+                  <p className="text-[9px] text-slate-400 font-bold mt-1">如需更改送貨地址，請聯絡客服。</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1">備註（選填）</label>
                   <textarea
                     value={deliveryNote}
                     onChange={e => setDeliveryNote(e.target.value)}
-                    placeholder="餐廳名稱、街道、樓層等"
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm resize-none min-h-[60px] focus:border-amber-400 outline-none"
+                    placeholder="送貨備註（如有特別要求）"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm resize-none min-h-[50px] focus:border-amber-400 outline-none"
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-3">

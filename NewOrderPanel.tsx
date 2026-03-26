@@ -763,7 +763,6 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
       wholesale_brand: wholesaleBrand,
       wholesale_client_id: selectedClient.id,
       route_id: selectedClient.routeId,
-      client_code: selectedClient.clientCode || null,
       payment_method: 'credit',
     };
 

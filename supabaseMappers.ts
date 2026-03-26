@@ -240,6 +240,15 @@ export const mapMemberRowToUser = (row: SupabaseMemberRow): User => ({
   role: row.role,
   memberType: (row.member_type === 'wholesale' ? 'wholesale' : 'retail') as MemberType,
   wholesalePriceTier: row.wholesale_price_tier ?? undefined,
+  wholesaleStatus: (['pending', 'approved', 'rejected'].includes(row.wholesale_status ?? '') ? row.wholesale_status as 'pending' | 'approved' | 'rejected' : undefined),
+  companyName: row.company_name ?? undefined,
+  businessType: row.business_type ?? undefined,
+  branchCount: row.branch_count ?? undefined,
+  brDocUrl: row.br_doc_url ?? undefined,
+  storefrontPhotoUrl: row.storefront_photo_url ?? undefined,
+  storefrontPreparing: row.storefront_preparing ?? undefined,
+  deliveryAddress: row.delivery_address ?? undefined,
+  brUpdateRequired: row.br_update_required ?? undefined,
   addresses: row.addresses ?? undefined
 });
 
@@ -254,6 +263,15 @@ export const mapUserToMemberRow = (user: User, passwordHash?: string | null): Su
     role: user.role,
     member_type: user.memberType || 'retail',
     wholesale_price_tier: user.memberType === 'wholesale' ? (user.wholesalePriceTier || 'P0') : null,
+    wholesale_status: user.wholesaleStatus ?? null,
+    company_name: user.companyName ?? null,
+    business_type: user.businessType ?? null,
+    branch_count: user.branchCount ?? null,
+    br_doc_url: user.brDocUrl ?? null,
+    storefront_photo_url: user.storefrontPhotoUrl ?? null,
+    storefront_preparing: user.storefrontPreparing ?? null,
+    delivery_address: user.deliveryAddress ?? null,
+    br_update_required: user.brUpdateRequired ?? null,
     addresses: user.addresses ?? null
   };
   if (passwordHash !== undefined) row.password_hash = passwordHash;

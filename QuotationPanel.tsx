@@ -159,7 +159,6 @@ const QuotationPanel: React.FC<Props> = ({ showToast }) => {
       order_type: 'wholesale',
       wholesale_brand: quote.brand,
       wholesale_client_id: quote.clientId,
-      client_code: quote.clientCode,
       payment_method: 'credit',
     };
 

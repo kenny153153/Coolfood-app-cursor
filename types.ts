@@ -292,6 +292,8 @@ export interface UserAddress {
 
 export type MemberType = 'retail' | 'wholesale';
 
+export type WholesaleStatus = 'pending' | 'approved' | 'rejected';
+
 export interface User {
   id: string;
   name: string;
@@ -302,6 +304,15 @@ export interface User {
   role: string;
   memberType: MemberType;                // 零售 / 批發
   wholesalePriceTier?: string;           // 批發 P 等級（如 'P0', 'P3'）— 僅批發會員適用
+  wholesaleStatus?: WholesaleStatus;     // 批發審核狀態
+  companyName?: string;
+  businessType?: string;
+  branchCount?: string;
+  brDocUrl?: string;
+  storefrontPhotoUrl?: string;
+  storefrontPreparing?: boolean;
+  deliveryAddress?: string;
+  brUpdateRequired?: boolean;
   addresses?: UserAddress[];
 }
 
@@ -371,7 +382,6 @@ export interface SupabaseOrderRow {
   wholesale_brand?: string | null;
   wholesale_client_id?: string | null;
   route_id?: string | null;
-  client_code?: string | null;
 }
 
 /** Supabase public.products table – column names must match (snake_case). */
@@ -438,6 +448,15 @@ export interface SupabaseMemberRow {
   admin_permissions?: Record<string, boolean | ModulePermission> | null;
   member_type?: string | null;            // 'retail' | 'wholesale'
   wholesale_price_tier?: string | null;   // e.g. 'P0', 'P3'
+  wholesale_status?: string | null;       // 'pending' | 'approved' | 'rejected'
+  company_name?: string | null;
+  business_type?: string | null;
+  branch_count?: string | null;
+  br_doc_url?: string | null;
+  storefront_photo_url?: string | null;
+  storefront_preparing?: boolean | null;
+  delivery_address?: string | null;
+  br_update_required?: boolean | null;
   addresses?: UserAddress[] | null;
   security_level?: number | null;         // hierarchy: higher sees lower staff (min 1)
   must_change_password?: boolean | null;  // force password change on next login
