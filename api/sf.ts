@@ -99,12 +99,18 @@ async function handleLabel(req: any, res: any) {
   }
 
   const supabaseUrl = (process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? '').trim();
-  const supabaseKey = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.VITE_SUPABASE_ANON_KEY ?? '').trim();
+  const supabaseKey = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? '').trim();
+  if (!supabaseKey) {
+    return res.status(500).json({ error: 'SUPABASE_SERVICE_ROLE_KEY not configured', code: 'CONFIG_MISSING' });
+  }
 
   const senderName = (process.env.SF_SENDER_NAME ?? '寄件人').trim();
   const senderPhone = (process.env.SF_SENDER_PHONE ?? '').trim();
   const senderAddress = (process.env.SF_SENDER_ADDRESS ?? '').trim();
   const monthlyCard = (process.env.SF_MONTHLY_CARD ?? process.env.SF_PARTNER_ID ?? '').trim();
+  if (!monthlyCard) {
+    return res.status(500).json({ error: 'SF_MONTHLY_CARD not configured', code: 'CONFIG_MISSING' });
+  }
   const coldExpressType = Number(process.env.SF_COLD_EXPRESS_TYPE ?? '21') || 21;
 
   if (orderId) {
@@ -137,7 +143,7 @@ async function handleLabel(req: any, res: any) {
     const msgDataObj = {
       orderId: orderRow.id?.toString?.() ?? orderId,
       language: 'Zh-CN',
-      monthlyCard: monthlyCard || '7551234567',
+      monthlyCard,
       expressType: coldExpressType,
       isGenBillNo: 1,
       isGenEletricPic: 1,
@@ -247,7 +253,7 @@ type SfOrderPayload = {
 const COLD_CHAIN_EXPRESS_TYPE = Number(process.env.SF_COLD_EXPRESS_TYPE ?? '21') || 21;
 
 function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: string; address: string }) {
-  const monthlyCard = (process.env.SF_MONTHLY_CARD ?? process.env.SF_PARTNER_ID ?? '').trim() || '7551234567';
+  const monthlyCard = (process.env.SF_MONTHLY_CARD ?? process.env.SF_PARTNER_ID ?? '').trim();
   const addr = [
     payload.delivery_district,
     payload.delivery_address,
@@ -340,7 +346,7 @@ async function handleOrder(req: any, res: any) {
 
   let payload: SfOrderPayload = body;
   const supabaseUrl = (process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? '').trim();
-  const supabaseKey = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.VITE_SUPABASE_ANON_KEY ?? '').trim();
+  const supabaseKey = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? '').trim();
 
   if (supabaseUrl && supabaseKey && (!body.customer_name || !body.delivery_address)) {
     try {

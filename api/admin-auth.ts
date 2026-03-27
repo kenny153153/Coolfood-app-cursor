@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { checkRateLimit, getClientIp } from './_rateLimit.js';
 
 const BCRYPT_ROUNDS = 12;
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 type Req = {
   method?: string;
@@ -29,10 +30,12 @@ function sha256(input: string): string {
 }
 
 function timingSafeCompare(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
+  if (a.length !== b.length) {
+    const dummy = Buffer.alloc(32);
+    timingSafeEqual(dummy, dummy);
+    return false;
+  }
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
 async function verifyPasswordServer(plain: string, storedHash: string | null): Promise<boolean> {
@@ -83,11 +86,16 @@ async function handleLogin(req: Req, res: Res) {
   if (!cfg) return res.status(500).json({ error: '伺服器配置錯誤', code: 'SERVER_CONFIG' });
 
   try {
-    const baseCols = 'id,name,phone_number,email,role,admin_permissions,password_hash';
     const memberRes = await fetch(
-      `${cfg.supabaseUrl}/rest/v1/members?phone_number=eq.${encodeURIComponent(parsed.data.phone)}&role=neq.customer&select=${baseCols}`,
+      `${cfg.supabaseUrl}/rest/v1/members?phone_number=eq.${encodeURIComponent(parsed.data.phone)}&role=neq.customer&select=*`,
       { headers: supaHeaders(cfg.serviceRoleKey) }
     );
+
+    if (!memberRes.ok) {
+      console.error('[admin-auth/login] Supabase query failed:', memberRes.status, await memberRes.text());
+      return res.status(500).json({ error: '伺服器錯誤', code: 'QUERY_FAILED' });
+    }
+
     const members = await memberRes.json();
     const member = Array.isArray(members) ? members[0] : null;
 
@@ -121,6 +129,7 @@ async function handleLogin(req: Req, res: Res) {
         mustChangePassword: false,
       },
       sessionToken,
+      issuedAt: Date.now(),
     });
   } catch (e: any) {
     console.error('[admin-auth/login] Error:', e?.message);
@@ -133,20 +142,30 @@ async function handleLogin(req: Req, res: Res) {
 async function handleSession(req: Req, res: Res) {
   const adminId = safeTrim(req.body?.adminId);
   const sessionToken = safeTrim(req.body?.sessionToken);
+  const issuedAt = Number(req.body?.issuedAt) || 0;
 
   if (!adminId || !sessionToken) {
     return res.status(401).json({ error: '無效的登入狀態', code: 'MISSING_SESSION' });
+  }
+
+  if (issuedAt && (Date.now() - issuedAt) > SESSION_MAX_AGE_MS) {
+    return res.status(401).json({ error: '登入已過期，請重新登入', code: 'SESSION_EXPIRED' });
   }
 
   const cfg = getSupabaseConfig();
   if (!cfg) return res.status(500).json({ error: '伺服器配置錯誤', code: 'SERVER_CONFIG' });
 
   try {
-    const baseCols = 'id,name,phone_number,role,admin_permissions,password_hash';
     const memberRes = await fetch(
-      `${cfg.supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(adminId)}&role=neq.customer&select=${baseCols}`,
+      `${cfg.supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(adminId)}&role=neq.customer&select=*`,
       { headers: supaHeaders(cfg.serviceRoleKey) }
     );
+
+    if (!memberRes.ok) {
+      console.error('[admin-auth/session] Supabase query failed:', memberRes.status, await memberRes.text());
+      return res.status(500).json({ error: '伺服器錯誤', code: 'QUERY_FAILED' });
+    }
+
     const members = await memberRes.json();
     const member = Array.isArray(members) ? members[0] : null;
 
@@ -193,9 +212,15 @@ async function handleChangePassword(req: Req, res: Res) {
 
   try {
     const memberRes = await fetch(
-      `${cfg.supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(adminId)}&role=neq.customer&select=id,password_hash`,
+      `${cfg.supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(adminId)}&role=neq.customer&select=id,role,password_hash`,
       { headers: supaHeaders(cfg.serviceRoleKey) }
     );
+
+    if (!memberRes.ok) {
+      console.error('[admin-auth/change-password] Supabase query failed:', memberRes.status, await memberRes.text());
+      return res.status(500).json({ error: '伺服器錯誤', code: 'QUERY_FAILED' });
+    }
+
     const members = await memberRes.json();
     const member = Array.isArray(members) ? members[0] : null;
 

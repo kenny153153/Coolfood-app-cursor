@@ -1,3 +1,5 @@
+-- ⚠️ DEV / DEMO ONLY — do NOT run against production!
+-- Contains test accounts with known password hashes.
 -- Run in Supabase SQL Editor after creating tables.
 
 -- Categories
@@ -21,8 +23,8 @@ VALUES
   ('P-006', '日式炸雞塊', '["snacks"]', 52, 45, 35, true, '["小食"]', '🍗', '外脆內嫩，方便加熱。', '日本', '250g')
 ON CONFLICT (id) DO NOTHING;
 
--- Members (test login: chris@example.com / password123)
--- password_hash = SHA-256 hex of "password123"
+-- Members (test login: chris@example.com)
+-- password_hash = SHA-256 hex of test password
 INSERT INTO public.members (id, name, email, password_hash, phone_number, points, wallet_balance, tier, role, addresses)
 VALUES
   ('u1', 'Chris Wong', 'chris@example.com', '6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090', '98765432', 450, 1000, 'Gold', 'customer',
@@ -32,6 +34,6 @@ VALUES
   ('admin1', 'Admin', 'admin@fridge-link.hk', '6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090', '00000000', 0, 0, 'Gold', 'admin', NULL)
 ON CONFLICT (id) DO NOTHING;
 
--- Set test password for existing members (password: password123)
+-- Set test password for existing members
 UPDATE public.members SET password_hash = '6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090'
 WHERE email IN ('chris@example.com', 'taiman@gmail.com', 'siuming@outlook.com', 'admin@fridge-link.hk');

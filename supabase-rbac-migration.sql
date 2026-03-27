@@ -111,7 +111,6 @@ ON CONFLICT (id) DO UPDATE SET
 
 -- ═══════════════════════════════════════════════════════════════
 -- 3. Ensure super admin member exists (96988711)
---    Password: Coolfood2024!
 -- ═══════════════════════════════════════════════════════════════
 
 INSERT INTO public.members (id, name, phone_number, password_hash, role, admin_permissions, points, wallet_balance, tier)

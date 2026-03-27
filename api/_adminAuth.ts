@@ -33,17 +33,23 @@ function sha256(input: string): string {
 }
 
 function timingSafeCompare(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
+  if (a.length !== b.length) {
+    const dummy = Buffer.alloc(32);
+    timingSafeEqual(dummy, dummy);
+    return false;
+  }
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
 function isInternalCall(req: { headers?: Record<string, string | string[] | undefined> }): boolean {
   const secret = safeTrim(req.headers?.['x-internal-secret'] as string);
-  const serviceRoleKey = safeTrim(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '');
-  if (!secret || !serviceRoleKey) return false;
-  return timingSafeCompare(secret, serviceRoleKey);
+  if (!secret) return false;
+  const internalKey = safeTrim(process.env.INTERNAL_API_SECRET ?? '');
+  if (!internalKey) {
+    console.error('[_adminAuth] INTERNAL_API_SECRET not set — internal calls will be rejected');
+    return false;
+  }
+  return timingSafeCompare(secret, internalKey);
 }
 
 /** Normalize legacy boolean or new CRUD permission value */
@@ -94,6 +100,12 @@ export async function verifyAdminRequest(
       `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(adminId)}&role=neq.customer&select=${selectCols}`,
       { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
     );
+
+    if (!res.ok) {
+      console.error('[_adminAuth] Supabase query failed:', res.status, await res.text());
+      return { ok: false, status: 500, error: '驗證失敗' };
+    }
+
     const data = await res.json();
     const admin = Array.isArray(data) ? data[0] : null;
 

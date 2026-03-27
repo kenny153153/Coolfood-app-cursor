@@ -13,10 +13,12 @@ const safeTrim = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
 function verifySession(token: string, memberId: string, passwordHash: string | null): boolean {
   const raw = `session:${memberId}:${passwordHash ?? ''}`;
   const expected = createHash('sha256').update(raw).digest('hex');
-  const bufA = Buffer.from(token);
-  const bufB = Buffer.from(expected);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
+  if (token.length !== expected.length) {
+    const dummy = Buffer.alloc(32);
+    timingSafeEqual(dummy, dummy);
+    return false;
+  }
+  return timingSafeEqual(Buffer.from(token), Buffer.from(expected));
 }
 
 const customerApiSchema = z.object({

@@ -1,7 +1,11 @@
 /**
  * Coupon API — POST /api/coupon-api
  * Actions: redeem-points (customer redeems points for a coupon)
+ *
+ * Security: verifies customer session via x-member-id + x-session-token
+ * headers before allowing any points operation.
  */
+import { createHash, timingSafeEqual } from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 
 type Req = {
@@ -14,6 +18,21 @@ type Res = {
   status: (n: number) => { json: (o: object) => void };
 };
 
+const safeTrim = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+
+function sha256(input: string): string {
+  return createHash('sha256').update(input).digest('hex');
+}
+
+function constantTimeCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    const dummy = Buffer.alloc(32);
+    timingSafeEqual(dummy, dummy);
+    return false;
+  }
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
 function getSupabaseAdmin() {
   const supabaseUrl = (process.env.SUPABASE_URL ?? '').trim().replace(/\/$/, '');
   const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? '').trim();
@@ -23,6 +42,29 @@ function getSupabaseAdmin() {
     url: supabaseUrl,
     key: serviceRoleKey,
   };
+}
+
+async function verifyCustomerSession(
+  headers: Record<string, string | string[] | undefined>,
+  supabaseUrl: string,
+  serviceRoleKey: string,
+): Promise<{ ok: boolean; memberId?: string }> {
+  const memberId = safeTrim(headers['x-member-id'] as string);
+  const sessionToken = safeTrim(headers['x-session-token'] as string);
+  if (!memberId || !sessionToken) return { ok: false };
+
+  const res = await fetch(
+    `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(memberId)}&select=id,password_hash`,
+    { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } },
+  );
+  const rows = await res.json();
+  const member = Array.isArray(rows) ? rows[0] : null;
+  if (!member) return { ok: false };
+
+  const expected = sha256(`session:${member.id}:${member.password_hash ?? ''}`);
+  if (!constantTimeCompare(sessionToken, expected)) return { ok: false };
+
+  return { ok: true, memberId: member.id };
 }
 
 export default async function handler(req: Req, res: Res) {
@@ -41,11 +83,16 @@ export default async function handler(req: Req, res: Res) {
   const admin = getSupabaseAdmin();
   if (!admin) return res.status(500).json({ error: 'Server config missing' });
 
-  const memberId = (body.memberId as string || '').trim();
+  const session = await verifyCustomerSession(req.headers ?? {}, admin.url, admin.key);
+  if (!session.ok) {
+    return res.status(401).json({ error: '未授權：需要登入', code: 'UNAUTHORIZED' });
+  }
+
+  const memberId = session.memberId!;
   const couponId = (body.couponId as string || '').trim();
 
-  if (!memberId || !couponId) {
-    return res.status(400).json({ error: 'Missing memberId or couponId' });
+  if (!couponId) {
+    return res.status(400).json({ error: 'Missing couponId' });
   }
 
   try {

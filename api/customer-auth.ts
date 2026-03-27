@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { checkRateLimit, getClientIp } from './_rateLimit.js';
 
 const BCRYPT_ROUNDS = 12;
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 const safeTrim = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 
@@ -19,10 +20,12 @@ function sha256(input: string): string {
 }
 
 function timingSafeCompare(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
+  if (a.length !== b.length) {
+    const dummy = Buffer.alloc(32);
+    timingSafeEqual(dummy, dummy);
+    return false;
+  }
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
 async function verifyPasswordServer(plain: string, storedHash: string | null): Promise<boolean> {
@@ -47,8 +50,10 @@ function getSupabaseConfig() {
   return { supabaseUrl, serviceRoleKey };
 }
 
-const SAFE_MEMBER_COLS = 'id,name,email,phone_number,points,tier,role,admin_permissions,member_type,wholesale_price_tier,wholesale_status,company_name,business_type,branch_count,br_doc_url,storefront_photo_url,storefront_preparing,delivery_address,br_update_required,addresses';
-const AUTH_MEMBER_COLS = `${SAFE_MEMBER_COLS},password_hash`;
+function stripPasswordHash(member: Record<string, unknown>): Record<string, unknown> {
+  const { password_hash: _, ...safe } = member;
+  return safe;
+}
 
 const loginSchema = z.object({
   action: z.literal('login'),
@@ -76,6 +81,7 @@ const restoreSchema = z.object({
   action: z.literal('restore-session'),
   memberId: z.string().min(1),
   sessionToken: z.string().min(1),
+  issuedAt: z.number().optional(),
 });
 
 type Req = {
@@ -89,21 +95,32 @@ type Res = {
 };
 
 async function handleLogin(body: z.infer<typeof loginSchema>, supabaseUrl: string, serviceRoleKey: string) {
-  const { identifier, password } = body;
+  const { identifier, password, isWholesale } = body;
   const isEmail = identifier.includes('@');
 
   const col = isEmail ? 'email' : 'phone_number';
   const val = isEmail ? identifier.toLowerCase() : identifier;
 
   const memberRes = await fetch(
-    `${supabaseUrl}/rest/v1/members?${col}=eq.${encodeURIComponent(val)}&select=${AUTH_MEMBER_COLS}`,
+    `${supabaseUrl}/rest/v1/members?${col}=eq.${encodeURIComponent(val)}&select=*`,
     { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
   );
+
+  if (!memberRes.ok) {
+    console.error('[customer-auth/login] Supabase query failed:', memberRes.status, await memberRes.text());
+    return { status: 500, body: { error: '伺服器錯誤，請稍後再試', code: 'QUERY_FAILED' } };
+  }
+
   const members = await memberRes.json();
   const member = Array.isArray(members) ? members[0] : null;
 
   if (!member || !(await verifyPasswordServer(password, member.password_hash))) {
     return { status: 401, body: { error: '帳號或密碼錯誤', code: 'INVALID_CREDENTIALS' } };
+  }
+
+  // Block rejected wholesale accounts from accessing the wholesale platform
+  if (isWholesale && member.wholesale_status === 'rejected') {
+    return { status: 403, body: { error: '您的批發帳戶申請已被拒絕，如有疑問請聯繫客服', code: 'WHOLESALE_REJECTED' } };
   }
 
   // Upgrade legacy hash to bcrypt on successful login
@@ -127,8 +144,7 @@ async function handleLogin(body: z.infer<typeof loginSchema>, supabaseUrl: strin
 
   const sessionToken = generateSessionToken(member.id, member.password_hash);
 
-  const { password_hash: _, ...safeProfile } = member;
-  return { status: 200, body: { user: safeProfile, sessionToken } };
+  return { status: 200, body: { user: stripPasswordHash(member), sessionToken, issuedAt: Date.now() } };
 }
 
 async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl: string, serviceRoleKey: string) {
@@ -214,7 +230,7 @@ async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl:
   const rows = await insertRes.json();
   const inserted = Array.isArray(rows) ? rows[0] : rows;
   const sessionToken = generateSessionToken(inserted.id, inserted.password_hash);
-  const { password_hash: _, ...safeProfile } = inserted;
+  const issuedAt = Date.now();
 
   // Assign welcome coupons (fire-and-forget)
   (async () => {
@@ -262,16 +278,26 @@ async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl:
     }
   })();
 
-  return { status: 200, body: { user: safeProfile, sessionToken } };
+  return { status: 200, body: { user: stripPasswordHash(inserted), sessionToken, issuedAt } };
 }
 
 async function handleRestoreSession(body: z.infer<typeof restoreSchema>, supabaseUrl: string, serviceRoleKey: string) {
-  const { memberId, sessionToken } = body;
+  const { memberId, sessionToken, issuedAt } = body;
+
+  if (issuedAt && (Date.now() - issuedAt) > SESSION_MAX_AGE_MS) {
+    return { status: 401, body: { error: '登入已過期，請重新登入', code: 'SESSION_EXPIRED' } };
+  }
 
   const memberRes = await fetch(
-    `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(memberId)}&select=${AUTH_MEMBER_COLS}`,
+    `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(memberId)}&select=*`,
     { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
   );
+
+  if (!memberRes.ok) {
+    console.error('[customer-auth/restore] Supabase query failed:', memberRes.status, await memberRes.text());
+    return { status: 500, body: { error: '伺服器錯誤', code: 'QUERY_FAILED' } };
+  }
+
   const members = await memberRes.json();
   const member = Array.isArray(members) ? members[0] : null;
 
@@ -284,8 +310,7 @@ async function handleRestoreSession(body: z.infer<typeof restoreSchema>, supabas
     return { status: 401, body: { error: '登入已過期', code: 'INVALID_SESSION' } };
   }
 
-  const { password_hash: _, ...safeProfile } = member;
-  return { status: 200, body: { user: safeProfile } };
+  return { status: 200, body: { user: stripPasswordHash(member) } };
 }
 
 export default async function handler(req: Req, res: Res) {

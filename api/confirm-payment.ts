@@ -166,11 +166,21 @@ export default async function handler(
       return res.status(404).json({ error: 'Order not found', code: 'ORDER_NOT_FOUND' });
     }
 
+    if (!airwallexVerified) {
+      console.error('[confirm-payment] Airwallex verification failed:', airwallexError);
+      return res.status(400).json({ error: '支付驗證失敗，請聯繫客服', code: 'VERIFICATION_FAILED' });
+    }
+
+    if (orderRow.status === 'paid') {
+      console.log('[confirm-payment] Order', orderRow.id, 'already paid — skipping');
+      return res.status(200).json({ success: true, alreadyPaid: true });
+    }
+
     const updateId = orderRow.id ?? dbIdValue;
     const updatePayload: Record<string, unknown> = { status: 'paid' };
     if (paymentIntentId) updatePayload.payment_intent_id = paymentIntentId;
     const { error: updateError } = await supabaseAdmin
-      .from('orders').update(updatePayload).eq('id', updateId);
+      .from('orders').update(updatePayload).eq('id', updateId).eq('status', 'pending');
 
     if (updateError) {
       console.error('[confirm-payment] CRITICAL update failed:', updateError.message);
@@ -249,7 +259,7 @@ export default async function handler(
           console.log('[confirm-payment] Auto SF call for', orderId);
           const sfRes = await fetchWithTimeout(`${selfOrigin}/api/sf`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-internal-secret': serviceRoleKey },
+            headers: { 'Content-Type': 'application/json', 'x-internal-secret': (process.env.INTERNAL_API_SECRET ?? '') },
             body: JSON.stringify({ action: 'order', orderId }),
           }, 12000);
           const sfData: any = await sfRes.json().catch(() => ({}));

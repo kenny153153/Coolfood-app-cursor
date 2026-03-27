@@ -11,7 +11,7 @@ import {
   Printer, ExternalLink, Calendar, Hash, UserCheck, CreditCard as CardIcon,
   Award, Smartphone, Mail, Save, PlusCircle, Download, Upload, Zap,
   Layers, Percent, Globe, Crosshair, Scissors, Phone, Square, CheckSquare, Coins,
-  UtensilsCrossed, Play, CookingPot, Pencil, Star, Ticket, Gift
+  UtensilsCrossed, Play, CookingPot, Pencil, Star, Ticket, Gift, Store
 } from 'lucide-react';
 import { HK_DISTRICTS } from './constants';
 import { SF_COLD_PICKUP_DISTRICTS, SF_COLD_DISTRICT_NAMES, getPointsByDistrict, findPointByCode, formatLockerAddress, SfColdPickupPoint } from './sfColdPickupPoints';
@@ -1133,7 +1133,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadCoreData = async () => {
       const membersPromise = isAdminRoute
-        ? supabase.from('members').select('id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, wholesale_status, company_name, business_type, branch_count, br_doc_url, storefront_photo_url, storefront_preparing, delivery_address, br_update_required, addresses')
+        ? supabase.from('members_safe').select('id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, wholesale_status, company_name, business_type, branch_count, br_doc_url, storefront_photo_url, storefront_preparing, delivery_address, br_update_required, addresses')
         : Promise.resolve({ data: null, error: null });
       const [productsRes, categoriesRes, membersRes, slideshowRes] = await Promise.all([
         supabase.from('products').select('*'),
@@ -1298,13 +1298,14 @@ const App: React.FC = () => {
     if (!storedId || !storedToken) return;
     const restoreUser = async () => {
       try {
+        const storedIssuedAt = Number(localStorage.getItem('coolfood_session_issued_at')) || 0;
         const res = await fetch('/api/customer-auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'restore-session', memberId: storedId, sessionToken: storedToken }),
+          body: JSON.stringify({ action: 'restore-session', memberId: storedId, sessionToken: storedToken, issuedAt: storedIssuedAt || undefined }),
         });
         if (!res.ok) {
-          try { localStorage.removeItem('coolfood_member_id'); localStorage.removeItem('coolfood_session_token'); } catch { /* ignore */ }
+          try { localStorage.removeItem('coolfood_member_id'); localStorage.removeItem('coolfood_session_token'); localStorage.removeItem('coolfood_session_issued_at'); } catch { /* ignore */ }
           return;
         }
         const json = await res.json();
@@ -1331,39 +1332,15 @@ const App: React.FC = () => {
     loadMemberCoupons();
   }, [user?.id, user?.points]);
 
-  // Load staff roles on admin route, then restore admin session via server-side verification
+  // Load staff roles on admin route; always require fresh login for security
   useEffect(() => {
     if (!isAdminRoute) return;
     const init = async () => {
       await loadStaffRoles();
       try {
-        const saved = localStorage.getItem('coolfood_admin_session');
-        const sessionToken = localStorage.getItem('coolfood_admin_session_token');
-        if (!saved || !sessionToken) return;
-        const session = JSON.parse(saved) as AdminAccount;
-        if (!session?.id || !session?.role) return;
-        const res = await fetch('/api/admin-auth', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'session', adminId: session.id, sessionToken }),
-        });
-        if (!res.ok) {
-          try { localStorage.removeItem('coolfood_admin_session'); localStorage.removeItem('coolfood_admin_session_token'); } catch { /* ignore */ }
-          return;
-        }
-        const json = await res.json();
-        const serverAdmin = json.admin;
-        if (!serverAdmin) {
-          try { localStorage.removeItem('coolfood_admin_session'); localStorage.removeItem('coolfood_admin_session_token'); } catch { /* ignore */ }
-          return;
-        }
-        const permissions = buildAdminPermissions(serverAdmin.role, serverAdmin.permissions as Record<string, boolean | ModulePermission> | null);
-        const roleLabel = ADMIN_ROLE_LABELS[serverAdmin.role as AdminRole] || serverAdmin.role;
-        const admin: AdminAccount = { id: serverAdmin.id, name: serverAdmin.name, phone: serverAdmin.phone, role: serverAdmin.role as AdminRole, roleDisplayName: roleLabel, permissions, isActive: true };
-        setAdminUser(admin);
-        setIsAdminAuthenticated(true);
-        if (serverAdmin.mustChangePassword) setMustChangePassword(true);
-        try { localStorage.setItem('coolfood_admin_session', JSON.stringify(admin)); } catch { /* ignore */ }
+        localStorage.removeItem('coolfood_admin_session');
+        localStorage.removeItem('coolfood_admin_session_token');
+        localStorage.removeItem('coolfood_admin_issued_at');
       } catch { /* ignore */ }
     };
     init();
@@ -1536,7 +1513,7 @@ const App: React.FC = () => {
         showToast(json.error || '帳號或密碼錯誤', 'error');
         return;
       }
-      const { admin: serverAdmin, sessionToken } = json;
+      const { admin: serverAdmin, sessionToken, issuedAt } = json;
       const permissions = buildAdminPermissions(serverAdmin.role, serverAdmin.permissions as Record<string, boolean | ModulePermission> | null);
       const roleLabel = ADMIN_ROLE_LABELS[serverAdmin.role as AdminRole] || serverAdmin.role;
       const admin: AdminAccount = {
@@ -1556,6 +1533,7 @@ const App: React.FC = () => {
       try {
         localStorage.setItem('coolfood_admin_session', JSON.stringify(admin));
         localStorage.setItem('coolfood_admin_session_token', sessionToken);
+        if (issuedAt) localStorage.setItem('coolfood_admin_issued_at', String(issuedAt));
       } catch { /* ignore */ }
       showToast(`歡迎回來，${admin.name}！`);
     } catch {
@@ -1976,6 +1954,7 @@ const App: React.FC = () => {
       try {
         localStorage.setItem('coolfood_member_id', u.id);
         if (json.sessionToken) localStorage.setItem('coolfood_session_token', json.sessionToken);
+        if (json.issuedAt) localStorage.setItem('coolfood_session_issued_at', String(json.issuedAt));
       } catch { /* ignore */ }
       setShowAuthModal(false);
       setAuthForm({ email: '', password: '', name: '', phone: '', companyName: '', businessType: '', branchCount: '1', storefrontPreparing: false });
@@ -2055,6 +2034,7 @@ const App: React.FC = () => {
       try {
         localStorage.setItem('coolfood_member_id', u.id);
         if (json.sessionToken) localStorage.setItem('coolfood_session_token', json.sessionToken);
+        if (json.issuedAt) localStorage.setItem('coolfood_session_issued_at', String(json.issuedAt));
       } catch { /* ignore */ }
       setMembers(prev => [...prev, u]);
       setShowAuthModal(false);
@@ -2532,11 +2512,12 @@ const App: React.FC = () => {
     showToast('廣告已刪除');
   };
 
+  const MEMBER_SAFE_COLUMNS = 'id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, wholesale_status, company_name, business_type, branch_count, br_doc_url, storefront_photo_url, storefront_preparing, delivery_address, br_update_required, addresses';
   const upsertMember = async (member: UserType, passwordHash?: string | null) => {
     const { data, error } = await supabase
       .from('members')
       .upsert(mapUserToMemberRow(member, passwordHash))
-      .select()
+      .select(MEMBER_SAFE_COLUMNS)
       .single();
     if (error || !data) {
       if (!handleSchemaError(error, 'members')) {
@@ -3392,13 +3373,22 @@ const App: React.FC = () => {
     }
 
     setIsRedirectingToPayment(true);
+
+    // Insert order FIRST so the payment API can verify the amount server-side
+    const { error } = await supabase.from('orders').insert(insertRow);
+    if (error) {
+      setIsRedirectingToPayment(false);
+      showToast(error.message || '訂單提交失敗', 'error');
+      return;
+    }
+
     const apiBase = typeof window !== 'undefined' ? window.location.origin : '';
     let intentRes: Response;
     try {
       intentRes = await fetch(`${apiBase}/api/airwallex`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'create-intent', amount: total, merchant_order_id: orderIdDisplay, success_origin: typeof window !== 'undefined' ? window.location.origin : '' }),
+        body: JSON.stringify({ action: 'create-intent', merchant_order_id: orderIdDisplay, success_origin: typeof window !== 'undefined' ? window.location.origin : '' }),
       });
     } catch {
       setIsRedirectingToPayment(false);
@@ -3413,7 +3403,6 @@ const App: React.FC = () => {
         if (contentType.includes('application/json')) {
           const errBody = await intentRes.json() as { error?: string; details?: string; code?: string };
           if (typeof errBody?.error === 'string' && errBody.error) errMsg = errBody.error;
-          // Helpful for debugging when Vercel returns upstream error text
           if (typeof errBody?.details === 'string' && errBody.details) {
             console.error('Airwallex API error details', errBody.code, errBody.details);
           } else if (typeof errBody?.code === 'string' && errBody.code) {
@@ -3445,13 +3434,6 @@ const App: React.FC = () => {
     if (!intent_id || !client_secret) {
       setIsRedirectingToPayment(false);
       showToast('Payment system is currently busy, please try again in a moment.', 'error');
-      return;
-    }
-
-    const { error } = await supabase.from('orders').insert(insertRow);
-    if (error) {
-      setIsRedirectingToPayment(false);
-      showToast(error.message || '訂單提交失敗', 'error');
       return;
     }
 
@@ -9647,6 +9629,7 @@ const App: React.FC = () => {
             try {
               localStorage.setItem('coolfood_member_id', u.id);
               if (json.sessionToken) localStorage.setItem('coolfood_session_token', json.sessionToken);
+              if (json.issuedAt) localStorage.setItem('coolfood_session_issued_at', String(json.issuedAt));
             } catch { /* ignore */ }
             showToast('歡迎回來！');
           } catch { showToast('登入失敗，請稍後再試', 'error'); }
@@ -9688,6 +9671,7 @@ const App: React.FC = () => {
             try {
               localStorage.setItem('coolfood_member_id', u.id);
               if (json.sessionToken) localStorage.setItem('coolfood_session_token', json.sessionToken);
+              if (json.issuedAt) localStorage.setItem('coolfood_session_issued_at', String(json.issuedAt));
             } catch { /* ignore */ }
             setMembers(prev => [...prev, u]);
             showToast('註冊申請已提交，我們會盡快審核！');
@@ -9762,7 +9746,7 @@ const App: React.FC = () => {
             isOpen={isAdminSidebarOpen}
             setIsOpen={setIsAdminSidebarOpen}
             hasAdminPermission={hasAdminPermission}
-            onLogout={() => { setIsAdminAuthenticated(false); setAdminUser(null); try { localStorage.removeItem('coolfood_admin_session'); localStorage.removeItem('coolfood_admin_session_token'); } catch { /* ignore */ } window.location.hash = ''; }}
+            onLogout={() => { setIsAdminAuthenticated(false); setAdminUser(null); try { localStorage.removeItem('coolfood_admin_session'); localStorage.removeItem('coolfood_admin_session_token'); localStorage.removeItem('coolfood_admin_issued_at'); } catch { /* ignore */ } window.location.hash = ''; }}
             t={t}
           />
           <main className="flex-1 min-w-0 p-6 md:p-10 overflow-y-auto bg-[#f8fafc] hide-scrollbar">
@@ -9985,10 +9969,12 @@ const App: React.FC = () => {
                                     if (!canAfford || alreadyRedeemed) return;
                                     if (!confirm(t.coupon.redeemConfirm.replace('{points}', String(c.pointsCost)))) return;
                                     try {
+                                      const mId = localStorage.getItem('coolfood_member_id') || '';
+                                      const sToken = localStorage.getItem('coolfood_session_token') || '';
                                       const res = await fetch('/api/coupon-api', {
                                         method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ action: 'redeem-points', memberId: user.id, couponId: c.id }),
+                                        headers: { 'Content-Type': 'application/json', 'x-member-id': mId, 'x-session-token': sToken },
+                                        body: JSON.stringify({ action: 'redeem-points', couponId: c.id }),
                                       });
                                       const json = await res.json();
                                       if (res.ok && json.success) {
@@ -10131,7 +10117,9 @@ const App: React.FC = () => {
                     </div>
                   </div>
                   {!isWholesaleRoute && (
-                    <a href="/wholesale" className="block text-center text-[10px] text-slate-300 mt-6 hover:text-slate-400 transition-colors">批發客戶？前往批發平台 →</a>
+                    <a href="/wholesale" className="flex items-center justify-center gap-2 mt-6 px-5 py-3.5 bg-orange-50 border-2 border-orange-200 rounded-2xl text-sm font-bold text-orange-600 hover:bg-orange-100 hover:border-orange-300 transition-all shadow-sm">
+                      <Store size={16} /> 批發客戶？前往批發平台 →
+                    </a>
                   )}
                 </div>
              </div>
@@ -10189,9 +10177,11 @@ const App: React.FC = () => {
                   )}
                   {/* Admin access: navigate to yoursite.com/#admin */}
                 </div>
-                <button onClick={() => { setUser(null); try { localStorage.removeItem('coolfood_member_id'); localStorage.removeItem('coolfood_session_token'); } catch { /* ignore */ } setView('store'); showToast(t.profile.loggedOut); }} className="w-full py-5 bg-white text-rose-500 rounded-[2rem] font-black border border-rose-50 shadow-sm active:scale-95 transition-all hover:bg-rose-50">{t.profile.logout}</button>
+                <button onClick={() => { setUser(null); try { localStorage.removeItem('coolfood_member_id'); localStorage.removeItem('coolfood_session_token'); localStorage.removeItem('coolfood_session_issued_at'); } catch { /* ignore */ } setView('store'); showToast(t.profile.loggedOut); }} className="w-full py-5 bg-white text-rose-500 rounded-[2rem] font-black border border-rose-50 shadow-sm active:scale-95 transition-all hover:bg-rose-50">{t.profile.logout}</button>
                 {!isWholesaleRoute && (
-                  <a href="/wholesale" className="block text-center text-[10px] text-slate-300 mt-6 hover:text-slate-400 transition-colors">批發客戶？前往批發平台 →</a>
+                  <a href="/wholesale" className="flex items-center justify-center gap-2 mt-6 px-5 py-3.5 bg-orange-50 border-2 border-orange-200 rounded-2xl text-sm font-bold text-orange-600 hover:bg-orange-100 hover:border-orange-300 transition-all shadow-sm">
+                    <Store size={16} /> 批發客戶？前往批發平台 →
+                  </a>
                 )}
              </div>
           )}

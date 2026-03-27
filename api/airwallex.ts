@@ -70,7 +70,9 @@ async function handleCreateIntent(req: any, res: any) {
 
   const body = req.body as { amount?: number; merchant_order_id?: string; success_origin?: string; action?: string };
   const merchantOrderId = typeof body?.merchant_order_id === 'string' ? body.merchant_order_id : undefined;
-  const successOrigin = typeof body?.success_origin === 'string' && body.success_origin ? body.success_origin : 'https://coolfood-app-cursor.vercel.app';
+  const successOrigin = typeof body?.success_origin === 'string' && body.success_origin
+    ? body.success_origin
+    : (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://coolfood-app-cursor.vercel.app');
 
   if (!merchantOrderId) {
     return res.status(400).json({ error: 'Invalid merchant_order_id', code: 'BAD_REQUEST' });
@@ -101,13 +103,7 @@ async function handleCreateIntent(req: any, res: any) {
   }
 
   if (amount == null || amount <= 0) {
-    const clientAmount = typeof body?.amount === 'number' ? body.amount : undefined;
-    if (clientAmount != null && clientAmount > 0) {
-      console.warn('[Airwallex] DB lookup failed, using client amount as fallback:', clientAmount);
-      amount = clientAmount;
-    } else {
-      return res.status(400).json({ error: 'Order not found or invalid amount', code: 'BAD_REQUEST' });
-    }
+    return res.status(400).json({ error: 'Order not found or invalid amount. Place the order first, then create the payment intent.', code: 'ORDER_NOT_FOUND' });
   }
 
   const successUrl = `${successOrigin.replace(/\/$/, '')}/success?order=${encodeURIComponent(merchantOrderId)}`;
