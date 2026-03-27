@@ -91,10 +91,13 @@ export async function verifyAdminRequest(
     return { ok: false, status: 500, error: 'Server config missing' };
   }
 
+  const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
   try {
+    const baseCols = 'id,role,password_hash,session_issued_at';
     const selectCols = requiredModule
-      ? 'id,role,admin_permissions,password_hash'
-      : 'id,role,password_hash';
+      ? `${baseCols},admin_permissions`
+      : baseCols;
 
     const res = await fetch(
       `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(adminId)}&role=neq.customer&select=${selectCols}`,
@@ -113,10 +116,20 @@ export async function verifyAdminRequest(
       return { ok: false, status: 403, error: '權限不足：非管理員帳號' };
     }
 
-    // Verify session token against password_hash
-    const expectedToken = sha256(`session:${admin.id}:${admin.password_hash ?? ''}`);
-    if (!timingSafeCompare(sessionToken, expectedToken)) {
+    const serverIssuedAt = Number(admin.session_issued_at) || 0;
+
+    if (serverIssuedAt && (Date.now() - serverIssuedAt) > SESSION_MAX_AGE_MS) {
       return { ok: false, status: 401, error: '會話已過期，請重新登入' };
+    }
+
+    const expectedToken = serverIssuedAt
+      ? sha256(`session:${admin.id}:${admin.password_hash ?? ''}:${serverIssuedAt}`)
+      : sha256(`session:${admin.id}:${admin.password_hash ?? ''}`);
+    if (!timingSafeCompare(sessionToken, expectedToken)) {
+      const legacyToken = sha256(`session:${admin.id}:${admin.password_hash ?? ''}`);
+      if (!timingSafeCompare(sessionToken, legacyToken)) {
+        return { ok: false, status: 401, error: '會話已過期，請重新登入' };
+      }
     }
 
     // super_admin bypasses all module/op checks

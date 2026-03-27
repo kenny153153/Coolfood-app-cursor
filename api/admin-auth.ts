@@ -48,8 +48,9 @@ async function verifyPasswordServer(plain: string, storedHash: string | null): P
   return timingSafeCompare(sha256(plain), storedHash);
 }
 
-function generateSessionToken(memberId: string, passwordHash: string | null): string {
-  return sha256(`session:${memberId}:${passwordHash ?? ''}`);
+function generateSessionToken(memberId: string, passwordHash: string | null, issuedAt?: number): string {
+  const base = `session:${memberId}:${passwordHash ?? ''}`;
+  return issuedAt ? sha256(`${base}:${issuedAt}`) : sha256(base);
 }
 
 function getSupabaseConfig() {
@@ -117,7 +118,17 @@ async function handleLogin(req: Req, res: Res) {
       member.password_hash = bcryptHash;
     }
 
-    const sessionToken = generateSessionToken(member.id, member.password_hash);
+    const issuedAt = Date.now();
+    const sessionToken = generateSessionToken(member.id, member.password_hash, issuedAt);
+
+    await fetch(
+      `${cfg.supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(member.id)}`,
+      {
+        method: 'PATCH',
+        headers: supaHeaders(cfg.serviceRoleKey, { 'Content-Type': 'application/json', Prefer: 'return=minimal' }),
+        body: JSON.stringify({ session_issued_at: issuedAt }),
+      }
+    );
 
     return res.status(200).json({
       admin: {
@@ -129,7 +140,7 @@ async function handleLogin(req: Req, res: Res) {
         mustChangePassword: false,
       },
       sessionToken,
-      issuedAt: Date.now(),
+      issuedAt,
     });
   } catch (e: any) {
     console.error('[admin-auth/login] Error:', e?.message);
@@ -140,16 +151,17 @@ async function handleLogin(req: Req, res: Res) {
 // ─── Action: session ────────────────────────────────────────────────
 
 async function handleSession(req: Req, res: Res) {
+  const ip = getClientIp(req.headers ?? {});
+  const rl = await checkRateLimit(`admin-session:${ip}`, 10, 60_000);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: '嘗試次數過多', code: 'RATE_LIMITED', retryAfterMs: rl.retryAfterMs });
+  }
+
   const adminId = safeTrim(req.body?.adminId);
   const sessionToken = safeTrim(req.body?.sessionToken);
-  const issuedAt = Number(req.body?.issuedAt) || 0;
 
   if (!adminId || !sessionToken) {
     return res.status(401).json({ error: '無效的登入狀態', code: 'MISSING_SESSION' });
-  }
-
-  if (issuedAt && (Date.now() - issuedAt) > SESSION_MAX_AGE_MS) {
-    return res.status(401).json({ error: '登入已過期，請重新登入', code: 'SESSION_EXPIRED' });
   }
 
   const cfg = getSupabaseConfig();
@@ -169,9 +181,22 @@ async function handleSession(req: Req, res: Res) {
     const members = await memberRes.json();
     const member = Array.isArray(members) ? members[0] : null;
 
-    const expected = member ? generateSessionToken(member.id, member.password_hash) : '';
-    if (!member || !timingSafeCompare(sessionToken, expected)) {
+    if (!member) {
       return res.status(401).json({ error: '登入已過期，請重新登入', code: 'INVALID_SESSION' });
+    }
+
+    const serverIssuedAt = Number(member.session_issued_at) || 0;
+
+    if (!serverIssuedAt || (Date.now() - serverIssuedAt) > SESSION_MAX_AGE_MS) {
+      return res.status(401).json({ error: '登入已過期，請重新登入', code: 'SESSION_EXPIRED' });
+    }
+
+    const expected = generateSessionToken(member.id, member.password_hash, serverIssuedAt);
+    if (!timingSafeCompare(sessionToken, expected)) {
+      const legacyExpected = generateSessionToken(member.id, member.password_hash);
+      if (!timingSafeCompare(sessionToken, legacyExpected)) {
+        return res.status(401).json({ error: '登入已過期，請重新登入', code: 'INVALID_SESSION' });
+      }
     }
 
     return res.status(200).json({
@@ -212,7 +237,7 @@ async function handleChangePassword(req: Req, res: Res) {
 
   try {
     const memberRes = await fetch(
-      `${cfg.supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(adminId)}&role=neq.customer&select=id,role,password_hash`,
+      `${cfg.supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(adminId)}&role=neq.customer&select=id,role,password_hash,session_issued_at`,
       { headers: supaHeaders(cfg.serviceRoleKey) }
     );
 
@@ -224,19 +249,26 @@ async function handleChangePassword(req: Req, res: Res) {
     const members = await memberRes.json();
     const member = Array.isArray(members) ? members[0] : null;
 
-    const expectedToken = member ? generateSessionToken(member.id, member.password_hash) : '';
-    if (!member || !timingSafeCompare(sessionToken, expectedToken)) {
+    if (!member) {
+      return res.status(401).json({ error: '登入已過期，請重新登入', code: 'INVALID_SESSION' });
+    }
+
+    const serverIssuedAt = Number(member.session_issued_at) || 0;
+    const expectedToken = generateSessionToken(member.id, member.password_hash, serverIssuedAt);
+    const legacyToken = generateSessionToken(member.id, member.password_hash);
+    if (!timingSafeCompare(sessionToken, expectedToken) && !timingSafeCompare(sessionToken, legacyToken)) {
       return res.status(401).json({ error: '登入已過期，請重新登入', code: 'INVALID_SESSION' });
     }
 
     const newHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+    const newIssuedAt = Date.now();
 
     const updateRes = await fetch(
       `${cfg.supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(adminId)}`,
       {
         method: 'PATCH',
         headers: supaHeaders(cfg.serviceRoleKey, { 'Content-Type': 'application/json', Prefer: 'return=minimal' }),
-        body: JSON.stringify({ password_hash: newHash }),
+        body: JSON.stringify({ password_hash: newHash, session_issued_at: newIssuedAt }),
       }
     );
 
@@ -244,8 +276,8 @@ async function handleChangePassword(req: Req, res: Res) {
       return res.status(500).json({ error: '更改密碼失敗', code: 'UPDATE_FAILED' });
     }
 
-    const newSessionToken = generateSessionToken(adminId, newHash);
-    return res.status(200).json({ success: true, sessionToken: newSessionToken });
+    const newSessionToken = generateSessionToken(adminId, newHash, newIssuedAt);
+    return res.status(200).json({ success: true, sessionToken: newSessionToken, issuedAt: newIssuedAt });
   } catch (e: any) {
     console.error('[admin-auth/change-password] Error:', e?.message);
     return res.status(500).json({ error: '更改密碼失敗', code: 'SERVER_ERROR' });

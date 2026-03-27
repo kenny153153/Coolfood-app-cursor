@@ -40,8 +40,9 @@ async function verifyPasswordServer(plain: string, storedHash: string | null): P
   return timingSafeCompare(sha256(plain), storedHash);
 }
 
-function generateSessionToken(memberId: string, passwordHash: string | null): string {
-  return sha256(`session:${memberId}:${passwordHash ?? ''}`);
+function generateSessionToken(memberId: string, passwordHash: string | null, issuedAt?: number): string {
+  const base = `session:${memberId}:${passwordHash ?? ''}`;
+  return issuedAt ? sha256(`${base}:${issuedAt}`) : sha256(base);
 }
 
 function getSupabaseConfig() {
@@ -142,9 +143,24 @@ async function handleLogin(body: z.infer<typeof loginSchema>, supabaseUrl: strin
     member.password_hash = bcryptHash;
   }
 
-  const sessionToken = generateSessionToken(member.id, member.password_hash);
+  const issuedAt = Date.now();
+  const sessionToken = generateSessionToken(member.id, member.password_hash, issuedAt);
 
-  return { status: 200, body: { user: stripPasswordHash(member), sessionToken, issuedAt: Date.now() } };
+  await fetch(
+    `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(member.id)}`,
+    {
+      method: 'PATCH',
+      headers: {
+        apikey: serviceRoleKey,
+        Authorization: `Bearer ${serviceRoleKey}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({ session_issued_at: issuedAt }),
+    }
+  );
+
+  return { status: 200, body: { user: stripPasswordHash(member), sessionToken, issuedAt } };
 }
 
 async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl: string, serviceRoleKey: string) {
@@ -229,8 +245,22 @@ async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl:
 
   const rows = await insertRes.json();
   const inserted = Array.isArray(rows) ? rows[0] : rows;
-  const sessionToken = generateSessionToken(inserted.id, inserted.password_hash);
   const issuedAt = Date.now();
+  const sessionToken = generateSessionToken(inserted.id, inserted.password_hash, issuedAt);
+
+  await fetch(
+    `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(inserted.id)}`,
+    {
+      method: 'PATCH',
+      headers: {
+        apikey: serviceRoleKey,
+        Authorization: `Bearer ${serviceRoleKey}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({ session_issued_at: issuedAt }),
+    }
+  );
 
   // Assign welcome coupons (fire-and-forget)
   (async () => {
@@ -282,11 +312,7 @@ async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl:
 }
 
 async function handleRestoreSession(body: z.infer<typeof restoreSchema>, supabaseUrl: string, serviceRoleKey: string) {
-  const { memberId, sessionToken, issuedAt } = body;
-
-  if (issuedAt && (Date.now() - issuedAt) > SESSION_MAX_AGE_MS) {
-    return { status: 401, body: { error: '登入已過期，請重新登入', code: 'SESSION_EXPIRED' } };
-  }
+  const { memberId, sessionToken } = body;
 
   const memberRes = await fetch(
     `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(memberId)}&select=*`,
@@ -305,9 +331,18 @@ async function handleRestoreSession(body: z.infer<typeof restoreSchema>, supabas
     return { status: 401, body: { error: '找不到會員', code: 'NOT_FOUND' } };
   }
 
-  const expected = generateSessionToken(member.id, member.password_hash);
+  const serverIssuedAt = Number(member.session_issued_at) || 0;
+
+  if (!serverIssuedAt || (Date.now() - serverIssuedAt) > SESSION_MAX_AGE_MS) {
+    return { status: 401, body: { error: '登入已過期，請重新登入', code: 'SESSION_EXPIRED' } };
+  }
+
+  const expected = generateSessionToken(member.id, member.password_hash, serverIssuedAt);
   if (!timingSafeCompare(sessionToken, expected)) {
-    return { status: 401, body: { error: '登入已過期', code: 'INVALID_SESSION' } };
+    const legacyExpected = generateSessionToken(member.id, member.password_hash);
+    if (!timingSafeCompare(sessionToken, legacyExpected)) {
+      return { status: 401, body: { error: '登入已過期', code: 'INVALID_SESSION' } };
+    }
   }
 
   return { status: 200, body: { user: stripPasswordHash(member) } };
@@ -362,6 +397,12 @@ export default async function handler(req: Req, res: Res) {
     }
 
     if (action === 'restore-session') {
+      const ip = getClientIp(req.headers ?? {});
+      const rl = await checkRateLimit(`restore:${ip}`, 10, 60_000);
+      if (!rl.allowed) {
+        return res.status(429).json({ error: '嘗試次數過多', code: 'RATE_LIMITED', retryAfterMs: rl.retryAfterMs });
+      }
+
       const parsed = restoreSchema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({ error: '無效的登入狀態', code: 'VALIDATION_ERROR' });

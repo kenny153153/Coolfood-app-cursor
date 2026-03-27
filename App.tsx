@@ -1332,18 +1332,81 @@ const App: React.FC = () => {
     loadMemberCoupons();
   }, [user?.id, user?.points]);
 
-  // Load staff roles on admin route; always require fresh login for security
+  // Load staff roles and restore admin session on admin route
   useEffect(() => {
     if (!isAdminRoute) return;
+    let cancelled = false;
     const init = async () => {
       await loadStaffRoles();
+      if (isAdminAuthenticated || cancelled) return;
+
+      let stored: string | null = null;
+      let token: string | null = null;
+      let storedIssuedAt: string | null = null;
       try {
-        localStorage.removeItem('coolfood_admin_session');
-        localStorage.removeItem('coolfood_admin_session_token');
-        localStorage.removeItem('coolfood_admin_issued_at');
+        stored = localStorage.getItem('coolfood_admin_session');
+        token = localStorage.getItem('coolfood_admin_session_token');
+        storedIssuedAt = localStorage.getItem('coolfood_admin_issued_at');
       } catch { /* ignore */ }
+
+      if (!stored || !token) return;
+
+      try {
+        const parsed = JSON.parse(stored);
+        if (!parsed?.id) return;
+
+        const res = await fetch('/api/admin-auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'session',
+            adminId: parsed.id,
+            sessionToken: token,
+            issuedAt: Number(storedIssuedAt) || undefined,
+          }),
+        });
+
+        if (cancelled) return;
+
+        if (!res.ok) {
+          try {
+            localStorage.removeItem('coolfood_admin_session');
+            localStorage.removeItem('coolfood_admin_session_token');
+            localStorage.removeItem('coolfood_admin_issued_at');
+          } catch { /* ignore */ }
+          return;
+        }
+
+        const json = await res.json();
+        if (json.admin && !cancelled) {
+          const permissions = buildAdminPermissions(
+            json.admin.role,
+            json.admin.permissions as Record<string, boolean | ModulePermission> | null,
+          );
+          const roleLabel = ADMIN_ROLE_LABELS[json.admin.role as AdminRole] || json.admin.role;
+          const restored: AdminAccount = {
+            id: json.admin.id,
+            name: json.admin.name,
+            phone: json.admin.phone,
+            role: json.admin.role as AdminRole,
+            roleDisplayName: roleLabel,
+            permissions,
+            isActive: true,
+          };
+          setAdminUser(restored);
+          setIsAdminAuthenticated(true);
+          try { localStorage.setItem('coolfood_admin_session', JSON.stringify(restored)); } catch { /* ignore */ }
+        }
+      } catch {
+        try {
+          localStorage.removeItem('coolfood_admin_session');
+          localStorage.removeItem('coolfood_admin_session_token');
+          localStorage.removeItem('coolfood_admin_issued_at');
+        } catch { /* ignore */ }
+      }
     };
     init();
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdminRoute]);
 
@@ -1559,7 +1622,10 @@ const App: React.FC = () => {
       const json = await res.json();
       if (!res.ok) { showToast(json.error || '更改密碼失敗', 'error'); return; }
       if (json.sessionToken) {
-        try { localStorage.setItem('coolfood_admin_session_token', json.sessionToken); } catch { /* ignore */ }
+        try {
+          localStorage.setItem('coolfood_admin_session_token', json.sessionToken);
+          if (json.issuedAt) localStorage.setItem('coolfood_admin_issued_at', String(json.issuedAt));
+        } catch { /* ignore */ }
       }
       setMustChangePassword(false);
       setPasswordChangeForm({ newPassword: '', confirmPassword: '' });
