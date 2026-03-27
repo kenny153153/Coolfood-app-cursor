@@ -1,14 +1,14 @@
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   BarChart3, Package, Truck, Users, DollarSign, BookOpen,
   Globe, Settings, ShieldCheck, LogOut,
-  ChevronLeft, ChevronDown,
+  ChevronLeft, ChevronDown, ChevronUp,
   ClipboardList, Cpu, Wallet, Image as ImageIcon,
-  PlusCircle, Factory, FileText, Layers, Ticket,
+  PlusCircle, Factory, FileText, Layers, Ticket, Check,
 } from 'lucide-react';
-import { useWorkspace, WORKSPACE_META } from './WorkspaceContext';
-import type { AdminPermissions, AdminAccount, Workspace, AdminModuleId } from './types';
+import { useWorkspace, WORKSPACE_META, WHOLESALE_BRAND_META } from './WorkspaceContext';
+import type { AdminPermissions, AdminAccount, Workspace, AdminModuleId, WholesaleBrand } from './types';
 
 // ─── Sidebar menu structure ─────────────────────────────────────
 
@@ -75,6 +75,7 @@ export interface AdminSidebarProps {
   setIsOpen: (fn: boolean | ((prev: boolean) => boolean)) => void;
   hasAdminPermission: (module: keyof AdminPermissions | string) => boolean;
   onLogout: () => void;
+  onWorkspaceSwitch: (ws: Workspace | null) => void;
   t: any;
 }
 
@@ -87,9 +88,14 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({
   setIsOpen,
   hasAdminPermission,
   onLogout,
+  onWorkspaceSwitch,
   t,
 }) => {
-  const { activeWorkspace, availableWorkspaces } = useWorkspace();
+  const {
+    activeWorkspace, availableWorkspaces,
+    wholesaleBrand, setWholesaleBrand, availableWholesaleBrands,
+    setActiveWorkspace,
+  } = useWorkspace();
 
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     WHOLESALE: false,
@@ -267,15 +273,130 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({
         ))}
       </nav>
 
+      {/* ── Workspace/Brand Picker ── */}
+      <WorkspacePicker
+        isOpen={isOpen}
+        setIsOpen={setIsOpen}
+        activeWorkspace={activeWorkspace}
+        wholesaleBrand={wholesaleBrand}
+        availableWorkspaces={availableWorkspaces}
+        availableWholesaleBrands={availableWholesaleBrands}
+        onSelect={(ws, brand) => {
+          setActiveWorkspace(ws);
+          onWorkspaceSwitch(ws);
+          if (brand) setWholesaleBrand(brand);
+        }}
+      />
+
       {/* ── Logout ── */}
       <button
         onClick={onLogout}
-        className={`w-full flex items-center ${isOpen ? 'gap-3 px-4' : 'justify-center px-0'} py-3 text-slate-500 font-bold text-sm hover:text-white border-t border-white/5 pt-4 mt-auto transition-colors flex-shrink-0`}
+        className={`w-full flex items-center ${isOpen ? 'gap-3 px-4' : 'justify-center px-0'} py-3 text-rose-400/80 font-bold text-sm hover:text-rose-300 hover:bg-rose-500/10 rounded-xl transition-colors flex-shrink-0`}
       >
         <LogOut size={20}/>
-        {isOpen && <span className="truncate">{t.admin.exitAdmin}</span>}
+        {isOpen && <span className="truncate">登出</span>}
       </button>
     </aside>
+  );
+};
+
+// ─── Workspace / brand picker ────────────────────────────────────
+
+interface PickerOption {
+  id: string;
+  label: string;
+  icon: string;
+  workspace: Workspace;
+  brand?: WholesaleBrand;
+}
+
+const PICKER_OPTIONS: PickerOption[] = [
+  { id: 'ghfoods_wholesale', label: 'GH Foods 批發', icon: '🏭', workspace: 'WHOLESALE', brand: 'GHFOODS' },
+  { id: 'coolfood_wholesale', label: 'Coolfood 批發', icon: '❄️', workspace: 'WHOLESALE', brand: 'COOLFOOD' },
+  { id: 'coolfood_retail', label: 'Coolfood 零售', icon: '🛒', workspace: 'COOLFOOD_RETAIL' },
+];
+
+const WorkspacePicker: React.FC<{
+  isOpen: boolean;
+  setIsOpen: (fn: boolean | ((prev: boolean) => boolean)) => void;
+  activeWorkspace: Workspace | null;
+  wholesaleBrand: WholesaleBrand;
+  availableWorkspaces: Workspace[];
+  availableWholesaleBrands: WholesaleBrand[];
+  onSelect: (ws: Workspace, brand?: WholesaleBrand) => void;
+}> = ({ isOpen, setIsOpen, activeWorkspace, wholesaleBrand, availableWorkspaces, availableWholesaleBrands, onSelect }) => {
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setPopoverOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const visibleOptions = PICKER_OPTIONS.filter(opt => {
+    if (!availableWorkspaces.includes(opt.workspace)) return false;
+    if (opt.brand && !availableWholesaleBrands.includes(opt.brand)) return false;
+    return true;
+  });
+
+  const currentOption = visibleOptions.find(opt => {
+    if (activeWorkspace === 'WHOLESALE' && opt.workspace === 'WHOLESALE' && opt.brand === wholesaleBrand) return true;
+    if (activeWorkspace === 'COOLFOOD_RETAIL' && opt.workspace === 'COOLFOOD_RETAIL') return true;
+    return false;
+  }) || visibleOptions[0];
+
+  if (visibleOptions.length < 2) return null;
+
+  return (
+    <div className="relative mt-2 flex-shrink-0 border-t border-white/5 pt-3" ref={ref}>
+      <button
+        onClick={() => {
+          if (!isOpen) { setIsOpen(true); setTimeout(() => setPopoverOpen(true), 220); return; }
+          setPopoverOpen(prev => !prev);
+        }}
+        className={`w-full flex items-center ${isOpen ? 'gap-2.5 px-3' : 'justify-center px-0'} py-2.5 rounded-xl text-sm font-bold transition-all bg-white/5 hover:bg-white/10 text-white`}
+      >
+        <span className="text-base flex-shrink-0">{currentOption?.icon || '🏪'}</span>
+        {isOpen && (
+          <>
+            <span className="truncate text-xs font-black">{currentOption?.label || '選擇工作區'}</span>
+            <ChevronUp size={14} className={`ml-auto flex-shrink-0 transition-transform ${popoverOpen ? 'rotate-180' : ''}`} />
+          </>
+        )}
+      </button>
+
+      {popoverOpen && isOpen && (
+        <div className="absolute bottom-full left-0 mb-2 w-full bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden z-50 animate-fade-in">
+          <div className="px-3 py-2 border-b border-slate-700">
+            <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">切換工作區</p>
+          </div>
+          {visibleOptions.map(opt => {
+            const isActive = currentOption?.id === opt.id;
+            return (
+              <button
+                key={opt.id}
+                onClick={() => {
+                  onSelect(opt.workspace, opt.brand);
+                  setPopoverOpen(false);
+                }}
+                className={`w-full flex items-center gap-2.5 px-3 py-3 text-sm font-bold transition-colors ${
+                  isActive
+                    ? 'bg-blue-600/20 text-blue-400'
+                    : 'text-slate-300 hover:bg-white/5 hover:text-white'
+                }`}
+              >
+                <span className="text-base">{opt.icon}</span>
+                <span className="text-xs font-black truncate">{opt.label}</span>
+                {isActive && <Check size={14} className="ml-auto text-blue-400 flex-shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 };
 

@@ -9747,6 +9747,7 @@ const App: React.FC = () => {
             setIsOpen={setIsAdminSidebarOpen}
             hasAdminPermission={hasAdminPermission}
             onLogout={() => { setIsAdminAuthenticated(false); setAdminUser(null); try { localStorage.removeItem('coolfood_admin_session'); localStorage.removeItem('coolfood_admin_session_token'); localStorage.removeItem('coolfood_admin_issued_at'); } catch { /* ignore */ } window.location.hash = ''; }}
+            onWorkspaceSwitch={handleWorkspaceSwitch}
             t={t}
           />
           <main className="flex-1 min-w-0 p-6 md:p-10 overflow-y-auto bg-[#f8fafc] hide-scrollbar">
@@ -10118,7 +10119,7 @@ const App: React.FC = () => {
                   </div>
                   {!isWholesaleRoute && (
                     <a href="/wholesale" className="flex items-center justify-center gap-2 mt-6 px-5 py-3.5 bg-orange-50 border-2 border-orange-200 rounded-2xl text-sm font-bold text-orange-600 hover:bg-orange-100 hover:border-orange-300 transition-all shadow-sm">
-                      <Store size={16} /> 批發客戶？前往批發平台 →
+                      <Store size={16} /> 餐廳/公司客戶？前往批發平台 →
                     </a>
                   )}
                 </div>
@@ -10180,7 +10181,7 @@ const App: React.FC = () => {
                 <button onClick={() => { setUser(null); try { localStorage.removeItem('coolfood_member_id'); localStorage.removeItem('coolfood_session_token'); localStorage.removeItem('coolfood_session_issued_at'); } catch { /* ignore */ } setView('store'); showToast(t.profile.loggedOut); }} className="w-full py-5 bg-white text-rose-500 rounded-[2rem] font-black border border-rose-50 shadow-sm active:scale-95 transition-all hover:bg-rose-50">{t.profile.logout}</button>
                 {!isWholesaleRoute && (
                   <a href="/wholesale" className="flex items-center justify-center gap-2 mt-6 px-5 py-3.5 bg-orange-50 border-2 border-orange-200 rounded-2xl text-sm font-bold text-orange-600 hover:bg-orange-100 hover:border-orange-300 transition-all shadow-sm">
-                    <Store size={16} /> 批發客戶？前往批發平台 →
+                    <Store size={16} /> 餐廳/公司客戶？前往批發平台 →
                   </a>
                 )}
              </div>
