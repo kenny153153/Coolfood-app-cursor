@@ -21,22 +21,12 @@ if (sentryDsn) {
 const SentryErrorBoundary = Sentry.ErrorBoundary;
 
 function FallbackUI({ error }: { error: Error }) {
-  const envUrl = import.meta.env.VITE_SUPABASE_URL ?? '(not set)';
-  const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY ? '***set***' : '(not set)';
+  if (import.meta.env.DEV) console.error('[FallbackUI]', error);
   return (
     <div style={{ padding: 24, fontFamily: 'sans-serif', maxWidth: 700 }}>
       <h1 style={{ color: '#b91c1c' }}>Something went wrong</h1>
-      <pre style={{ background: '#fef2f2', padding: 16, overflow: 'auto', fontSize: 13 }}>
-        {error.message}
-      </pre>
-      <details style={{ marginTop: 12 }}>
-        <summary style={{ cursor: 'pointer', color: '#64748b', fontSize: 13 }}>Stack trace</summary>
-        <pre style={{ background: '#f8fafc', padding: 12, overflow: 'auto', fontSize: 11, marginTop: 8 }}>
-          {error.stack}
-        </pre>
-      </details>
       <p style={{ color: '#64748b', marginTop: 12, fontSize: 13 }}>
-        如遇到問題，請重新載入頁面或聯繫客服。
+        系統發生錯誤，請重新載入頁面。如問題持續，請聯繫客服。
       </p>
       <button onClick={() => window.location.reload()} style={{ marginTop: 12, padding: '8px 16px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700 }}>重新載入</button>
     </div>

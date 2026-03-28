@@ -57,6 +57,11 @@ export default async function handler(req: VercelRequest & { headers?: Record<st
   const authResult = await verifyAdminRequest(req, 'orders', 'create');
   if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
+  const bodySize = JSON.stringify(req.body || {}).length;
+  if (bodySize > 500_000) {
+    return res.status(413).json({ error: 'Request too large', code: 'PAYLOAD_TOO_LARGE' });
+  }
+
   const { message, products, clientNames, corrections, extraUnits, processingTypes, clientPreferences } = req.body || {};
 
   if (!message?.trim()) {
@@ -137,7 +142,7 @@ JSON array:
     const jsonMatch = raw.match(/\[[\s\S]*\]/);
     if (!jsonMatch) {
       console.error('[parse-whatsapp-order] AI did not return valid JSON array:', raw.slice(0, 500));
-      return res.status(502).json({ ok: false, error: 'AI 未回傳有效 JSON', raw: raw.slice(0, 300) });
+      return res.status(502).json({ ok: false, error: 'AI 未回傳有效 JSON' });
     }
 
     const parsed = JSON.parse(jsonMatch[0]);

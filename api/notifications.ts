@@ -6,6 +6,7 @@
  * to stay within Vercel Hobby plan limits.
  */
 import { createClient } from '@supabase/supabase-js';
+import { checkRateLimit, getClientIp } from './_rateLimit.js';
 
 // ─── Shared WhatsApp helpers ────────────────────────────────────────
 
@@ -155,6 +156,12 @@ export default async function handler(
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const ip = getClientIp(req.headers ?? {});
+  const rl = await checkRateLimit(`notifications:${ip}`, 20, 60_000);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: 'Too many requests', code: 'RATE_LIMITED' });
   }
 
   const action = typeof req.body?.action === 'string' ? req.body.action.trim() : '';

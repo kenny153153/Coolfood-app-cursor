@@ -7,6 +7,7 @@
  * (ERR_MODULE_NOT_FOUND: /var/task/api/send-whatsapp)。
  */
 import { createClient } from '@supabase/supabase-js';
+import { checkRateLimit, getClientIp } from './_rateLimit.js';
 
 const AIRWALLEX_DEMO = 'https://api-demo.airwallex.com';
 const AIRWALLEX_PROD = 'https://api.airwallex.com';
@@ -85,11 +86,15 @@ export default async function handler(
   req: { method?: string; body?: ConfirmPayload; headers?: Record<string, string | string[] | undefined> },
   res: { setHeader: (k: string, v: string) => void; status: (n: number) => { json: (o: object) => void }; json: (o: object) => void }
 ) {
-  console.log('[confirm-payment] Start | body:', JSON.stringify(req.body));
-
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const ip = getClientIp(req.headers ?? {});
+  const rl = await checkRateLimit(`confirm-payment:${ip}`, 10, 60_000);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: 'Too many requests', code: 'RATE_LIMITED' });
   }
 
   const body = req.body as ConfirmPayload;
@@ -334,8 +339,6 @@ export default async function handler(
       success: true,
       orderId,
       confirmed: true,
-      airwallexVerified,
-      ...(airwallexError ? { airwallexWarning: airwallexError } : {}),
     });
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);

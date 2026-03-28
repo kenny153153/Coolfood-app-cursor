@@ -18,7 +18,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- ─── 1. SESSION VERIFICATION FUNCTIONS ────────────────────────
 
 -- Verify admin session from request headers (x-admin-id + x-admin-session).
--- Returns true if the session token matches sha256('session:' + id + ':' + password_hash).
+-- Supports time-bound tokens (with session_issued_at) and legacy fallback.
 -- SECURITY DEFINER so it can read members.password_hash regardless of RLS.
 CREATE OR REPLACE FUNCTION is_admin_session() RETURNS boolean AS $$
 DECLARE
@@ -27,7 +27,9 @@ DECLARE
   session_token text;
   stored_hash text;
   admin_role text;
+  issued_at bigint;
   expected_token text;
+  legacy_token text;
 BEGIN
   headers_raw := current_setting('request.headers', true);
   IF headers_raw IS NULL OR headers_raw = '' THEN RETURN false; END IF;
@@ -42,28 +44,44 @@ BEGIN
     RETURN false;
   END IF;
 
-  SELECT password_hash, role INTO stored_hash, admin_role
+  SELECT password_hash, role, COALESCE(session_issued_at, 0)
+    INTO stored_hash, admin_role, issued_at
   FROM public.members
   WHERE id = admin_id AND role NOT IN ('customer');
 
   IF NOT FOUND THEN RETURN false; END IF;
 
-  expected_token := encode(
+  IF issued_at > 0 AND (extract(epoch from now()) * 1000 - issued_at) > 604800000 THEN
+    RETURN false;
+  END IF;
+
+  IF issued_at > 0 THEN
+    expected_token := encode(
+      digest('session:' || admin_id || ':' || COALESCE(stored_hash, '') || ':' || issued_at::text, 'sha256'),
+      'hex'
+    );
+    IF session_token = expected_token THEN RETURN true; END IF;
+  END IF;
+
+  legacy_token := encode(
     digest('session:' || admin_id || ':' || COALESCE(stored_hash, ''), 'sha256'),
     'hex'
   );
-  RETURN session_token = expected_token;
+  RETURN session_token = legacy_token;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER STABLE;
 
 -- Verify customer session from request headers (x-member-id + x-member-session).
+-- Supports time-bound tokens (with session_issued_at) and legacy fallback.
 CREATE OR REPLACE FUNCTION is_customer_session() RETURNS boolean AS $$
 DECLARE
   headers_raw text;
   member_id text;
   session_token text;
   stored_hash text;
+  issued_at bigint;
   expected_token text;
+  legacy_token text;
 BEGIN
   headers_raw := current_setting('request.headers', true);
   IF headers_raw IS NULL OR headers_raw = '' THEN RETURN false; END IF;
@@ -78,17 +96,30 @@ BEGIN
     RETURN false;
   END IF;
 
-  SELECT password_hash INTO stored_hash
+  SELECT password_hash, COALESCE(session_issued_at, 0)
+    INTO stored_hash, issued_at
   FROM public.members
   WHERE id = member_id;
 
   IF NOT FOUND THEN RETURN false; END IF;
 
-  expected_token := encode(
+  IF issued_at > 0 AND (extract(epoch from now()) * 1000 - issued_at) > 604800000 THEN
+    RETURN false;
+  END IF;
+
+  IF issued_at > 0 THEN
+    expected_token := encode(
+      digest('session:' || member_id || ':' || COALESCE(stored_hash, '') || ':' || issued_at::text, 'sha256'),
+      'hex'
+    );
+    IF session_token = expected_token THEN RETURN true; END IF;
+  END IF;
+
+  legacy_token := encode(
     digest('session:' || member_id || ':' || COALESCE(stored_hash, ''), 'sha256'),
     'hex'
   );
-  RETURN session_token = expected_token;
+  RETURN session_token = legacy_token;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER STABLE;
 

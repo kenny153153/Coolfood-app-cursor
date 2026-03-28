@@ -132,6 +132,11 @@ export default async function handler(req: VercelRequest & { headers?: Record<st
   const authResult = await verifyAdminRequest(req, 'warehouse_ops', 'create');
   if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
+  const bodyStr = typeof req.body?.pdfBase64 === 'string' ? req.body.pdfBase64 : '';
+  if (bodyStr.length > 10_000_000) {
+    return res.status(413).json({ error: 'PDF too large (max 10MB base64)', code: 'PAYLOAD_TOO_LARGE' });
+  }
+
   const {
     content,
     pdfBase64,
@@ -247,7 +252,7 @@ ${content}
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       console.error('[parse-supplier-quote] AI did not return valid JSON:', raw.slice(0, 500));
-      return res.status(502).json({ ok: false, error: 'AI 未回傳有效 JSON', raw: raw.slice(0, 300) });
+      return res.status(502).json({ ok: false, error: 'AI 未回傳有效 JSON' });
     }
 
     let parsed: any;
@@ -257,7 +262,7 @@ ${content}
       parsed = repairTruncatedJson(jsonMatch[0]);
       if (!parsed) {
         console.error('[parse-supplier-quote] JSON repair failed, raw:', raw.slice(0, 500));
-        return res.status(502).json({ ok: false, error: 'AI 回傳的 JSON 不完整且無法修復', raw: raw.slice(0, 300) });
+        return res.status(502).json({ ok: false, error: 'AI 回傳的 JSON 不完整且無法修復' });
       }
       console.log('[parse-supplier-quote] Repaired truncated JSON successfully');
     }

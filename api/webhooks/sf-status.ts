@@ -6,7 +6,7 @@
  *
  * 所有依賴邏輯內嵌，不跨檔案 import，避免 Vercel ERR_MODULE_NOT_FOUND。
  */
-import crypto from 'crypto';
+import crypto, { timingSafeEqual } from 'crypto';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const SHIPPED_CODES = new Set(['50', '51', '30', '31', '36', '44', '45', '46']);
@@ -103,7 +103,9 @@ export default async function handler(
   if (!checkword) return res.status(500).json({ error: 'SF_CHECKWORD not set' });
 
   const expectedDigest = computeMsgDigest(msgData, timestamp, checkword);
-  if (msgDigest !== expectedDigest) {
+  const digestMatch = msgDigest.length === expectedDigest.length
+    && timingSafeEqual(Buffer.from(msgDigest), Buffer.from(expectedDigest));
+  if (!digestMatch) {
     console.error('[sf-status] Digest mismatch');
     return res.status(403).json({ error: 'Signature failed' });
   }

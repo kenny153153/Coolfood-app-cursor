@@ -132,7 +132,7 @@ async function handleCreateIntent(req: any, res: any) {
       const mainMsg = airwallexMsg
         ? `Payment auth failed: ${airwallexMsg}.${hint}`
         : `Payment auth failed. Check Client ID and API key.${hint}`;
-      return res.status(502).json({ error: mainMsg, code: 'AUTH_FAILED', details: errText.slice(0, 200) });
+      return res.status(502).json({ error: mainMsg, code: 'AUTH_FAILED' });
     }
 
     const authData = (await authRes.json()) as { access_token?: string; token?: string };
@@ -159,7 +159,7 @@ async function handleCreateIntent(req: any, res: any) {
     if (!createRes.ok) {
       const errText = await createRes.text();
       console.error('[Airwallex] Create intent failed', createRes.status, errText);
-      return res.status(502).json({ error: 'Payment intent failed. See Vercel function logs for details.', code: 'INTENT_FAILED', details: errText.slice(0, 200) });
+      return res.status(502).json({ error: 'Payment intent failed. See Vercel function logs for details.', code: 'INTENT_FAILED' });
     }
 
     const intentData = (await createRes.json()) as Record<string, unknown>;
@@ -179,7 +179,7 @@ async function handleCreateIntent(req: any, res: any) {
   } catch (e) {
     console.error('[Airwallex] API error', e);
     const errMsg = e instanceof Error ? e.message : String(e);
-    return res.status(502).json({ error: 'Payment system error. Check Vercel function logs.', code: 'NETWORK_OR_SERVER_ERROR', details: errMsg.slice(0, 200) });
+    return res.status(502).json({ error: 'Payment system error. Check Vercel function logs.', code: 'NETWORK_OR_SERVER_ERROR' });
   }
 }
 
@@ -252,9 +252,8 @@ async function handleRefund(req: any, res: any) {
     if (!refundRes.ok) {
       console.error('[airwallex-refund] Refund failed:', refundRes.status, refundText.slice(0, 300));
       return res.status(502).json({
-        error: `退款失敗: ${(refundJson as any).message || refundRes.status}`,
+        error: '退款失敗，請稍後重試或聯繫客服',
         code: 'REFUND_FAILED',
-        details: refundText.slice(0, 300),
       });
     }
 
@@ -284,7 +283,6 @@ async function handleRefund(req: any, res: any) {
     return res.status(500).json({
       error: '退款處理失敗，請稍後重試',
       code: 'REFUND_ERROR',
-      details: e instanceof Error ? e.message : String(e),
     });
   }
 }

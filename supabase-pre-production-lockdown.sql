@@ -86,6 +86,7 @@ CREATE POLICY "members_select" ON public.members
   FOR SELECT USING (
     can_write()
     OR auth.role() = 'service_role'
+    OR (is_customer_session() AND id::text = get_session_member_id())
   );
 
 CREATE POLICY "members_insert" ON public.members
@@ -134,16 +135,28 @@ END $$;
 
 
 -- ─── 4. REVOKE anon/authenticated EXECUTE on SECURITY DEFINER RPCs ─
+-- These functions modify inventory data and must only be callable via service_role.
+-- Function names verified against supabase-inventory-rpcs-migration.sql and
+-- supabase-production-security-migration.sql.
 
 DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'increment_ingredient_stock') THEN
     EXECUTE 'REVOKE EXECUTE ON FUNCTION increment_ingredient_stock FROM anon, authenticated';
   END IF;
-  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'batch_update_ingredient_stocks') THEN
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION batch_update_ingredient_stocks FROM anon, authenticated';
+  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'decrement_ingredient_stock') THEN
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION decrement_ingredient_stock FROM anon, authenticated';
   END IF;
-  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'decrement_stock') THEN
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION decrement_stock FROM anon, authenticated';
+  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'increment_committed_qty') THEN
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION increment_committed_qty FROM anon, authenticated';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'decrement_committed_qty') THEN
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION decrement_committed_qty FROM anon, authenticated';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'increment_incoming_qty') THEN
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION increment_incoming_qty FROM anon, authenticated';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'decrement_incoming_qty') THEN
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION decrement_incoming_qty FROM anon, authenticated';
   END IF;
 END $$;
 

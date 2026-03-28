@@ -7,6 +7,7 @@
  */
 import { createHash, timingSafeEqual } from 'crypto';
 import { z } from 'zod';
+import { checkRateLimit, getClientIp } from './_rateLimit.js';
 
 const safeTrim = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 
@@ -19,7 +20,12 @@ function timingSafeCompare(a: string, b: string): boolean {
   return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 function verifySession(token: string, memberId: string, passwordHash: string | null, sessionIssuedAt?: number): boolean {
+  if (sessionIssuedAt && sessionIssuedAt > 0 && (Date.now() - sessionIssuedAt) > SESSION_MAX_AGE_MS) {
+    return false;
+  }
   const base = `session:${memberId}:${passwordHash ?? ''}`;
   if (sessionIssuedAt) {
     const expected = createHash('sha256').update(`${base}:${sessionIssuedAt}`).digest('hex');
@@ -77,6 +83,12 @@ export default async function handler(req: Req, res: Res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const ip = getClientIp(req.headers ?? {});
+  const rl = await checkRateLimit(`customer-api:${ip}`, 30, 60_000);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: 'Too many requests', code: 'RATE_LIMITED' });
   }
 
   const parsed = customerApiSchema.safeParse(req.body);

@@ -267,9 +267,21 @@ export default async function handler(req: VercelRequest & { headers?: Record<st
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  const { checkRateLimit, getClientIp } = await import('./_rateLimit.js');
+  const ip = getClientIp(req.headers ?? {});
+  const rl = await checkRateLimit(`generate-recipe:${ip}`, 10, 60_000);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: 'Too many requests', code: 'RATE_LIMITED' });
+  }
+
   const { verifyAdminRequest } = await import('./_adminAuth.js');
   const authResult = await verifyAdminRequest(req, 'recipes', 'create');
   if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
+
+  const bodySize = JSON.stringify(req.body || {}).length;
+  if (bodySize > 500_000) {
+    return res.status(413).json({ error: 'Request too large', code: 'PAYLOAD_TOO_LARGE' });
+  }
 
   const { action, payload } = req.body || {};
 

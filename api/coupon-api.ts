@@ -7,6 +7,7 @@
  */
 import { createHash, timingSafeEqual } from 'crypto';
 import { createClient } from '@supabase/supabase-js';
+import { checkRateLimit, getClientIp } from './_rateLimit.js';
 
 type Req = {
   method?: string;
@@ -44,6 +45,8 @@ function getSupabaseAdmin() {
   };
 }
 
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 async function verifyCustomerSession(
   headers: Record<string, string | string[] | undefined>,
   supabaseUrl: string,
@@ -62,6 +65,11 @@ async function verifyCustomerSession(
   if (!member) return { ok: false };
 
   const serverIssuedAt = Number(member.session_issued_at) || 0;
+
+  if (serverIssuedAt > 0 && (Date.now() - serverIssuedAt) > SESSION_MAX_AGE_MS) {
+    return { ok: false };
+  }
+
   const base = `session:${member.id}:${member.password_hash ?? ''}`;
   const expected = serverIssuedAt ? sha256(`${base}:${serverIssuedAt}`) : sha256(base);
   if (constantTimeCompare(sessionToken, expected)) return { ok: true, memberId: member.id };
@@ -76,6 +84,12 @@ export default async function handler(req: Req, res: Res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const ip = getClientIp(req.headers ?? {});
+  const rl = await checkRateLimit(`coupon-api:${ip}`, 15, 60_000);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: 'Too many requests', code: 'RATE_LIMITED' });
   }
 
   const body = req.body ?? {};

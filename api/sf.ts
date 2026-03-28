@@ -5,6 +5,7 @@
  * Merges the former /api/sf-order and /api/sf-label into a single serverless function.
  */
 import crypto from 'crypto';
+import { checkRateLimit, getClientIp } from './_rateLimit.js';
 
 const SF_SANDBOX_URL = 'https://sfapi-sbox.sf-express.com/std/service';
 const SF_PROD_URL = 'https://sfapi.sf-express.com/std/service';
@@ -419,10 +420,11 @@ async function handleOrder(req: any, res: any) {
     }
 
     const resText = await sfRes.text();
-    console.log('[SF] Response:', sfRes.status, resText.slice(0, 300));
+    console.log('[SF] Response status:', sfRes.status);
 
     if (!sfRes.ok) {
-      return res.status(502).json({ error: '順豐請求失敗', code: 'SF_REQUEST_FAILED', details: resText.slice(0, 300) });
+      console.error('[SF] Request failed:', resText.slice(0, 300));
+      return res.status(502).json({ error: '順豐請求失敗', code: 'SF_REQUEST_FAILED' });
     }
 
     let json: Record<string, unknown>;
@@ -464,7 +466,7 @@ async function handleOrder(req: any, res: any) {
       }
     }
 
-    return res.status(200).json({ success: true, orderId, waybillNo: waybillNoStr, raw: json });
+    return res.status(200).json({ success: true, orderId, waybillNo: waybillNoStr });
   } catch (e) {
     console.error('[SF] Unhandled:', e);
     return res.status(502).json({ error: '順豐系統錯誤', code: 'SF_ERROR' });
@@ -480,6 +482,12 @@ export default async function handler(
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const ip = getClientIp(req.headers ?? {});
+  const rl = await checkRateLimit(`sf:${ip}`, 20, 60_000);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: 'Too many requests', code: 'RATE_LIMITED' });
   }
 
   const action = req.body?.action;
