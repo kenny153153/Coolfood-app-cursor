@@ -10,15 +10,23 @@ import { z } from 'zod';
 
 const safeTrim = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 
-function verifySession(token: string, memberId: string, passwordHash: string | null): boolean {
-  const raw = `session:${memberId}:${passwordHash ?? ''}`;
-  const expected = createHash('sha256').update(raw).digest('hex');
-  if (token.length !== expected.length) {
+function timingSafeCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) {
     const dummy = Buffer.alloc(32);
     timingSafeEqual(dummy, dummy);
     return false;
   }
-  return timingSafeEqual(Buffer.from(token), Buffer.from(expected));
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
+function verifySession(token: string, memberId: string, passwordHash: string | null, sessionIssuedAt?: number): boolean {
+  const base = `session:${memberId}:${passwordHash ?? ''}`;
+  if (sessionIssuedAt) {
+    const expected = createHash('sha256').update(`${base}:${sessionIssuedAt}`).digest('hex');
+    if (timingSafeCompare(token, expected)) return true;
+  }
+  const legacy = createHash('sha256').update(base).digest('hex');
+  return timingSafeCompare(token, legacy);
 }
 
 const customerApiSchema = z.object({
@@ -52,13 +60,13 @@ async function authenticate(req: Req, res: Res) {
   }
 
   const memberRes = await fetch(
-    `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(memberId)}&select=id,password_hash`,
+    `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(memberId)}&select=id,password_hash,session_issued_at`,
     { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
   );
   const members = await memberRes.json();
   const member = Array.isArray(members) ? members[0] : null;
 
-  if (!member || !verifySession(sessionToken, member.id, member.password_hash)) {
+  if (!member || !verifySession(sessionToken, member.id, member.password_hash, Number(member.session_issued_at) || 0)) {
     return { ok: false as const, respond: () => res.status(401).json({ error: '無效的登入狀態' }) };
   }
 

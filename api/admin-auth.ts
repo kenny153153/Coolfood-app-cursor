@@ -224,6 +224,12 @@ const changePasswordSchema = z.object({
 });
 
 async function handleChangePassword(req: Req, res: Res) {
+  const ip = getClientIp(req.headers ?? {});
+  const rl = await checkRateLimit(`admin-changepw:${ip}`, 5, 60_000);
+  if (!rl.allowed) {
+    return res.status(429).json({ error: '嘗試次數過多，請稍後再試', code: 'RATE_LIMITED', retryAfterMs: rl.retryAfterMs });
+  }
+
   const parsed = changePasswordSchema.safeParse(req.body);
   if (!parsed.success) {
     const msg = parsed.error.issues[0]?.path.includes('newPassword') ? '新密碼至少需要6個字元' : '未授權：需要登入';

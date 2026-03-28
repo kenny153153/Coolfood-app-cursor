@@ -11,7 +11,7 @@ if (sentryDsn) {
   Sentry.init({
     dsn: sentryDsn,
     environment: import.meta.env.MODE,
-    integrations: [Sentry.browserTracingIntegration(), Sentry.replayIntegration({ maskAllText: false, blockAllMedia: false })],
+    integrations: [Sentry.browserTracingIntegration(), Sentry.replayIntegration({ maskAllText: true, blockAllMedia: true })],
     tracesSampleRate: 0.2,
     replaysSessionSampleRate: 0,
     replaysOnErrorSampleRate: 1.0,
@@ -36,7 +36,7 @@ function FallbackUI({ error }: { error: Error }) {
         </pre>
       </details>
       <p style={{ color: '#64748b', marginTop: 12, fontSize: 13 }}>
-        Env check — VITE_SUPABASE_URL: {envUrl.slice(0, 30)}… | VITE_SUPABASE_ANON_KEY: {envKey}
+        如遇到問題，請重新載入頁面或聯繫客服。
       </p>
       <button onClick={() => window.location.reload()} style={{ marginTop: 12, padding: '8px 16px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700 }}>重新載入</button>
     </div>

@@ -54,17 +54,22 @@ async function verifyCustomerSession(
   if (!memberId || !sessionToken) return { ok: false };
 
   const res = await fetch(
-    `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(memberId)}&select=id,password_hash`,
+    `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(memberId)}&select=id,password_hash,session_issued_at`,
     { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } },
   );
   const rows = await res.json();
   const member = Array.isArray(rows) ? rows[0] : null;
   if (!member) return { ok: false };
 
-  const expected = sha256(`session:${member.id}:${member.password_hash ?? ''}`);
-  if (!constantTimeCompare(sessionToken, expected)) return { ok: false };
+  const serverIssuedAt = Number(member.session_issued_at) || 0;
+  const base = `session:${member.id}:${member.password_hash ?? ''}`;
+  const expected = serverIssuedAt ? sha256(`${base}:${serverIssuedAt}`) : sha256(base);
+  if (constantTimeCompare(sessionToken, expected)) return { ok: true, memberId: member.id };
 
-  return { ok: true, memberId: member.id };
+  const legacy = sha256(base);
+  if (constantTimeCompare(sessionToken, legacy)) return { ok: true, memberId: member.id };
+
+  return { ok: false };
 }
 
 export default async function handler(req: Req, res: Res) {
