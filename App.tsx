@@ -635,6 +635,7 @@ const App: React.FC = () => {
   const [isRedirectingToPayment, setIsRedirectingToPayment] = useState(false);
   const [adminModule, setAdminModule] = useState<AdminModuleId>('global_dashboard');
   const [moduleWorkspace, setModuleWorkspace] = useState<Workspace | null>(null);
+  const [adminWholesaleBrand, setAdminWholesaleBrand] = useState<'GHFOODS' | 'COOLFOOD'>('GHFOODS');
   const [adminUser, setAdminUser] = useState<AdminAccount | null>(null);
   const [adminAccounts, setAdminAccounts] = useState<AdminAccount[]>([]);
   const [editingAdminAccount, setEditingAdminAccount] = useState<(Partial<AdminAccount> & { isNew?: boolean; newPhone?: string }) | null>(null);
@@ -752,7 +753,7 @@ const App: React.FC = () => {
   const [adminProductSearch, setAdminProductSearch] = useState('');
   const [adminOrderSearch, setAdminOrderSearch] = useState('');
   const [adminMemberSearch, setAdminMemberSearch] = useState('');
-  const [adminMemberTypeFilter, setAdminMemberTypeFilter] = useState<'all' | 'retail' | 'wholesale' | 'pending'>('all');
+  const [adminMemberTypeFilter, setAdminMemberTypeFilter] = useState<'all' | 'retail' | 'wholesale' | 'pending' | 'approved' | 'rejected'>('all');
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
   const [batchProcessing, setBatchProcessing] = useState(false);
   const [sfValidationModal, setSfValidationModal] = useState<{ problematic: { id: string; reason: string }[]; valid: SupabaseOrderRow[] } | null>(null);
@@ -798,6 +799,12 @@ const App: React.FC = () => {
   const [authForm, setAuthForm] = useState({ email: '', password: '', name: '', phone: '', companyName: '', businessType: '', branchCount: '1', storefrontPreparing: false });
   const [wholesaleRegFiles, setWholesaleRegFiles] = useState<{ brDoc: File | null; storefrontPhoto: File | null }>({ brDoc: null, storefrontPhoto: null });
   const [wholesaleRegUploading, setWholesaleRegUploading] = useState(false);
+  const [claimStep, setClaimStep] = useState<'idle' | 'email' | 'confirm' | 'credentials' | 'success'>('idle');
+  const [claimEmail, setClaimEmail] = useState('');
+  const [claimPhone, setClaimPhone] = useState('');
+  const [claimPassword, setClaimPassword] = useState('');
+  const [claimData, setClaimData] = useState<{ name: string; hasRealPhone: boolean; existingPhone: string | null; shoplineJoinDate: string | null; shoplineOrders: string } | null>(null);
+  const [claimLoading, setClaimLoading] = useState(false);
   const [editingMemberPassword, setEditingMemberPassword] = useState('');
   const [aiDescLoading, setAiDescLoading] = useState(false);
   const [aiFieldLoading, setAiFieldLoading] = useState<string | null>(null);
@@ -1133,7 +1140,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadCoreData = async () => {
       const membersPromise = isAdminRoute
-        ? supabase.from('members_safe').select('id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, wholesale_status, company_name, business_type, branch_count, br_doc_url, storefront_photo_url, storefront_preparing, delivery_address, br_update_required, addresses')
+        ? supabase.from('members_safe').select('id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, wholesale_status, wholesale_brand, company_name, business_type, branch_count, br_doc_url, storefront_photo_url, storefront_preparing, delivery_address, br_update_required, addresses')
         : Promise.resolve({ data: null, error: null });
       const [productsRes, categoriesRes, membersRes, slideshowRes] = await Promise.all([
         supabase.from('products').select('*'),
@@ -1547,9 +1554,10 @@ const App: React.FC = () => {
     setAdminModule(moduleId);
     setModuleWorkspace(workspace ?? null);
     if (moduleId === 'admin_management') loadAdminAccounts();
+    if (moduleId === 'members' && workspace === 'WHOLESALE') setAdminMemberTypeFilter('pending');
   };
 
-  const handleWorkspaceSwitch = (ws: Workspace | null) => {
+  const handleWorkspaceSwitch = (ws: Workspace | null, brand?: 'GHFOODS' | 'COOLFOOD') => {
     if (ws) {
       const defaultModules: Record<Workspace, AdminModuleId> = {
         COOLFOOD_RETAIL: 'dashboard',
@@ -1557,6 +1565,7 @@ const App: React.FC = () => {
       };
       setAdminModule(defaultModules[ws]);
       setModuleWorkspace(ws);
+      if (brand) setAdminWholesaleBrand(brand);
     } else {
       setAdminModule('global_dashboard');
       setModuleWorkspace(null);
@@ -2081,6 +2090,7 @@ const App: React.FC = () => {
           email: authForm.email.trim() || null,
           password: authForm.password,
           isWholesale: isWholesaleRoute,
+          wholesaleBrand: isWholesaleRoute ? (isGHFoods ? 'GHFOODS' : 'COOLFOOD') : undefined,
           companyName: isWholesaleRoute ? authForm.companyName.trim() : undefined,
           businessType: isWholesaleRoute ? authForm.businessType || undefined : undefined,
           branchCount: isWholesaleRoute ? authForm.branchCount : undefined,
@@ -2113,6 +2123,73 @@ const App: React.FC = () => {
       setWholesaleRegUploading(false);
       showToast('註冊失敗，請稍後再試', 'error');
     }
+  };
+
+  const handleClaimLookup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const email = claimEmail.trim().toLowerCase();
+    if (!email) { showToast('請輸入電郵地址', 'error'); return; }
+    setClaimLoading(true);
+    try {
+      const res = await fetch('/api/claim-account', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'lookup', email }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        showToast(json.error || '找不到此電郵的舊會員記錄', 'error');
+        setClaimLoading(false);
+        return;
+      }
+      setClaimData(json);
+      if (json.hasRealPhone && json.existingPhone) setClaimPhone(json.existingPhone);
+      setClaimStep('confirm');
+    } catch {
+      showToast('查詢失敗，請稍後再試', 'error');
+    }
+    setClaimLoading(false);
+  };
+
+  const handleClaimSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const phone = claimPhone.trim();
+    if (!phone || phone.length < 4) { showToast('請輸入有效的電話號碼', 'error'); return; }
+    if (!claimPassword || claimPassword.length < 6) { showToast('密碼至少 6 個字元', 'error'); return; }
+    setClaimLoading(true);
+    try {
+      const res = await fetch('/api/claim-account', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'claim', email: claimEmail.trim().toLowerCase(), phone, password: claimPassword }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        showToast(json.error || '啟用失敗', 'error');
+        setClaimLoading(false);
+        return;
+      }
+      const u = mapMemberRowToUser(json.user as SupabaseMemberRow);
+      setUser(u);
+      try {
+        localStorage.setItem('coolfood_member_id', u.id);
+        if (json.sessionToken) localStorage.setItem('coolfood_session_token', json.sessionToken);
+        if (json.issuedAt) localStorage.setItem('coolfood_session_issued_at', String(json.issuedAt));
+      } catch { /* ignore */ }
+      setClaimStep('success');
+      showToast('帳戶啟用成功！歡迎回來！');
+      setTimeout(() => {
+        setClaimStep('idle');
+        setClaimEmail('');
+        setClaimPhone('');
+        setClaimPassword('');
+        setClaimData(null);
+        setView('profile');
+      }, 2000);
+    } catch {
+      showToast('啟用失敗，請稍後再試', 'error');
+    }
+    setClaimLoading(false);
   };
 
   const handleSetDefaultAddress = (ownerId: string, addressId: string) => {
@@ -2578,7 +2655,7 @@ const App: React.FC = () => {
     showToast('廣告已刪除');
   };
 
-  const MEMBER_SAFE_COLUMNS = 'id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, wholesale_status, company_name, business_type, branch_count, br_doc_url, storefront_photo_url, storefront_preparing, delivery_address, br_update_required, addresses';
+  const MEMBER_SAFE_COLUMNS = 'id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, wholesale_status, wholesale_brand, company_name, business_type, branch_count, br_doc_url, storefront_photo_url, storefront_preparing, delivery_address, br_update_required, addresses';
   const upsertMember = async (member: UserType, passwordHash?: string | null) => {
     const { data, error } = await supabase
       .from('members')
@@ -3884,20 +3961,33 @@ const App: React.FC = () => {
     });
   }, [orders, adminOrderSearch, ordersStatusFilter, effectiveOrdersType]);
 
-  const effectiveMemberType: 'all' | 'retail' | 'wholesale' | 'pending' = moduleWorkspace === 'COOLFOOD_RETAIL' ? 'retail' : moduleWorkspace === 'WHOLESALE' ? 'wholesale' : adminMemberTypeFilter;
+  const effectiveMemberType: 'all' | 'retail' | 'wholesale' | 'pending' | 'approved' | 'rejected' = moduleWorkspace === 'COOLFOOD_RETAIL' ? 'retail' : adminMemberTypeFilter;
 
-  const pendingWholesaleCount = useMemo(() => members.filter(m => m.memberType === 'wholesale' && m.wholesaleStatus === 'pending').length, [members]);
+  const brandFilteredMembers = useMemo(() => {
+    if (moduleWorkspace !== 'WHOLESALE') return members;
+    return members.filter(m => m.memberType === 'wholesale' && m.wholesaleBrand === adminWholesaleBrand);
+  }, [members, moduleWorkspace, adminWholesaleBrand]);
+
+  const pendingWholesaleCount = useMemo(() => {
+    const pool = moduleWorkspace === 'WHOLESALE' ? brandFilteredMembers : members;
+    return pool.filter(m => m.memberType === 'wholesale' && m.wholesaleStatus === 'pending').length;
+  }, [brandFilteredMembers, members, moduleWorkspace]);
 
   const filteredAdminMembers = useMemo(() => {
-    return members.filter(m => {
+    const pool = moduleWorkspace === 'WHOLESALE' ? brandFilteredMembers : members;
+    return pool.filter(m => {
       const matchesSearch = m.name.toLowerCase().includes(adminMemberSearch.toLowerCase()) || 
         (m.email?.toLowerCase() ?? '').includes(adminMemberSearch.toLowerCase()) ||
         (m.phoneNumber && m.phoneNumber.includes(adminMemberSearch));
       if (effectiveMemberType === 'pending') return matchesSearch && m.memberType === 'wholesale' && m.wholesaleStatus === 'pending';
+      if (moduleWorkspace === 'WHOLESALE') {
+        if (effectiveMemberType === 'all') return matchesSearch;
+        return matchesSearch && m.wholesaleStatus === effectiveMemberType;
+      }
       const matchesType = effectiveMemberType === 'all' || (m.memberType || 'retail') === effectiveMemberType;
       return matchesSearch && matchesType;
     });
-  }, [members, adminMemberSearch, effectiveMemberType]);
+  }, [brandFilteredMembers, members, adminMemberSearch, effectiveMemberType, moduleWorkspace]);
 
   // --- UI Module Handlers ---
 
@@ -4614,7 +4704,18 @@ const App: React.FC = () => {
                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
                      <input value={adminMemberSearch} onChange={e => setAdminMemberSearch(e.target.value)} placeholder="搜索姓名、電郵或電話..." className="w-full pl-12 pr-6 py-3 bg-white border border-slate-100 rounded-2xl font-bold" />
                   </div>
-                  {!moduleWorkspace && (
+                  {moduleWorkspace === 'WHOLESALE' ? (
+                  <div className="flex gap-1">
+                    {([{ id: 'all' as const, label: '全部' }, { id: 'pending' as const, label: '待審核' }, { id: 'approved' as const, label: '已批准' }, { id: 'rejected' as const, label: '已拒絕' }]).map(f => (
+                      <button key={f.id} onClick={() => setAdminMemberTypeFilter(f.id as any)} className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all relative ${adminMemberTypeFilter === f.id ? (f.id === 'pending' ? 'bg-orange-500 text-white shadow-lg' : f.id === 'rejected' ? 'bg-red-500 text-white shadow-lg' : f.id === 'approved' ? 'bg-emerald-500 text-white shadow-lg' : 'bg-slate-900 text-white shadow-lg') : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-50'}`}>
+                        {f.label}
+                        {f.id === 'pending' && pendingWholesaleCount > 0 && (
+                          <span className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white text-[9px] font-black rounded-full flex items-center justify-center">{pendingWholesaleCount}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                  ) : !moduleWorkspace ? (
                   <div className="flex gap-1">
                     {([{ id: 'all' as const, label: '全部' }, { id: 'retail' as const, label: '零售' }, { id: 'wholesale' as const, label: '批發' }, { id: 'pending' as const, label: '待審核' }]).map(f => (
                       <button key={f.id} onClick={() => setAdminMemberTypeFilter(f.id)} className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all relative ${adminMemberTypeFilter === f.id ? (f.id === 'pending' ? 'bg-orange-500 text-white shadow-lg' : 'bg-slate-900 text-white shadow-lg') : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-50'}`}>
@@ -4625,14 +4726,14 @@ const App: React.FC = () => {
                       </button>
                     ))}
                   </div>
-                  )}
+                  ) : null}
                 </div>
                 <button onClick={() => { setEditingMember({ id: `u-${Date.now()}`, name: '', email: '', phoneNumber: '', points: 0, tier: 'Bronze', role: 'customer', memberType: 'retail', addresses: [] }); setEditingMemberPassword(''); }} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl"><Plus size={16}/> 新增會員</button>
              </div>
              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {filteredAdminMembers.length === 0 && (
                   <div className="col-span-full text-center text-slate-400 font-bold py-10">
-                    尚未有會員
+                    {moduleWorkspace === 'WHOLESALE' ? `尚無${adminWholesaleBrand === 'GHFOODS' ? 'GH Foods' : 'Coolfood'}批發客戶` : '尚未有會員'}
                   </div>
                 )}
                 {filteredAdminMembers.map(m => (
@@ -4642,10 +4743,13 @@ const App: React.FC = () => {
                             <div className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all ${m.memberType === 'wholesale' ? 'bg-orange-100 text-orange-500 group-hover:bg-orange-500 group-hover:text-white' : 'bg-slate-100 text-slate-400 group-hover:bg-blue-600 group-hover:text-white'}`}><User size={28}/></div>
                             <div>
                               <p className="font-black text-slate-900">{m.name}</p>
+                              {m.memberType === 'wholesale' && m.companyName && <p className="text-[11px] text-slate-500 font-bold">{m.companyName}</p>}
                               <div className="flex items-center gap-1.5 flex-wrap">
                                 <TierBadge tier={m.tier}/>
                                 <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-md ${m.memberType === 'wholesale' ? 'bg-orange-100 text-orange-600' : 'bg-blue-50 text-blue-400'}`}>{m.memberType === 'wholesale' ? `批發 ${m.wholesalePriceTier || 'P0'}` : '零售'}</span>
+                                {m.memberType === 'wholesale' && m.wholesaleBrand && <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-md ${m.wholesaleBrand === 'GHFOODS' ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>{m.wholesaleBrand === 'GHFOODS' ? 'GH Foods' : 'Coolfood'}</span>}
                                 {m.memberType === 'wholesale' && m.wholesaleStatus === 'pending' && <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-600 animate-pulse">待審核</span>}
+                                {m.memberType === 'wholesale' && m.wholesaleStatus === 'approved' && <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-600">已批准</span>}
                                 {m.memberType === 'wholesale' && m.wholesaleStatus === 'rejected' && <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-red-100 text-red-600">已拒絕</span>}
                                 {m.memberType === 'wholesale' && m.brUpdateRequired && <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-red-50 text-red-500 border border-red-200">待更新 BR</span>}
                               </div>
@@ -9722,6 +9826,7 @@ const App: React.FC = () => {
                 phone: form.phone.trim(),
                 password: form.password,
                 isWholesale: true,
+                wholesaleBrand: 'GHFOODS',
                 companyName: form.companyName.trim(),
                 businessType: form.businessType || undefined,
                 branchCount: form.branchCount,
@@ -9822,6 +9927,7 @@ const App: React.FC = () => {
               moduleWorkspace={moduleWorkspace}
               adminUser={adminUser}
               onWorkspaceSwitch={handleWorkspaceSwitch}
+              onBrandChange={setAdminWholesaleBrand}
               showToast={showToast}
               t={t}
             />
@@ -10183,8 +10289,80 @@ const App: React.FC = () => {
                       )}
                     </div>
                   </div>
-                  {!isWholesaleRoute && (
-                    <a href="/wholesale" className="flex items-center justify-center gap-2 mt-6 px-5 py-3.5 bg-orange-50 border-2 border-orange-200 rounded-2xl text-sm font-bold text-orange-600 hover:bg-orange-100 hover:border-orange-300 transition-all shadow-sm">
+                  {!isWholesaleRoute && claimStep === 'idle' && (
+                    <button
+                      type="button"
+                      onClick={() => { setClaimStep('email'); setClaimEmail(''); setClaimPhone(''); setClaimPassword(''); setClaimData(null); }}
+                      className="flex items-center justify-center gap-2 mt-6 w-full px-5 py-3.5 bg-amber-50 border-2 border-amber-200 rounded-2xl text-sm font-bold text-amber-700 hover:bg-amber-100 hover:border-amber-300 transition-all shadow-sm"
+                    >
+                      <UserCheck size={16} /> 舊網站會員？按此啟用帳戶
+                    </button>
+                  )}
+                  {claimStep !== 'idle' && claimStep !== 'success' && (
+                    <div className="mt-6 bg-white rounded-[2.5rem] border-2 border-amber-200 shadow-sm overflow-hidden animate-fade-in">
+                      <div className="bg-amber-50 px-6 py-4 border-b border-amber-100 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <UserCheck size={18} className="text-amber-600" />
+                          <span className="font-black text-amber-800 text-sm">啟用舊網站帳戶</span>
+                        </div>
+                        <button type="button" onClick={() => { setClaimStep('idle'); setClaimData(null); }} className="text-amber-400 hover:text-amber-600 transition-colors">
+                          <X size={18} />
+                        </button>
+                      </div>
+                      <div className="p-6">
+                        {claimStep === 'email' && (
+                          <form onSubmit={handleClaimLookup} className="space-y-4">
+                            <p className="text-xs text-slate-500 font-bold leading-relaxed">請輸入你在舊網站 (Shopline) 註冊的電郵地址，我們會查找你的會員記錄。</p>
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">舊網站電郵</label>
+                              <input type="email" value={claimEmail} onChange={e => setClaimEmail(e.target.value)} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder="your@email.com" required />
+                            </div>
+                            <button type="submit" disabled={claimLoading} className="w-full py-3 bg-amber-500 text-white rounded-2xl font-black text-sm disabled:opacity-50 hover:bg-amber-600 transition-colors">
+                              {claimLoading ? '查詢中...' : '查找我的帳戶'}
+                            </button>
+                          </form>
+                        )}
+                        {claimStep === 'confirm' && claimData && (
+                          <div className="space-y-4">
+                            <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 text-center">
+                              <CheckCircle size={28} className="text-emerald-500 mx-auto mb-2" />
+                              <p className="font-black text-emerald-800 text-sm">找到你的舊帳戶！</p>
+                              <p className="text-lg font-black text-slate-900 mt-1">{claimData.name}</p>
+                              {claimData.shoplineJoinDate && <p className="text-[10px] text-slate-400 mt-1">加入日期：{claimData.shoplineJoinDate.split(' ')[0]}</p>}
+                              {claimData.shoplineOrders !== '0' && <p className="text-[10px] text-slate-400">過往訂單：{claimData.shoplineOrders} 單</p>}
+                            </div>
+                            <p className="text-xs text-slate-500 font-bold text-center">這是你嗎？請設定新的電話號碼和密碼以啟用帳戶。</p>
+                            <form onSubmit={handleClaimSubmit} className="space-y-4">
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">手機號碼 *</label>
+                                <input type="tel" value={claimPhone} onChange={e => setClaimPhone(e.target.value)} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder="例如：91234567" minLength={4} required />
+                                {claimData.hasRealPhone && <p className="text-[9px] text-slate-400 mt-1">已自動填入你的舊電話，如需更改可直接修改</p>}
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">設定新密碼 *（至少 6 字）</label>
+                                <input type="password" value={claimPassword} onChange={e => setClaimPassword(e.target.value)} className="w-full p-3 bg-slate-50 rounded-2xl font-bold border border-slate-100" placeholder="輸入新密碼" minLength={6} required />
+                              </div>
+                              <button type="submit" disabled={claimLoading} className="w-full py-3 bg-emerald-500 text-white rounded-2xl font-black text-sm disabled:opacity-50 hover:bg-emerald-600 transition-colors">
+                                {claimLoading ? '啟用中...' : '啟用我的帳戶'}
+                              </button>
+                              <button type="button" onClick={() => { setClaimStep('email'); setClaimData(null); }} className="w-full py-2 text-slate-400 text-xs font-bold hover:text-slate-600 transition-colors">
+                                不是我，重新查找
+                              </button>
+                            </form>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {claimStep === 'success' && (
+                    <div className="mt-6 bg-emerald-50 border-2 border-emerald-200 rounded-[2.5rem] p-8 text-center animate-fade-in">
+                      <CheckCircle size={48} className="text-emerald-500 mx-auto mb-3" />
+                      <p className="font-black text-emerald-800 text-lg">帳戶啟用成功！</p>
+                      <p className="text-sm text-emerald-600 mt-1">歡迎回來，正在跳轉...</p>
+                    </div>
+                  )}
+                  {!isWholesaleRoute && claimStep === 'idle' && (
+                    <a href="/wholesale" className="flex items-center justify-center gap-2 mt-4 px-5 py-3.5 bg-orange-50 border-2 border-orange-200 rounded-2xl text-sm font-bold text-orange-600 hover:bg-orange-100 hover:border-orange-300 transition-all shadow-sm">
                       <Store size={16} /> 餐廳/公司客戶？前往批發平台 →
                     </a>
                   )}

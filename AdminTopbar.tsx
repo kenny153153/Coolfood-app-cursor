@@ -35,7 +35,8 @@ export interface AdminTopbarProps {
   adminModule: AdminModuleId;
   moduleWorkspace: Workspace | null;
   adminUser: AdminAccount | null;
-  onWorkspaceSwitch: (ws: Workspace | null) => void;
+  onWorkspaceSwitch: (ws: Workspace | null, brand?: 'GHFOODS' | 'COOLFOOD') => void;
+  onBrandChange?: (brand: WholesaleBrand) => void;
   showToast: (msg: string, type?: 'success' | 'error') => void;
   t: any;
 }
@@ -45,6 +46,7 @@ const AdminTopbar: React.FC<AdminTopbarProps> = ({
   moduleWorkspace,
   adminUser,
   onWorkspaceSwitch,
+  onBrandChange,
   showToast,
   t,
 }) => {
@@ -191,7 +193,7 @@ const AdminTopbar: React.FC<AdminTopbarProps> = ({
             return (
               <button
                 key={brand}
-                onClick={() => setWholesaleBrand(brand)}
+                onClick={() => { setWholesaleBrand(brand); onBrandChange?.(brand); }}
                 className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-black transition-all ${
                   isActive
                     ? `${meta.colorClasses.accent} ${meta.colorClasses.text} ${meta.colorClasses.border} border shadow-sm`

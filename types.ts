@@ -305,6 +305,7 @@ export interface User {
   memberType: MemberType;                // 零售 / 批發
   wholesalePriceTier?: string;           // 批發 P 等級（如 'P0', 'P3'）— 僅批發會員適用
   wholesaleStatus?: WholesaleStatus;     // 批發審核狀態
+  wholesaleBrand?: WholesaleBrand;       // 批發品牌 (GHFOODS / COOLFOOD)
   companyName?: string;
   businessType?: string;
   branchCount?: string;
@@ -449,6 +450,7 @@ export interface SupabaseMemberRow {
   member_type?: string | null;            // 'retail' | 'wholesale'
   wholesale_price_tier?: string | null;   // e.g. 'P0', 'P3'
   wholesale_status?: string | null;       // 'pending' | 'approved' | 'rejected'
+  wholesale_brand?: string | null;        // 'GHFOODS' | 'COOLFOOD'
   company_name?: string | null;
   business_type?: string | null;
   branch_count?: string | null;

@@ -70,6 +70,7 @@ const registerSchema = z.object({
   email: z.string().email().optional().or(z.literal('')).or(z.null()),
   password: z.string().min(6),
   isWholesale: z.boolean().optional(),
+  wholesaleBrand: z.enum(['GHFOODS', 'COOLFOOD']).optional(),
   companyName: z.string().optional(),
   businessType: z.string().optional(),
   branchCount: z.string().optional(),
@@ -164,7 +165,7 @@ async function handleLogin(body: z.infer<typeof loginSchema>, supabaseUrl: strin
 }
 
 async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl: string, serviceRoleKey: string) {
-  const { name, phone, email, password, isWholesale, companyName, businessType, branchCount, brDocUrl, storefrontPhotoUrl, storefrontPreparing } = body;
+  const { name, phone, email, password, isWholesale, wholesaleBrand, companyName, businessType, branchCount, brDocUrl, storefrontPhotoUrl, storefrontPreparing } = body;
 
   // Check phone uniqueness
   const phoneCheck = await fetch(
@@ -206,6 +207,7 @@ async function handleRegister(body: z.infer<typeof registerSchema>, supabaseUrl:
     addresses: null,
   };
   if (isWholesale) {
+    if (wholesaleBrand) newMember.wholesale_brand = wholesaleBrand;
     if (companyName) newMember.company_name = companyName;
     if (businessType) newMember.business_type = businessType;
     if (branchCount) newMember.branch_count = branchCount;

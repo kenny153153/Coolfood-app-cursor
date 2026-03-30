@@ -21,6 +21,7 @@ interface SidebarItem {
 const WHOLESALE_ITEMS: SidebarItem[] = [
   { id: 'orders', label: '訂單列表', icon: <ClipboardList size={18}/> },
   { id: 'wholesale_clients', label: '批發客資料庫', icon: <Users size={18}/> },
+  { id: 'members', label: '客戶審批', icon: <Users size={18}/> },
   { id: 'sales_reps', label: '銷售員', icon: <Users size={18}/> },
   { id: 'quotations', label: '報價單', icon: <FileText size={18}/> },
   { id: 'inventory', label: '產品/分類', icon: <Package size={18}/> },
@@ -75,7 +76,7 @@ export interface AdminSidebarProps {
   setIsOpen: (fn: boolean | ((prev: boolean) => boolean)) => void;
   hasAdminPermission: (module: keyof AdminPermissions | string) => boolean;
   onLogout: () => void;
-  onWorkspaceSwitch: (ws: Workspace | null) => void;
+  onWorkspaceSwitch: (ws: Workspace | null, brand?: WholesaleBrand) => void;
   t: any;
 }
 
@@ -283,7 +284,7 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({
         availableWholesaleBrands={availableWholesaleBrands}
         onSelect={(ws, brand) => {
           setActiveWorkspace(ws);
-          onWorkspaceSwitch(ws);
+          onWorkspaceSwitch(ws, brand);
           if (brand) setWholesaleBrand(brand);
         }}
       />

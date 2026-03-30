@@ -38,6 +38,7 @@ import {
   MemberCouponStatus,
   MemberCouponSource,
   SupabaseMemberCouponRow,
+  WholesaleBrand,
 } from './types';
 
 export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
@@ -241,6 +242,7 @@ export const mapMemberRowToUser = (row: SupabaseMemberRow): User => ({
   memberType: (row.member_type === 'wholesale' ? 'wholesale' : 'retail') as MemberType,
   wholesalePriceTier: row.wholesale_price_tier ?? undefined,
   wholesaleStatus: (['pending', 'approved', 'rejected'].includes(row.wholesale_status ?? '') ? row.wholesale_status as 'pending' | 'approved' | 'rejected' : undefined),
+  wholesaleBrand: (row.wholesale_brand === 'GHFOODS' || row.wholesale_brand === 'COOLFOOD') ? row.wholesale_brand as WholesaleBrand : undefined,
   companyName: row.company_name ?? undefined,
   businessType: row.business_type ?? undefined,
   branchCount: row.branch_count ?? undefined,
@@ -264,6 +266,7 @@ export const mapUserToMemberRow = (user: User, passwordHash?: string | null): Su
     member_type: user.memberType || 'retail',
     wholesale_price_tier: user.memberType === 'wholesale' ? (user.wholesalePriceTier || 'P0') : null,
     wholesale_status: user.wholesaleStatus ?? null,
+    wholesale_brand: user.wholesaleBrand ?? null,
     company_name: user.companyName ?? null,
     business_type: user.businessType ?? null,
     branch_count: user.branchCount ?? null,
