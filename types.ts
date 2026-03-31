@@ -315,6 +315,18 @@ export interface User {
   deliveryAddress?: string;
   brUpdateRequired?: boolean;
   addresses?: UserAddress[];
+  clientCode?: string;
+  fax?: string;
+  district?: string;
+  routeId?: string | null;
+  creditLimit?: number;
+  parentMemberId?: string | null;
+  salespersonId?: string | null;
+  paymentTermsDays?: number;
+  paymentTermsType?: PaymentTermsType;
+  discountPercent?: number;
+  wholesaleNotes?: string;
+  isWholesaleActive?: boolean;
 }
 
 export type OrderType = 'retail' | 'wholesale';
@@ -462,6 +474,18 @@ export interface SupabaseMemberRow {
   addresses?: UserAddress[] | null;
   security_level?: number | null;         // hierarchy: higher sees lower staff (min 1)
   must_change_password?: boolean | null;  // force password change on next login
+  client_code?: string | null;
+  fax?: string | null;
+  district?: string | null;
+  route_id?: string | null;
+  credit_limit?: number | null;
+  parent_member_id?: string | null;
+  salesperson_id?: string | null;
+  payment_terms_days?: number | null;
+  payment_terms_type?: string | null;
+  discount_percent?: number | null;
+  wholesale_notes?: string | null;
+  is_wholesale_active?: boolean | null;
 }
 
 export interface Category {

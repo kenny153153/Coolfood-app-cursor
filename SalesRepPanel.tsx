@@ -38,8 +38,8 @@ const SalesRepPanel: React.FC<Props> = ({ showToast }) => {
     setLoading(true);
     const [repsRes, clientsRes] = await Promise.all([
       supabase.from('sales_representatives').select('*').eq('brand', wholesaleBrand).order('name'),
-      supabase.from('wholesale_clients').select('id,company_name,client_code,price_tier,address,phone,salesperson_id,is_active')
-        .eq('brand', wholesaleBrand).order('client_code').order('company_name'),
+      supabase.from('members').select('id,company_name,name,client_code,wholesale_price_tier,delivery_address,phone_number,salesperson_id,is_wholesale_active,wholesale_brand')
+        .eq('member_type', 'wholesale').eq('wholesale_status', 'approved').eq('wholesale_brand', wholesaleBrand).order('client_code').order('company_name'),
     ]);
 
     if (repsRes.data) {
@@ -53,14 +53,14 @@ const SalesRepPanel: React.FC<Props> = ({ showToast }) => {
       setClients(clientsRes.data.map((r: any) => ({
         id: r.id,
         clientCode: r.client_code || '',
-        companyName: r.company_name,
-        contactName: '',
-        phone: r.phone || '',
-        address: r.address || '',
-        brand: r.brand as WholesaleBrand,
-        priceTier: r.price_tier || 'P0',
+        companyName: r.company_name || r.name,
+        contactName: r.name || '',
+        phone: r.phone_number || '',
+        address: r.delivery_address || '',
+        brand: (r.wholesale_brand || wholesaleBrand) as WholesaleBrand,
+        priceTier: r.wholesale_price_tier || 'P0',
         salespersonId: r.salesperson_id,
-        isActive: r.is_active,
+        isActive: r.is_wholesale_active !== false,
         creditLimit: 0,
         paymentTermsDays: 0,
         paymentTermsType: 'cod' as const,

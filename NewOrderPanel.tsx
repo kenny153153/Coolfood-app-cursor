@@ -185,7 +185,7 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
   const loadData = useCallback(async () => {
     setLoading(true);
     const [clientsRes, productsRes, correctionsRes, unitsRes, ptRes, matrixRes, groupsRes] = await Promise.all([
-      supabase.from('wholesale_clients').select('id, company_name, contact_name, phone, address, brand, price_tier, route_id, client_code').eq('is_active', true),
+      supabase.from('members').select('id, company_name, name, phone_number, delivery_address, wholesale_brand, wholesale_price_tier, route_id, client_code, is_wholesale_active').eq('member_type', 'wholesale').eq('wholesale_status', 'approved'),
       supabase.from('products').select('id, name, name_en, price, weight, categories, sale_channel, product_type, processing_type_id, pack_size, processing_types(name), ingredient_id, parent_ingredient_id, group_id, variant_label, pricing_mode').order('name'),
       supabase.from('parsing_corrections').select('original_text, corrected_product_name, corrected_qty, corrected_unit').order('created_at', { ascending: false }).limit(40),
       supabase.from('site_config').select('value').eq('id', 'custom_units').single(),
@@ -194,11 +194,13 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
       supabase.from('product_groups').select('id, name, classification, ingredient_id').eq('is_active', true).order('name'),
     ]);
     if (clientsRes.data) {
-      setClients(clientsRes.data.map((c: any) => ({
-        id: c.id, companyName: c.company_name, contactName: c.contact_name || '',
-        phone: c.phone || '', address: c.address || '', brand: c.brand,
-        priceTier: c.price_tier || 'P0', routeId: c.route_id, clientCode: c.client_code || '',
-      })));
+      setClients(clientsRes.data
+        .filter((c: any) => c.is_wholesale_active !== false)
+        .map((c: any) => ({
+          id: c.id, companyName: c.company_name || c.name, contactName: c.name || '',
+          phone: c.phone_number || '', address: c.delivery_address || '', brand: c.wholesale_brand,
+          priceTier: c.wholesale_price_tier || 'P0', routeId: c.route_id, clientCode: c.client_code || '',
+        })));
     }
     const allProducts: ProductOption[] = [];
     if (productsRes.data) {

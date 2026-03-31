@@ -251,7 +251,19 @@ export const mapMemberRowToUser = (row: SupabaseMemberRow): User => ({
   storefrontPreparing: row.storefront_preparing ?? undefined,
   deliveryAddress: row.delivery_address ?? undefined,
   brUpdateRequired: row.br_update_required ?? undefined,
-  addresses: row.addresses ?? undefined
+  addresses: row.addresses ?? undefined,
+  clientCode: row.client_code ?? undefined,
+  fax: row.fax ?? undefined,
+  district: row.district ?? undefined,
+  routeId: row.route_id ?? undefined,
+  creditLimit: row.credit_limit ?? 0,
+  parentMemberId: row.parent_member_id ?? undefined,
+  salespersonId: row.salesperson_id ?? undefined,
+  paymentTermsDays: row.payment_terms_days ?? 0,
+  paymentTermsType: (['cod', 'weekly', 'biweekly', 'monthly'].includes(row.payment_terms_type ?? '') ? row.payment_terms_type as 'cod' | 'weekly' | 'biweekly' | 'monthly' : 'cod'),
+  discountPercent: row.discount_percent ?? 0,
+  wholesaleNotes: row.wholesale_notes ?? undefined,
+  isWholesaleActive: row.is_wholesale_active ?? true,
 });
 
 export const mapUserToMemberRow = (user: User, passwordHash?: string | null): SupabaseMemberRow => {
@@ -275,7 +287,19 @@ export const mapUserToMemberRow = (user: User, passwordHash?: string | null): Su
     storefront_preparing: user.storefrontPreparing ?? null,
     delivery_address: user.deliveryAddress ?? null,
     br_update_required: user.brUpdateRequired ?? null,
-    addresses: user.addresses ?? null
+    addresses: user.addresses ?? null,
+    client_code: user.clientCode ?? null,
+    fax: user.fax ?? null,
+    district: user.district ?? null,
+    route_id: user.routeId ?? null,
+    credit_limit: user.creditLimit ?? 0,
+    parent_member_id: user.parentMemberId ?? null,
+    salesperson_id: user.salespersonId ?? null,
+    payment_terms_days: user.paymentTermsDays ?? 0,
+    payment_terms_type: user.paymentTermsType ?? 'cod',
+    discount_percent: user.discountPercent ?? 0,
+    wholesale_notes: user.wholesaleNotes ?? null,
+    is_wholesale_active: user.isWholesaleActive ?? true,
   };
   if (passwordHash !== undefined) row.password_hash = passwordHash;
   return row;

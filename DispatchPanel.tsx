@@ -67,7 +67,7 @@ const DispatchPanel: React.FC<Props> = ({ showToast }) => {
         .gte('delivery_date', dispatchDate)
         .lt('delivery_date', dispatchDate + 'T23:59:59')
         .in('status', ['paid', 'confirmed', 'preparing', 'shipping']),
-      supabase.from('wholesale_clients').select('id, company_name, phone, route_id, brand, address'),
+      supabase.from('members').select('id, company_name, name, phone_number, route_id, wholesale_brand, delivery_address').eq('member_type', 'wholesale'),
     ]);
 
     if (routesRes.data) {
@@ -83,8 +83,8 @@ const DispatchPanel: React.FC<Props> = ({ showToast }) => {
     }
     if (clientsRes.data) {
       setClients(clientsRes.data.map((c: any) => ({
-        id: c.id, companyName: c.company_name, phone: c.phone,
-        routeId: c.route_id, brand: c.brand, address: c.address || '',
+        id: c.id, companyName: c.company_name || c.name, phone: c.phone_number || '',
+        routeId: c.route_id, brand: c.wholesale_brand, address: c.delivery_address || '',
       })));
     }
     setLoading(false);

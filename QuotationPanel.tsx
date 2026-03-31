@@ -55,7 +55,7 @@ const QuotationPanel: React.FC<Props> = ({ showToast }) => {
     setLoading(true);
     const [qRes, cRes, pRes] = await Promise.all([
       supabase.from('quotations').select('*').order('created_at', { ascending: false }),
-      supabase.from('wholesale_clients').select('id, company_name, brand, client_code, price_tier').eq('is_active', true),
+      supabase.from('members').select('id, company_name, name, wholesale_brand, client_code, wholesale_price_tier, is_wholesale_active').eq('member_type', 'wholesale').eq('wholesale_status', 'approved'),
       supabase.from('products').select('id, name, price').order('name'),
     ]);
 
@@ -79,7 +79,7 @@ const QuotationPanel: React.FC<Props> = ({ showToast }) => {
         updatedAt: r.updated_at,
       })));
     }
-    if (cRes.data) setClients(cRes.data.map((c: any) => ({ id: c.id, companyName: c.company_name, brand: c.brand, clientCode: c.client_code || '', priceTier: c.price_tier || 'P0' })));
+    if (cRes.data) setClients(cRes.data.filter((c: any) => c.is_wholesale_active !== false).map((c: any) => ({ id: c.id, companyName: c.company_name || c.name, brand: c.wholesale_brand, clientCode: c.client_code || '', priceTier: c.wholesale_price_tier || 'P0' })));
     if (pRes.data) setProducts(pRes.data.map((p: any) => ({ id: p.id, name: p.name, price: p.price })));
     setLoading(false);
   }, []);

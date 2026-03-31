@@ -411,9 +411,9 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
   }, []);
 
   const loadWholesaleClientsForReservation = useCallback(async () => {
-    const { data } = await supabase.from('wholesale_clients').select('id, company_name').eq('is_active', true).order('company_name');
+    const { data } = await supabase.from('members').select('id, company_name, name, is_wholesale_active').eq('member_type', 'wholesale').eq('wholesale_status', 'approved').order('company_name');
     if (data) {
-      setWholesaleClients(data.map((r: any) => ({ id: r.id, companyName: r.company_name })));
+      setWholesaleClients(data.filter((r: any) => r.is_wholesale_active !== false).map((r: any) => ({ id: r.id, companyName: r.company_name || r.name })));
     }
   }, []);
 

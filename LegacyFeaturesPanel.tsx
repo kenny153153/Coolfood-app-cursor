@@ -159,12 +159,12 @@ const LegacyFeaturesPanel: React.FC<Props> = ({ showToast }) => {
   }, []);
 
   const loadClients = useCallback(async () => {
-    const { data } = await supabase.from('wholesale_clients').select('*').eq('is_active', true).order('company_name');
-    if (data) setClients(data.map((r: any) => ({
-      id: r.id, companyName: r.company_name, contactName: r.contact_name,
-      phone: r.phone, brand: r.brand, priceTier: r.price_tier || 'P0',
-      clientCode: r.client_code, address: r.address, district: r.district,
-      creditLimit: Number(r.credit_limit || 0), isActive: r.is_active,
+    const { data } = await supabase.from('members').select('*').eq('member_type', 'wholesale').eq('wholesale_status', 'approved').order('company_name');
+    if (data) setClients(data.filter((r: any) => r.is_wholesale_active !== false).map((r: any) => ({
+      id: r.id, companyName: r.company_name || r.name, contactName: r.name,
+      phone: r.phone_number || '', brand: r.wholesale_brand, priceTier: r.wholesale_price_tier || 'P0',
+      clientCode: r.client_code, address: r.delivery_address, district: r.district,
+      creditLimit: Number(r.credit_limit || 0), isActive: r.is_wholesale_active !== false,
       paymentTermsDays: r.payment_terms_days || 0, paymentTermsType: r.payment_terms_type || 'cod',
       discountPercent: Number(r.discount_percent || 0),
     })) as any);

@@ -24,7 +24,7 @@ import AdminTopbar from './AdminTopbar';
 import SectionErrorBoundary from './SectionErrorBoundary';
 
 const WholesalePricingPanel = lazy(() => import('./WholesalePricingPanel'));
-const WholesaleClientsPanel = lazy(() => import('./WholesaleClientsPanel'));
+// WholesaleClientsPanel removed — merged into members
 const SalesRepPanel = lazy(() => import('./SalesRepPanel'));
 const DispatchPanel = lazy(() => import('./DispatchPanel'));
 const NewOrderPanel = lazy(() => import('./NewOrderPanel'));
@@ -2655,7 +2655,7 @@ const App: React.FC = () => {
     showToast('廣告已刪除');
   };
 
-  const MEMBER_SAFE_COLUMNS = 'id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, wholesale_status, wholesale_brand, company_name, business_type, branch_count, br_doc_url, storefront_photo_url, storefront_preparing, delivery_address, br_update_required, addresses';
+  const MEMBER_SAFE_COLUMNS = 'id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, wholesale_status, wholesale_brand, company_name, business_type, branch_count, br_doc_url, storefront_photo_url, storefront_preparing, delivery_address, br_update_required, addresses, client_code, fax, district, route_id, credit_limit, parent_member_id, salesperson_id, payment_terms_days, payment_terms_type, discount_percent, wholesale_notes, is_wholesale_active';
   const upsertMember = async (member: UserType, passwordHash?: string | null) => {
     const { data, error } = await supabase
       .from('members')
@@ -2741,7 +2741,7 @@ const App: React.FC = () => {
       let clientMap: Record<string, string> = {};
       let routeMap: Record<string, string> = {};
       if (wcIds.length) {
-        const { data: cl } = await supabase.from('wholesale_clients').select('id, client_code').in('id', wcIds);
+        const { data: cl } = await supabase.from('members').select('id, client_code').in('id', wcIds);
         if (cl) clientMap = Object.fromEntries(cl.map((c: any) => [c.id, c.client_code || '']));
       }
       if (rtIds.length) {
@@ -2868,7 +2868,7 @@ const App: React.FC = () => {
       const wcIds = [...new Set(rows.map(r => r.wholesale_client_id).filter(Boolean))] as string[];
       let clientMap: Record<string, string> = {};
       if (wcIds.length) {
-        const { data: cl } = await supabase.from('wholesale_clients').select('id, client_code').in('id', wcIds);
+        const { data: cl } = await supabase.from('members').select('id, client_code').in('id', wcIds);
         if (cl) clientMap = Object.fromEntries(cl.map((c: any) => [c.id, c.client_code || '']));
       }
 
@@ -3342,26 +3342,11 @@ const App: React.FC = () => {
       const wsAddr = user?.deliveryAddress || null;
       const wsNote = wholesaleDeliveryNote.trim() || null;
 
-      // Look up linked wholesale client by member phone → populate client fields
-      let wsClientId: string | null = null;
-      let wsBrand: string | null = isGHFoods ? 'GHFOODS' : 'COOLFOOD';
-      let wsRouteId: string | null = null;
-      let wsCreditLimit = 0;
-      if (wsCustomerPhone) {
-        const { data: wcRows } = await supabase
-          .from('wholesale_clients')
-          .select('id, brand, route_id, credit_limit')
-          .eq('phone', wsCustomerPhone)
-          .eq('is_active', true)
-          .limit(1);
-        if (wcRows && wcRows.length > 0) {
-          const wc = wcRows[0];
-          wsClientId = wc.id;
-          wsBrand = wc.brand || wsBrand;
-          wsRouteId = wc.route_id || null;
-          wsCreditLimit = Number(wc.credit_limit) || 0;
-        }
-      }
+      // Use member's own operational fields directly (no wholesale_clients lookup needed)
+      const wsClientId: string | null = user?.id ?? null;
+      const wsBrand: string | null = user?.wholesaleBrand || (isGHFoods ? 'GHFOODS' : 'COOLFOOD');
+      const wsRouteId: string | null = user?.routeId || null;
+      const wsCreditLimit = Number(user?.creditLimit) || 0;
 
       // Credit limit enforcement: check outstanding AR + this order vs limit
       if (wsCreditLimit > 0 && wsClientId) {
@@ -4477,7 +4462,7 @@ const App: React.FC = () => {
     if (adminModule === 'production') return <SectionErrorBoundary section="生產"><Suspense fallback={lazyFallback}><ProductionPanel showToast={showToast} products={products} ingredients={ingredients} /></Suspense></SectionErrorBoundary>;
 
     // Functional panels — wholesale
-    if (adminModule === 'wholesale_clients') return <SectionErrorBoundary section="批發客戶"><Suspense fallback={lazyFallback}><WholesaleClientsPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
+    // wholesale_clients module merged into members
     if (adminModule === 'sales_reps') return <SectionErrorBoundary section="銷售員"><Suspense fallback={lazyFallback}><SalesRepPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
     if (adminModule === 'quotations') return <SectionErrorBoundary section="報價"><Suspense fallback={lazyFallback}><QuotationPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
     if (moduleWorkspace === 'WHOLESALE' && adminModule === 'pricing') return <SectionErrorBoundary section="批發定價"><Suspense fallback={lazyFallback}><WholesalePricingPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
@@ -4728,7 +4713,7 @@ const App: React.FC = () => {
                   </div>
                   ) : null}
                 </div>
-                <button onClick={() => { setEditingMember({ id: `u-${Date.now()}`, name: '', email: '', phoneNumber: '', points: 0, tier: 'Bronze', role: 'customer', memberType: 'retail', addresses: [] }); setEditingMemberPassword(''); }} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl"><Plus size={16}/> 新增會員</button>
+                <button onClick={() => { const isWS = moduleWorkspace === 'WHOLESALE'; setEditingMember({ id: `u-${Date.now()}`, name: '', email: '', phoneNumber: '', points: 0, tier: 'Bronze', role: 'customer', memberType: isWS ? 'wholesale' : 'retail', wholesaleBrand: isWS ? adminWholesaleBrand : undefined, wholesaleStatus: isWS ? 'pending' : undefined, wholesalePriceTier: isWS ? 'P0' : undefined, isWholesaleActive: isWS ? true : undefined, addresses: [] }); setEditingMemberPassword(''); }} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black text-xs flex items-center gap-2 shadow-xl"><Plus size={16}/> {moduleWorkspace === 'WHOLESALE' ? '新增批發客' : '新增會員'}</button>
              </div>
              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {filteredAdminMembers.length === 0 && (
@@ -4752,6 +4737,7 @@ const App: React.FC = () => {
                                 {m.memberType === 'wholesale' && m.wholesaleStatus === 'approved' && <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-600">已批准</span>}
                                 {m.memberType === 'wholesale' && m.wholesaleStatus === 'rejected' && <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-red-100 text-red-600">已拒絕</span>}
                                 {m.memberType === 'wholesale' && m.brUpdateRequired && <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-red-50 text-red-500 border border-red-200">待更新 BR</span>}
+                                {m.memberType === 'wholesale' && m.isWholesaleActive === false && <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-400">停用</span>}
                               </div>
                             </div>
                          </div>
@@ -4761,9 +4747,11 @@ const App: React.FC = () => {
                          <div className="space-y-1"><p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">積分</p><p className="font-black text-slate-900">{m.points} pts</p></div>
                       </div>
                       <div className="space-y-2 pt-4 border-t border-slate-50">
+                         {m.clientCode && <div className="flex items-center gap-2 text-xs font-bold text-slate-500"><span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[10px]">{m.clientCode}</span></div>}
                          {m.companyName && <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><Package size={14} className="text-orange-400"/> {m.companyName}</div>}
                          <div className="flex items-center gap-2 text-xs font-bold text-slate-400"><Smartphone size={14}/> {m.phoneNumber ?? '—'}</div>
                          <div className="flex items-center gap-2 text-xs font-bold text-slate-400"><Mail size={14}/> {m.email ?? '—'}</div>
+                         {m.memberType === 'wholesale' && m.deliveryAddress && <div className="flex items-center gap-2 text-xs font-bold text-slate-400 truncate"><MapPin size={14}/> {m.deliveryAddress}</div>}
                       </div>
                    </div>
                 ))}
@@ -8526,7 +8514,7 @@ const App: React.FC = () => {
                             <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">會員類別</label>
                               <div className="flex gap-2">
                                 {([{ id: 'retail' as const, label: '零售', icon: '🛒' }, { id: 'wholesale' as const, label: '批發', icon: '🏭' }]).map(t => (
-                                  <button key={t.id} type="button" onClick={() => setEditingMember({...editingMember, memberType: t.id, wholesalePriceTier: t.id === 'wholesale' ? (editingMember.wholesalePriceTier || 'P0') : undefined })} className={`flex-1 py-3 rounded-2xl text-xs font-black transition-all flex items-center justify-center gap-2 ${editingMember.memberType === t.id ? (t.id === 'wholesale' ? 'bg-orange-500 text-white shadow-lg' : 'bg-blue-500 text-white shadow-lg') : 'bg-white border border-slate-100 text-slate-500'}`}>{t.icon} {t.label}</button>
+                                  <button key={t.id} type="button" onClick={() => setEditingMember({...editingMember, memberType: t.id, wholesalePriceTier: t.id === 'wholesale' ? (editingMember.wholesalePriceTier || 'P0') : undefined, wholesaleBrand: t.id === 'wholesale' ? (editingMember.wholesaleBrand || adminWholesaleBrand) : undefined, wholesaleStatus: t.id === 'wholesale' ? (editingMember.wholesaleStatus || 'pending') : undefined, isWholesaleActive: t.id === 'wholesale' ? (editingMember.isWholesaleActive ?? true) : undefined })} className={`flex-1 py-3 rounded-2xl text-xs font-black transition-all flex items-center justify-center gap-2 ${editingMember.memberType === t.id ? (t.id === 'wholesale' ? 'bg-orange-500 text-white shadow-lg' : 'bg-blue-500 text-white shadow-lg') : 'bg-white border border-slate-100 text-slate-500'}`}>{t.icon} {t.label}</button>
                                 ))}
                               </div>
                             </div>
@@ -8566,9 +8554,11 @@ const App: React.FC = () => {
                            <div className="space-y-3">
                              <div className="flex items-center gap-3 mb-2 text-orange-500 font-black uppercase tracking-widest text-xs">批發開戶資料</div>
                              <div className="p-6 bg-orange-50 rounded-[3rem] border border-orange-100 space-y-4">
-                               {editingMember.companyName && <div><p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">餐廳/公司</p><p className="font-bold text-slate-800">{editingMember.companyName}</p></div>}
-                               {editingMember.businessType && <div><p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">業務類型</p><p className="font-bold text-slate-800">{editingMember.businessType}</p></div>}
-                               {editingMember.branchCount && <div><p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">分店數目</p><p className="font-bold text-slate-800">{editingMember.branchCount} 間</p></div>}
+                               <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">餐廳/公司</label><input value={editingMember.companyName || ''} onChange={e => setEditingMember({...editingMember, companyName: e.target.value || undefined})} className="w-full p-3 bg-white rounded-2xl font-bold border border-slate-100 text-sm" placeholder="餐廳/公司名稱" /></div>
+                               <div className="grid grid-cols-2 gap-3">
+                                 <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">業務類型</label><input value={editingMember.businessType || ''} onChange={e => setEditingMember({...editingMember, businessType: e.target.value || undefined})} className="w-full p-3 bg-white rounded-2xl font-bold border border-slate-100 text-sm" placeholder="如：中式餐廳" /></div>
+                                 <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">分店數目</label><input value={editingMember.branchCount || ''} onChange={e => setEditingMember({...editingMember, branchCount: e.target.value || undefined})} className="w-full p-3 bg-white rounded-2xl font-bold border border-slate-100 text-sm" placeholder="1" /></div>
+                               </div>
                                {editingMember.storefrontPreparing && <div><span className="px-2 py-1 bg-amber-100 text-amber-700 rounded-lg text-[10px] font-black">正在籌備中</span></div>}
 
                                <div className="pt-3 border-t border-orange-200">
@@ -8627,6 +8617,41 @@ const App: React.FC = () => {
                                      } catch { showToast('上傳失敗', 'error'); }
                                    }} />
                                  </label>
+                               </div>
+                             </div>
+                           </div>
+                         )}
+                         {editingMember.memberType === 'wholesale' && (
+                           <div className="space-y-3">
+                             <div className="flex items-center gap-3 mb-2 text-blue-500 font-black uppercase tracking-widest text-xs">營運設定</div>
+                             <div className="p-6 bg-blue-50 rounded-[3rem] border border-blue-100 space-y-4">
+                               <div className="grid grid-cols-2 gap-3">
+                                 <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">客戶編號</label><input value={editingMember.clientCode || ''} onChange={e => setEditingMember({...editingMember, clientCode: e.target.value || undefined})} className="w-full p-3 bg-white rounded-2xl font-bold border border-slate-100 text-sm font-mono" placeholder="A0002-01" /></div>
+                                 <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">傳真</label><input value={editingMember.fax || ''} onChange={e => setEditingMember({...editingMember, fax: e.target.value || undefined})} className="w-full p-3 bg-white rounded-2xl font-bold border border-slate-100 text-sm" placeholder="2XXX XXXX" /></div>
+                               </div>
+                               <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">地區</label><input value={editingMember.district || ''} onChange={e => setEditingMember({...editingMember, district: e.target.value || undefined})} className="w-full p-3 bg-white rounded-2xl font-bold border border-slate-100 text-sm" placeholder="觀塘" /></div>
+                               <div className="grid grid-cols-2 gap-3">
+                                 <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">信用額度</label><input type="number" value={editingMember.creditLimit || 0} onChange={e => setEditingMember({...editingMember, creditLimit: +e.target.value})} className="w-full p-3 bg-white rounded-2xl font-bold border border-slate-100 text-sm" /></div>
+                                 <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">折扣 %</label><input type="number" value={editingMember.discountPercent || 0} onChange={e => setEditingMember({...editingMember, discountPercent: +e.target.value})} className="w-full p-3 bg-white rounded-2xl font-bold border border-slate-100 text-sm" /></div>
+                               </div>
+                               <div className="grid grid-cols-2 gap-3">
+                                 <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">數期類型</label>
+                                   <select value={editingMember.paymentTermsType || 'cod'} onChange={e => setEditingMember({...editingMember, paymentTermsType: e.target.value as any})} className="w-full p-3 bg-white rounded-2xl font-bold border border-slate-100 text-sm">
+                                     <option value="cod">C.O.D. 貨到付款</option>
+                                     <option value="weekly">週結</option>
+                                     <option value="biweekly">半月結</option>
+                                     <option value="monthly">月結</option>
+                                   </select>
+                                 </div>
+                                 <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">數期天數</label><input type="number" value={editingMember.paymentTermsDays || 0} onChange={e => setEditingMember({...editingMember, paymentTermsDays: +e.target.value})} className="w-full p-3 bg-white rounded-2xl font-bold border border-slate-100 text-sm" /></div>
+                               </div>
+                               <div><label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">備註</label>
+                                 <textarea value={editingMember.wholesaleNotes || ''} onChange={e => setEditingMember({...editingMember, wholesaleNotes: e.target.value || undefined})} rows={2} className="w-full p-3 bg-white rounded-2xl font-bold text-sm border border-slate-100 resize-none" placeholder="營運備註..." />
+                               </div>
+                               <div className="flex items-center gap-2">
+                                 <button type="button" onClick={() => setEditingMember({...editingMember, isWholesaleActive: !editingMember.isWholesaleActive})} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-black transition-colors ${editingMember.isWholesaleActive !== false ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
+                                   {editingMember.isWholesaleActive !== false ? '✓ 啟用中' : '已停用'}
+                                 </button>
                                </div>
                              </div>
                            </div>

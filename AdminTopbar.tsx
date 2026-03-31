@@ -26,7 +26,7 @@ const MODULE_TITLES: Record<string, string> = {
   warehouse_ops: '材料與倉務',
   production: '工場',
   accounting: '會計',
-  wholesale_clients: '批發客資料庫',
+  wholesale_clients: '批發客管理',
 };
 
 // ─── Component ──────────────────────────────────────────────────
