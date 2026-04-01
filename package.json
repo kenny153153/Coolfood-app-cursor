@@ -15,7 +15,7 @@
     "supabase:types": "npx supabase gen types typescript --project-id \"$SUPABASE_PROJECT_ID\" > supabase-types.ts"
   },
   "dependencies": {
-    "@airwallex/components-sdk": "^1.28.2",
+    "stripe": "^17.7.0",
     "@google-cloud/vertexai": "^1.10.0",
     "@sentry/react": "^10.45.0",
     "@supabase/supabase-js": "^2.93.3",

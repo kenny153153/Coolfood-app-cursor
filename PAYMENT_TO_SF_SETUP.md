@@ -2,17 +2,19 @@
 
 ## 流程概覽
 
-1. **Airwallex**：顧客付款（card / fps）→ 導回 `/success?order=ORD-xxx`
-2. **/success 頁**：呼叫 `POST /api/confirm-payment` → 訂單標記為「已付款」→ 呼叫順豐下單
+1. **Stripe**：顧客付款（信用卡）→ Stripe Checkout 頁面完成付款 → 導回 `/success?order=ORD-xxx&session_id=cs_xxx`
+2. **/success 頁**：呼叫 `POST /api/confirm-payment` → 驗證 Stripe Session → 訂單標記為「已付款」→ 呼叫順豐下單
 3. **順豐**：`POST /api/sf` (action: 'order') 向沙箱下單，取得運單號並寫回 Supabase `orders.tracking_number`
 4. **Webhook（可選）**：當訂單在 Supabase 被手動或由其他系統更新為 `status = 'paid'` 時，可透過 Supabase Webhook 呼叫 `POST /api/on-order-paid` 自動觸發順豐下單
 
 ---
 
-## 一、Airwallex（已完成）
+## 一、Stripe（信用卡付款）
 
-- 使用沙箱：`https://api-demo.airwallex.com/api/v1`
-- 取得 Access Token → 建立 Payment Intent → 前端以 card、fps 付款，成功導回 `/success?order=訂單ID`
+- 使用 Stripe Checkout Sessions（全頁跳轉模式）
+- 測試模式使用 `sk_test_...` 密鑰；正式模式使用 `sk_live_...` 密鑰
+- API 路由：`POST /api/stripe`（`create-checkout-session` 建立付款、`refund` 退款）
+- 付款成功後導回 `/success?order=訂單ID&session_id=Stripe Session ID`
 
 ---
 
@@ -51,13 +53,13 @@
 ## 四、/success 頁面
 
 - 文案：「付款成功！我們正在為您安排發貨。」
-- 會呼叫 `POST /api/confirm-payment`（帶 `orderId`、`origin`），取得順豐單號後顯示於頁面；若尚未產生則顯示「正在為您安排順豐發貨...」或引導至「記錄」查看。
+- 會呼叫 `POST /api/confirm-payment`（帶 `orderId`、`session_id`），驗證 Stripe 付款後取得順豐單號顯示於頁面；若尚未產生則顯示「正在為您安排順豐發貨...」或引導至「記錄」查看。
 
 ---
 
 ## 除錯
 
-- **Airwallex**：Vercel Functions 日誌中搜尋 `[Airwallex]`
+- **Stripe**：Vercel Functions 日誌中搜尋 `[Stripe]`
 - **順豐**：搜尋 `[SF]`
 - **confirm-payment / webhook**：搜尋 `[confirm-payment]`、`[on-order-paid]`
 

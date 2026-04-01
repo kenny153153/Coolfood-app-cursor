@@ -317,9 +317,9 @@ const SuccessView: React.FC<{
     const params = new URLSearchParams(win.location.search);
     const rawOrderId = params.get('order');
     const orderIdFromUrl = rawOrderId ? rawOrderId.trim() : '';
-    const paymentIntentId = params.get('payment_intent_id') ?? params.get('intent_id') ?? win.sessionStorage?.getItem?.('airwallex_payment_intent_id') ?? null;
+    const sessionId = params.get('session_id') ?? win.sessionStorage?.getItem?.('stripe_session_id') ?? null;
     const orderId = orderIdFromUrl || null;
-    if (!orderId && !paymentIntentId) {
+    if (!orderId && !sessionId) {
       setConfirmError(t.success.missingParams);
       setSuccessWaybillLoading(false);
       return;
@@ -331,7 +331,7 @@ const SuccessView: React.FC<{
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderId, payment_intent_id: paymentIntentId ?? null }),
+        body: JSON.stringify({ orderId, session_id: sessionId ?? null }),
       });
       const text = await response.text();
       if (!response.ok) {
@@ -362,7 +362,7 @@ const SuccessView: React.FC<{
         setSuccessWaybill(data.waybill_no ?? data.waybillNo ?? null);
         setConfirmError(null);
         onRefreshOrders();
-        if (paymentIntentId) try { win.sessionStorage?.removeItem?.('airwallex_payment_intent_id'); } catch { /* ignore */ }
+        if (sessionId) try { win.sessionStorage?.removeItem?.('stripe_session_id'); } catch { /* ignore */ }
       } else {
         setConfirmError(data.error ?? '確認付款時發生錯誤');
         setConfirmSuccess(false);
@@ -826,15 +826,6 @@ const App: React.FC = () => {
   const [successWaybill, setSuccessWaybill] = useState<string | null>(null);
   const [successWaybillLoading, setSuccessWaybillLoading] = useState(false);
 
-  // Airwallex Drop-in payment modal
-  const [paymentModalData, setPaymentModalData] = useState<{
-    intent_id: string; client_secret: string; currency: string; country_code: string; orderIdDisplay: string;
-  } | null>(null);
-  const airwallexDropinRef = useRef<HTMLDivElement>(null);
-  const airwallexElementRef = useRef<any>(null);
-  const airwallexInitDone = useRef(false);
-  const [checkoutStep, setCheckoutStep] = useState<'details' | 'payment'>('details');
-
   // Slideshow (store-front ad carousel)
   const [slideshowIndex, setSlideshowIndex] = useState(0);
 
@@ -995,10 +986,9 @@ const App: React.FC = () => {
   useEffect(() => {
     if (view === 'success' && typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
-      if (params.has('order') || params.has('payment_intent_id')) {
+      if (params.has('order') || params.has('session_id')) {
         setCart([]);
         setSelectedCoupon(null);
-        setCheckoutStep('details');
       }
     }
   }, []);
@@ -1140,7 +1130,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadCoreData = async () => {
       const membersPromise = isAdminRoute
-        ? supabase.from('members_safe').select('id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, wholesale_status, wholesale_brand, company_name, business_type, branch_count, br_doc_url, storefront_photo_url, storefront_preparing, delivery_address, br_update_required, addresses')
+        ? supabase.from('members_safe').select('id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, wholesale_status, wholesale_brand, company_name, business_type, branch_count, br_doc_url, storefront_photo_url, storefront_preparing, delivery_address, br_update_required, addresses, client_code, fax, district, route_id, credit_limit, parent_member_id, salesperson_id, payment_terms_days, payment_terms_type, discount_percent, wholesale_notes, is_wholesale_active')
         : Promise.resolve({ data: null, error: null });
       const [productsRes, categoriesRes, membersRes, slideshowRes] = await Promise.all([
         supabase.from('products').select('*'),
@@ -2192,7 +2182,7 @@ const App: React.FC = () => {
     setClaimLoading(false);
   };
 
-  const handleSetDefaultAddress = (ownerId: string, addressId: string) => {
+  const handleSetDefaultAddress = async (ownerId: string, addressId: string) => {
     const updateMember = (m: UserType) => {
       if (m.id !== ownerId) return m;
       const addresses = m.addresses?.map(a => ({ ...a, isDefault: a.id === addressId })) || [];
@@ -2203,11 +2193,11 @@ const App: React.FC = () => {
       showToast('會員資料不存在', 'error');
       return;
     }
-    upsertMember(updateMember(baseMember));
-    showToast('已設為預設地址');
+    const ok = await upsertMember(updateMember(baseMember));
+    if (ok) showToast('已設為預設地址');
   };
 
-  const handleSaveAddress = (ownerId: string, address: UserAddress, isNew: boolean, setAsDefault?: boolean) => {
+  const handleSaveAddress = async (ownerId: string, address: UserAddress, isNew: boolean, setAsDefault?: boolean) => {
     const updateMember = (m: UserType) => {
       if (m.id !== ownerId) return m;
       let addresses = [...(m.addresses || [])];
@@ -2226,12 +2216,14 @@ const App: React.FC = () => {
       return;
     }
     const updatedMember = updateMember(baseMember);
-    upsertMember(updatedMember);
-    setAddressEditor(null);
-    showToast(isNew ? '地址已新增' : '地址已更新');
+    const ok = await upsertMember(updatedMember);
+    if (ok) {
+      setAddressEditor(null);
+      showToast(isNew ? '地址已新增' : '地址已更新');
+    }
   };
 
-  const handleDeleteAddress = (ownerId: string, addressId: string) => {
+  const handleDeleteAddress = async (ownerId: string, addressId: string) => {
     const baseMember = members.find(m => m.id === ownerId) || (user && user.id === ownerId ? user : null);
     if (!baseMember) {
       showToast('會員資料不存在', 'error');
@@ -2242,8 +2234,8 @@ const App: React.FC = () => {
     const nextAddresses = wasDefault && addresses.length > 0
       ? addresses.map((a, i) => ({ ...a, isDefault: i === 0 }))
       : addresses;
-    upsertMember({ ...baseMember, addresses: nextAddresses });
-    showToast('地址已刪除');
+    const ok = await upsertMember({ ...baseMember, addresses: nextAddresses });
+    if (ok) showToast('地址已刪除');
   };
 
   const getOrderDbId = (orderId: string) => {
@@ -2656,7 +2648,20 @@ const App: React.FC = () => {
   };
 
   const MEMBER_SAFE_COLUMNS = 'id, name, email, phone_number, points, tier, role, admin_permissions, member_type, wholesale_price_tier, wholesale_status, wholesale_brand, company_name, business_type, branch_count, br_doc_url, storefront_photo_url, storefront_preparing, delivery_address, br_update_required, addresses, client_code, fax, district, route_id, credit_limit, parent_member_id, salesperson_id, payment_terms_days, payment_terms_type, discount_percent, wholesale_notes, is_wholesale_active';
-  const upsertMember = async (member: UserType, passwordHash?: string | null) => {
+
+  const friendlyMemberError = (error: { message?: string; code?: string; details?: string } | null): string => {
+    const msg = error?.message || '';
+    const details = error?.details || '';
+    if (msg.includes('members_phone_unique') || details.includes('phone_number'))
+      return '此電話號碼已被其他會員使用，請使用其他號碼';
+    if (msg.includes('members_email_unique') || details.includes('email'))
+      return '此電郵地址已被其他會員使用';
+    if (msg.includes('duplicate key') || msg.includes('unique constraint') || error?.code === '23505')
+      return '此會員資料與現有記錄衝突，請檢查電話或電郵是否重複';
+    return msg || '會員保存失敗';
+  };
+
+  const upsertMember = async (member: UserType, passwordHash?: string | null): Promise<boolean> => {
     const { data, error } = await supabase
       .from('members')
       .upsert(mapUserToMemberRow(member, passwordHash))
@@ -2664,9 +2669,9 @@ const App: React.FC = () => {
       .single();
     if (error || !data) {
       if (!handleSchemaError(error, 'members')) {
-        showToast(error?.message || '會員保存失敗', 'error');
+        showToast(friendlyMemberError(error), 'error');
       }
-      return;
+      return false;
     }
     const mapped = mapMemberRowToUser(data);
     setMembers(prev => {
@@ -2678,6 +2683,7 @@ const App: React.FC = () => {
     });
     if (user && user.id === mapped.id) setUser(mapped);
     if (editingMember && editingMember.id === mapped.id) setEditingMember(mapped);
+    return true;
   };
 
   const updateOrderFields = async (orderId: string, fields: Partial<SupabaseOrderRow>) => {
@@ -3112,7 +3118,7 @@ const App: React.FC = () => {
     if (amount > refundModal.total) { showToast('退款金額不能超過訂單總額', 'error'); return; }
     setRefundProcessing(true);
     try {
-      const res = await fetch(`${window.location.origin}/api/airwallex`, {
+      const res = await fetch(`${window.location.origin}/api/stripe`, {
         method: 'POST', headers: buildAdminHeaders(adminUser),
         body: JSON.stringify({ action: 'refund', orderId: refundModal.orderId, amount }),
       });
@@ -3511,36 +3517,38 @@ const App: React.FC = () => {
     }
 
     const apiBase = typeof window !== 'undefined' ? window.location.origin : '';
-    let intentRes: Response;
+    let checkoutRes: Response;
     try {
-      intentRes = await fetch(`${apiBase}/api/airwallex`, {
+      checkoutRes = await fetch(`${apiBase}/api/stripe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'create-intent', merchant_order_id: orderIdDisplay, success_origin: typeof window !== 'undefined' ? window.location.origin : '' }),
+        body: JSON.stringify({
+          action: 'create-checkout-session',
+          merchant_order_id: orderIdDisplay,
+          success_origin: typeof window !== 'undefined' ? window.location.origin : '',
+        }),
       });
     } catch {
       setIsRedirectingToPayment(false);
       showToast('Payment system is currently busy, please try again in a moment.', 'error');
       return;
     }
-    if (!intentRes.ok) {
+    if (!checkoutRes.ok) {
       setIsRedirectingToPayment(false);
       let errMsg = 'Payment system is currently busy, please try again in a moment.';
       try {
-        const contentType = intentRes.headers.get('content-type') || '';
+        const contentType = checkoutRes.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
-          const errBody = await intentRes.json() as { error?: string; details?: string; code?: string };
+          const errBody = await checkoutRes.json() as { error?: string; code?: string };
           if (typeof errBody?.error === 'string' && errBody.error) errMsg = errBody.error;
-          if (typeof errBody?.details === 'string' && errBody.details) {
-            console.error('Airwallex API error details', errBody.code, errBody.details);
-          } else if (typeof errBody?.code === 'string' && errBody.code) {
-            console.error('Airwallex API error code', errBody.code);
+          if (typeof errBody?.code === 'string' && errBody.code) {
+            console.error('[Checkout] Stripe API error code:', errBody.code);
           }
         } else {
-          const errText = await intentRes.text();
-          console.error('Airwallex API non-JSON error', intentRes.status, errText.slice(0, 500));
-          if (intentRes.status === 404) {
-            errMsg = 'Payment API not found. Please redeploy and ensure the Vercel Function /api/airwallex is enabled.';
+          const errText = await checkoutRes.text();
+          console.error('[Checkout] Stripe API non-JSON error', checkoutRes.status, errText.slice(0, 500));
+          if (checkoutRes.status === 404) {
+            errMsg = 'Payment API not found. Please redeploy and ensure the Vercel Function /api/stripe is enabled.';
           }
         }
       } catch {
@@ -3549,24 +3557,23 @@ const App: React.FC = () => {
       showToast(errMsg, 'error');
       return;
     }
-    let intentData: { intent_id?: string; client_secret?: string; currency?: string; country_code?: string };
+    let sessionData: { session_id?: string; url?: string };
     try {
-      intentData = await intentRes.json();
+      sessionData = await checkoutRes.json();
     } catch {
       setIsRedirectingToPayment(false);
       showToast('Payment system is currently busy, please try again in a moment.', 'error');
       return;
     }
-    const { intent_id, client_secret, currency = 'HKD', country_code = 'HK' } = intentData;
-    console.log('[Checkout] Intent response:', { intent_id, hasSecret: !!client_secret, currency, country_code });
-    if (!intent_id || !client_secret) {
+    const { session_id, url: stripeCheckoutUrl } = sessionData;
+    console.log('[Checkout] Stripe response:', { session_id, hasUrl: !!stripeCheckoutUrl });
+    if (!session_id || !stripeCheckoutUrl) {
       setIsRedirectingToPayment(false);
       showToast('Payment system is currently busy, please try again in a moment.', 'error');
       return;
     }
 
-    // Stock is now decremented server-side in confirm-payment after Airwallex verification succeeds.
-    // Optimistic UI update only — real decrement happens on paid confirmation.
+    // Stock is decremented server-side in confirm-payment after Stripe verification succeeds.
     if (inventoryOn) {
       setProducts(prev => prev.map(p => {
         const cartItem = cart.find(c => c.id === p.id);
@@ -3580,48 +3587,14 @@ const App: React.FC = () => {
     }
 
     setOrders(prev => [...prev, newOrder]);
-    if (typeof window !== 'undefined' && intent_id) {
-      try { window.sessionStorage.setItem('airwallex_payment_intent_id', intent_id); } catch { /* ignore */ }
+    if (typeof window !== 'undefined' && session_id) {
+      try { window.sessionStorage.setItem('stripe_session_id', session_id); } catch { /* ignore */ }
     }
 
-    // Redirect to Airwallex Hosted Payment Page (HPP)
-    // HPP runs on Airwallex's own domain — avoids cross-origin iframe captcha/fingerprint issues
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
-    const hppSuccessUrl = `${origin}/success?order=${encodeURIComponent(orderIdDisplay)}&payment_intent_id=${encodeURIComponent(intent_id)}`;
-    console.log('[Checkout] Order inserted. Redirecting to Airwallex HPP...');
-    console.log('[Checkout]   intent_id:', intent_id);
-    console.log('[Checkout]   successUrl:', hppSuccessUrl);
-    try {
-      const sdk = await import('@airwallex/components-sdk');
-      const airwallexEnv = (import.meta.env.VITE_AIRWALLEX_ENV as string) || 'demo';
-      if (!airwallexInitDone.current) {
-        const initResult = await sdk.init({ env: airwallexEnv as 'demo' | 'prod', enabledElements: ['payments'] });
-        (window as any).__awxPayments = initResult?.payments;
-        airwallexInitDone.current = true;
-        console.log('[Checkout] Airwallex SDK initialized (env=%s)', airwallexEnv);
-      }
-      const payments = (window as any).__awxPayments;
-      if (!payments?.redirectToCheckout) {
-        throw new Error('payments.redirectToCheckout not available after init');
-      }
-      payments.redirectToCheckout({
-        env: airwallexEnv as 'demo' | 'prod',
-        intent_id,
-        client_secret,
-        currency,
-        country_code: 'HK',
-        mode: 'payment',
-        successUrl: hppSuccessUrl,
-        methods: ['card'],
-      });
-    } catch (e: any) {
-      console.error('[Checkout] HPP redirect failed:', e);
-      setIsRedirectingToPayment(false);
-      showToast('Payment redirect failed: ' + (e?.message || 'unknown'), 'error');
-    }
+    console.log('[Checkout] Order inserted. Redirecting to Stripe Checkout...');
+    console.log('[Checkout]   session_id:', session_id);
+    window.location.href = stripeCheckoutUrl;
   };
-
-  // (HPP mode: Drop-in element no longer used — payment happens on Airwallex's hosted page)
 
   // --- Admin Logic ---
 
@@ -7550,7 +7523,7 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Payment modal removed — Airwallex drop-in is now inline in checkout view */}
+      {/* Payment handled via Stripe Checkout (full-page redirect) */}
 
       {editingProduct && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[6000] flex items-center justify-center p-6 animate-fade-in">
@@ -8667,7 +8640,8 @@ const App: React.FC = () => {
                      if (isNew && !editingMemberPassword) { showToast('新會員請設定密碼（至少 6 字）', 'error'); return; }
                      if (editingMemberPassword && editingMemberPassword.length < 6) { showToast('密碼至少 6 個字元', 'error'); return; }
                      const hash = editingMemberPassword ? await hashPassword(editingMemberPassword) : undefined;
-                     await upsertMember(editingMember, hash);
+                     const ok = await upsertMember(editingMember, hash);
+                     if (!ok) return;
                      setEditingMember(null);
                      setEditingMemberPassword('');
                      showToast('資料已保存');
@@ -9044,16 +9018,10 @@ const App: React.FC = () => {
     );
   };
 
-  const handleCancelPayment = () => {
-    setPaymentModalData(null);
-    setCheckoutStep('details');
-  };
-
   const renderCheckoutView = () => {
     const { subtotal, deliveryFee, total } = pricingData;
-    const isPaymentStep = checkoutStep === 'payment' && !!paymentModalData;
 
-    if (cart.length === 0 && !isPaymentStep) {
+    if (cart.length === 0) {
       return (
         <div className="flex-1 bg-slate-50 min-h-screen flex flex-col items-center justify-center gap-6 animate-fade-in px-6">
           <div className="w-24 h-24 bg-slate-100 rounded-full flex items-center justify-center"><ShoppingBag size={40} className="text-slate-300" /></div>
@@ -9190,17 +9158,6 @@ const App: React.FC = () => {
               </div>
             </section>
           </div>
-        </div>
-      );
-    }
-
-    // ── Retail Checkout UI ──
-    if (isPaymentStep) {
-      return (
-        <div className="flex-1 bg-slate-50 min-h-screen flex flex-col items-center justify-center gap-4 animate-fade-in">
-          <RefreshCw size={32} className="animate-spin text-blue-600" />
-          <p className="text-sm font-black text-slate-700">{lang === 'en' ? 'Redirecting to payment...' : '正在跳轉至支付頁面...'}</p>
-          <p className="text-xs text-slate-400">{lang === 'en' ? 'You will be redirected to Airwallex secure checkout' : '即將跳轉至 Airwallex 安全支付頁面'}</p>
         </div>
       );
     }

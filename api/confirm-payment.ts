@@ -1,18 +1,16 @@
 /**
- * 確認支付：使用 Supabase Admin SDK 更新狀態
+ * 確認支付：使用 Stripe + Supabase Admin SDK 更新狀態
  * 設計原則：訂單狀態更新 (paid) 是最高優先級，任何下游操作（WhatsApp 通知等）
  *           失敗都不會阻擋用戶看到「支付成功」。
  *
  * WhatsApp 邏輯直接內嵌於本檔案，避免 Vercel serverless 跨檔案 import 錯誤
  * (ERR_MODULE_NOT_FOUND: /var/task/api/send-whatsapp)。
  */
+import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
 import { checkRateLimit, getClientIp } from './_rateLimit.js';
 
-const AIRWALLEX_DEMO = 'https://api-demo.airwallex.com';
-const AIRWALLEX_PROD = 'https://api.airwallex.com';
-
-type ConfirmPayload = { orderId?: string | null; payment_intent_id?: string | null; origin?: string | null };
+type ConfirmPayload = { orderId?: string | null; session_id?: string | null; origin?: string | null };
 
 function getOrderDbId(orderId: string): string | number {
   if (/^ORD-\d+$/.test(orderId)) return orderId.replace(/^ORD-/, '');
@@ -25,6 +23,12 @@ function fetchWithTimeout(url: string, opts: RequestInit, ms = 8000): Promise<Re
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
+function getStripe(): Stripe {
+  const secretKey = safeTrim(process.env.STRIPE_SECRET_KEY ?? '');
+  if (!secretKey) throw new Error('STRIPE_SECRET_KEY not configured');
+  return new Stripe(secretKey);
 }
 
 // ─── Inline WhatsApp helper (avoids cross-file import in Vercel) ─────
@@ -59,28 +63,6 @@ async function sendWhatsApp(to: string, body: string): Promise<{ success: boolea
   }
 }
 
-// ─── Airwallex ───────────────────────────────────────────────────────
-async function getAirwallexToken(): Promise<{ token: string; baseUrl: string }> {
-  const clientId = safeTrim(process.env.AIRWALLEX_CLIENT_ID ?? '');
-  const apiKey = safeTrim(process.env.AIRWALLEX_API_KEY ?? '');
-  const useDemo = safeTrim(process.env.AIRWALLEX_ENV ?? '') !== 'prod';
-  const baseUrl = useDemo ? AIRWALLEX_DEMO : AIRWALLEX_PROD;
-
-  const authRes = await fetchWithTimeout(`${baseUrl}/api/v1/authentication/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-client-id': clientId, 'x-api-key': apiKey },
-    body: '{}',
-  });
-  if (!authRes.ok) {
-    const t = await authRes.text();
-    throw new Error(`Airwallex auth failed: ${authRes.status} ${t.slice(0, 150)}`);
-  }
-  const data = (await authRes.json()) as { access_token?: string; token?: string };
-  const token = data.access_token ?? data.token;
-  if (!token) throw new Error('Airwallex: no token in response');
-  return { token, baseUrl };
-}
-
 // ─── Handler ─────────────────────────────────────────────────────────
 export default async function handler(
   req: { method?: string; body?: ConfirmPayload; headers?: Record<string, string | string[] | undefined> },
@@ -98,7 +80,7 @@ export default async function handler(
   }
 
   const body = req.body as ConfirmPayload;
-  const paymentIntentId = safeTrim(body?.payment_intent_id ?? '');
+  const sessionId = safeTrim(body?.session_id ?? '');
   let orderId = safeTrim(body?.orderId ?? '');
 
   const supabaseUrl = (process.env.SUPABASE_URL ?? '').trim().replace(/\/$/, '');
@@ -115,40 +97,41 @@ export default async function handler(
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  // ─── Step 1: Airwallex verification ────────────────────────────────
-  let airwallexVerified = false;
-  let airwallexError: string | null = null;
+  // ─── Step 1: Stripe verification ────────────────────────────────
+  let stripeVerified = false;
+  let stripeError: string | null = null;
+  let paymentIntentId: string | null = null;
 
-  if (paymentIntentId) {
+  if (sessionId) {
     try {
-      const { token, baseUrl } = await getAirwallexToken();
-      const intentRes = await fetchWithTimeout(
-        `${baseUrl}/api/v1/pa/payment_intents/${encodeURIComponent(paymentIntentId)}`,
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
-      if (!intentRes.ok) {
-        airwallexError = `Intent fetch ${intentRes.status}`;
-        console.warn('[confirm-payment]', airwallexError);
-      } else {
-        const intent = await intentRes.json() as { status?: string; merchant_order_id?: string };
-        const status = (intent.status ?? '').toUpperCase();
-        if (status === 'SUCCEEDED') {
-          airwallexVerified = true;
-          if (intent.merchant_order_id) orderId = String(intent.merchant_order_id).trim();
-        } else {
-          return res.status(400).json({ error: '支付尚未成功', code: 'PAYMENT_NOT_SUCCEEDED', status: intent.status });
+      const stripe = getStripe();
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+      if (session.payment_status === 'paid') {
+        stripeVerified = true;
+        paymentIntentId = typeof session.payment_intent === 'string'
+          ? session.payment_intent
+          : (session.payment_intent as any)?.id ?? null;
+        if (session.metadata?.merchant_order_id) {
+          orderId = session.metadata.merchant_order_id.trim();
         }
+      } else {
+        return res.status(400).json({
+          error: '支付尚未成功',
+          code: 'PAYMENT_NOT_SUCCEEDED',
+          status: session.payment_status,
+        });
       }
     } catch (e) {
-      airwallexError = e instanceof Error ? e.message : String(e);
-      console.warn('[confirm-payment] Airwallex error (non-fatal):', airwallexError);
+      stripeError = e instanceof Error ? e.message : String(e);
+      console.warn('[confirm-payment] Stripe error (non-fatal):', stripeError);
     }
   } else {
-    return res.status(400).json({ error: 'Missing payment_intent_id', code: 'BAD_REQUEST' });
+    return res.status(400).json({ error: 'Missing session_id', code: 'BAD_REQUEST' });
   }
 
   if (!orderId) {
-    return res.status(400).json({ error: 'Missing orderId or payment_intent_id', code: 'BAD_REQUEST' });
+    return res.status(400).json({ error: 'Missing orderId or session_id', code: 'BAD_REQUEST' });
   }
 
   // ─── Step 2: Mark order as PAID (critical path) ────────────────────
@@ -171,8 +154,8 @@ export default async function handler(
       return res.status(404).json({ error: 'Order not found', code: 'ORDER_NOT_FOUND' });
     }
 
-    if (!airwallexVerified) {
-      console.error('[confirm-payment] Airwallex verification failed:', airwallexError);
+    if (!stripeVerified) {
+      console.error('[confirm-payment] Stripe verification failed:', stripeError);
       return res.status(400).json({ error: '支付驗證失敗，請聯繫客服', code: 'VERIFICATION_FAILED' });
     }
 
@@ -185,7 +168,7 @@ export default async function handler(
     const updatePayload: Record<string, unknown> = { status: 'paid' };
     if (paymentIntentId) updatePayload.payment_intent_id = paymentIntentId;
     const { error: updateError } = await supabaseAdmin
-      .from('orders').update(updatePayload).eq('id', updateId).eq('status', 'pending');
+      .from('orders').update(updatePayload).eq('id', updateId).eq('status', 'pending_payment');
 
     if (updateError) {
       console.error('[confirm-payment] CRITICAL update failed:', updateError.message);
@@ -200,7 +183,6 @@ export default async function handler(
         const { data: orderData } = await supabaseAdmin
           .from('orders').select('line_items, order_type, subtotal, member_id, coupon_id').eq('id', updateId).maybeSingle();
 
-        // Stock decrement
         if (orderData?.order_type === 'retail' && Array.isArray(orderData.line_items)) {
           for (const li of orderData.line_items as Array<{ product_id?: string; qty?: number }>) {
             if (li.product_id && li.qty && li.qty > 0) {
@@ -211,7 +193,6 @@ export default async function handler(
           console.log('[confirm-payment] Stock decremented for', orderData.line_items.length, 'line items');
         }
 
-        // Points accrual for retail members
         if (orderData?.order_type === 'retail' && orderData.member_id && orderData.subtotal > 0) {
           try {
             const { data: ptsCfg } = await supabaseAdmin
@@ -236,7 +217,6 @@ export default async function handler(
           }
         }
 
-        // Mark coupon as used
         if (orderData?.coupon_id && orderData.member_id) {
           try {
             await supabaseAdmin.from('member_coupons')
@@ -272,7 +252,6 @@ export default async function handler(
             console.log('[confirm-payment] Auto SF success, waybill:', sfData.waybillNo);
           } else {
             console.warn('[confirm-payment] Auto SF no waybill:', sfData.error || sfRes.status);
-            // Write admin note so admin knows to retry
             await supabaseAdmin.from('orders').update({
               sf_responses: { autoCall: true, error: sfData.error || `HTTP ${sfRes.status}`, at: new Date().toISOString() },
             }).eq('id', updateId);
@@ -344,7 +323,6 @@ export default async function handler(
     const errMsg = error instanceof Error ? error.message : String(error);
     console.error('[confirm-payment] Unexpected:', errMsg);
 
-    // Last-resort: try simpler update path
     try {
       const dbId = getOrderDbId(orderId);
       const numId = /^\d+$/.test(String(dbId)) ? Number(dbId) : dbId;
