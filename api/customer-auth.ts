@@ -97,7 +97,11 @@ type Res = {
 };
 
 async function handleLogin(body: z.infer<typeof loginSchema>, supabaseUrl: string, serviceRoleKey: string) {
-  const { identifier, password, isWholesale } = body;
+  const { password, isWholesale } = body;
+  const identifier = safeTrim(body.identifier);
+  if (!identifier) {
+    return { status: 400, body: { error: '請輸入帳號和密碼', code: 'VALIDATION_ERROR' } };
+  }
   const isEmail = identifier.includes('@');
 
   const col = isEmail ? 'email' : 'phone_number';

@@ -181,7 +181,10 @@ export default async function handler(
     (async () => {
       try {
         const { data: orderData } = await supabaseAdmin
-          .from('orders').select('line_items, order_type, subtotal, member_id, coupon_id').eq('id', updateId).maybeSingle();
+          .from('orders')
+          .select('*')
+          .eq('id', updateId)
+          .maybeSingle();
 
         if (orderData?.order_type === 'retail' && Array.isArray(orderData.line_items)) {
           for (const li of orderData.line_items as Array<{ product_id?: string; qty?: number }>) {
@@ -219,12 +222,35 @@ export default async function handler(
 
         if (orderData?.coupon_id && orderData.member_id) {
           try {
-            await supabaseAdmin.from('member_coupons')
-              .update({ status: 'used', used_at: new Date().toISOString(), used_order_id: orderId })
-              .eq('member_id', orderData.member_id)
-              .eq('coupon_id', orderData.coupon_id)
-              .eq('status', 'available');
-            console.log(`[confirm-payment] Coupon ${orderData.coupon_id} marked as used`);
+            const usedAt = new Date().toISOString();
+            if (orderData.member_coupon_id) {
+              await supabaseAdmin.from('member_coupons')
+                .update({ status: 'used', used_at: usedAt, used_order_id: orderId })
+                .eq('id', orderData.member_coupon_id)
+                .eq('member_id', orderData.member_id)
+                .eq('coupon_id', orderData.coupon_id)
+                .eq('status', 'available');
+              console.log(`[confirm-payment] Member coupon ${orderData.member_coupon_id} marked as used`);
+            } else {
+              // Backward compatibility for older pending orders created before member_coupon_id existed.
+              const { data: fallbackMc } = await supabaseAdmin
+                .from('member_coupons')
+                .select('id')
+                .eq('member_id', orderData.member_id)
+                .eq('coupon_id', orderData.coupon_id)
+                .eq('status', 'available')
+                .order('created_at', { ascending: true })
+                .limit(1)
+                .maybeSingle();
+              if (fallbackMc?.id) {
+                await supabaseAdmin.from('member_coupons')
+                  .update({ status: 'used', used_at: usedAt, used_order_id: orderId })
+                  .eq('id', fallbackMc.id);
+                console.log(`[confirm-payment] Fallback member coupon ${fallbackMc.id} marked as used`);
+              } else {
+                console.warn(`[confirm-payment] No available member coupon found for coupon ${orderData.coupon_id}`);
+              }
+            }
           } catch (cpnErr) {
             console.warn('[confirm-payment] Coupon marking failed (non-blocking):', cpnErr instanceof Error ? cpnErr.message : cpnErr);
           }

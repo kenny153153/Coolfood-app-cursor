@@ -1,6 +1,6 @@
 /**
  * Consolidated customer API — POST /api/customer-api
- * Body: { action: 'list' | 'details' | 'reorder', orderId?: number|string }
+ * Body: { action: 'list' | 'details' | 'reorder' | 'save-addresses', ... }
  *
  * Merges the former /api/customer-orders, /api/customer-order-details,
  * and /api/customer-reorder into a single serverless function.
@@ -35,9 +35,26 @@ function verifySession(token: string, memberId: string, passwordHash: string | n
   return timingSafeCompare(token, legacy);
 }
 
+const addressSchema = z.object({
+  id: z.string().min(1),
+  detail: z.string().optional(),
+  district: z.string().optional(),
+  street: z.string().optional(),
+  building: z.string().optional(),
+  floor: z.string().optional(),
+  flat: z.string().optional(),
+  isDefault: z.boolean(),
+  contactName: z.string().optional(),
+  phone: z.string().optional(),
+  altContactName: z.string().optional(),
+  altPhone: z.string().optional(),
+});
+
 const customerApiSchema = z.object({
-  action: z.enum(['list', 'details', 'reorder']),
+  action: z.enum(['list', 'details', 'reorder', 'save-addresses']),
   orderId: z.union([z.string(), z.number()]).optional().nullable(),
+  addresses: z.array(addressSchema).optional(),
+  deliveryAddress: z.string().optional().nullable(),
 });
 
 type Req = {
@@ -93,7 +110,7 @@ export default async function handler(req: Req, res: Res) {
 
   const parsed = customerApiSchema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ error: 'Invalid action. Use: list, details, reorder' });
+    return res.status(400).json({ error: 'Invalid action. Use: list, details, reorder, save-addresses' });
   }
   const action = parsed.data.action;
 
@@ -147,6 +164,36 @@ export default async function handler(req: Req, res: Res) {
         return res.status(200).json({ data: null });
       }
       return res.status(200).json({ data: orders[0].line_items || [] });
+    }
+
+    if (action === 'save-addresses') {
+      const addresses = parsed.data.addresses;
+      if (!Array.isArray(addresses)) {
+        return res.status(400).json({ error: '缺少地址資料' });
+      }
+      const deliveryAddress = parsed.data.deliveryAddress ?? null;
+      const updateRes = await fetch(
+        `${supabaseUrl}/rest/v1/members?id=eq.${encodeURIComponent(memberId)}&select=id,name,email,phone_number,points,tier,role,admin_permissions,member_type,wholesale_price_tier,wholesale_status,wholesale_brand,company_name,business_type,branch_count,br_doc_url,storefront_photo_url,storefront_preparing,delivery_address,br_update_required,addresses,client_code,fax,district,route_id,credit_limit,parent_member_id,salesperson_id,payment_terms_days,payment_terms_type,discount_percent,wholesale_notes,is_wholesale_active`,
+        {
+          method: 'PATCH',
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=representation',
+          },
+          body: JSON.stringify({ addresses, delivery_address: deliveryAddress }),
+        }
+      );
+      if (!updateRes.ok) {
+        const errText = await updateRes.text();
+        console.error('[customer-api/save-addresses] update failed:', updateRes.status, errText);
+        return res.status(500).json({ error: '地址儲存失敗' });
+      }
+      const rows = await updateRes.json();
+      const updated = Array.isArray(rows) ? rows[0] : rows;
+      if (!updated) return res.status(500).json({ error: '地址儲存失敗' });
+      return res.status(200).json({ user: updated });
     }
   } catch (e) {
     console.error('[customer-api] Error:', e);

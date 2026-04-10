@@ -209,7 +209,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                 <form onSubmit={handleLogin} className="space-y-4">
                   <div>
                     <label className="block text-xs font-bold text-slate-500 mb-1.5">電話 / 帳號</label>
-                    <input type="text" value={authForm.email} onChange={e => setAuthForm(f => ({ ...f, email: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:border-amber-400 focus:ring-1 focus:ring-amber-400 outline-none" placeholder="輸入電話號碼" required />
+                    <input type="text" value={authForm.email} onChange={e => setAuthForm(f => ({ ...f, email: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:border-amber-400 focus:ring-1 focus:ring-amber-400 outline-none" placeholder="輸入電話號碼或電郵地址" required />
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-500 mb-1.5">密碼</label>

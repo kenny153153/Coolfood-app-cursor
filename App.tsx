@@ -301,12 +301,9 @@ const SuccessView: React.FC<{
   setSuccessWaybillLoading: (v: boolean) => void;
   highlightOrderId: string | null;
   orders: Order[];
-  cart: CartItem[];
-  total: number;
-  deliveryMethod: string;
   onViewOrders: () => void;
   onRefreshOrders: () => void;
-}> = ({ successWaybill, successWaybillLoading, setSuccessWaybill, setSuccessWaybillLoading, onViewOrders, onRefreshOrders, cart, total, deliveryMethod }) => {
+}> = ({ successWaybill, successWaybillLoading, setSuccessWaybill, setSuccessWaybillLoading, onViewOrders, onRefreshOrders }) => {
   const { t } = useI18n();
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [confirmSuccess, setConfirmSuccess] = useState(false);
@@ -416,33 +413,6 @@ const SuccessView: React.FC<{
                 <p className="text-lg font-black text-slate-900 tracking-wide">{successWaybill}</p>
               </div>
             )}
-
-            {(() => {
-              const params = new URLSearchParams(window.location.search);
-              const orderId = params.get('order') || '---';
-              const itemsList = cart.length > 0
-                ? cart.map(i => `${i.name} x${i.qty}`).join(', ')
-                : '(見訂單詳情)';
-              const delivery = deliveryMethod === 'sf_locker' ? '順豐凍櫃自取' : '順豐冷鏈上門';
-              const msg = encodeURIComponent(
-                `訂單確認\n` +
-                `Order: ${orderId}\n` +
-                `Items: ${itemsList}\n` +
-                `Total: $${total}\n` +
-                `Delivery: ${delivery}\n` +
-                `多謝惠顧！`
-              );
-              return (
-                <a
-                  href={`https://wa.me/${SHOP_WHATSAPP}?text=${msg}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="w-full py-4 bg-green-600 text-white rounded-2xl font-black text-sm flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all"
-                >
-                  <MessageCircle size={18} fill="currentColor" /> WhatsApp 確認訂單
-                </a>
-              );
-            })()}
 
             <button type="button" onClick={onViewOrders} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm">{t.success.viewOrders}</button>
           </>
@@ -816,6 +786,7 @@ const App: React.FC = () => {
   const [showCheckoutAddressForm, setShowCheckoutAddressForm] = useState(false);
   const [checkoutAddressDraft, setCheckoutAddressDraft] = useState<UserAddress | null>(null);
   const [checkoutSelectedAddressId, setCheckoutSelectedAddressId] = useState<string | null>(null);
+  const [checkoutGuestPhone, setCheckoutGuestPhone] = useState('');
   const [isChangingAddress, setIsChangingAddress] = useState(false);
   const [checkoutSaveNewAddressAsDefault, setCheckoutSaveNewAddressAsDefault] = useState(true);
   const [isLocatingAddress, setIsLocatingAddress] = useState(false);
@@ -2182,6 +2153,60 @@ const App: React.FC = () => {
     setClaimLoading(false);
   };
 
+  const persistOwnMemberAddresses = async (ownerId: string, addresses: UserAddress[]): Promise<boolean> => {
+    if (!user || user.id !== ownerId || isAdminRoute) return false;
+    try {
+      const storedMemberId = localStorage.getItem('coolfood_member_id') || '';
+      const sessionToken = localStorage.getItem('coolfood_session_token') || '';
+      if (!sessionToken) {
+        showToast('登入已失效，請重新登入再試', 'error');
+        return false;
+      }
+      // Keep local member id aligned with the active profile id.
+      if (storedMemberId !== ownerId) {
+        try { localStorage.setItem('coolfood_member_id', ownerId); } catch { /* ignore */ }
+      }
+      const defaultAddr = addresses.find(a => a.isDefault) || addresses[0];
+      const deliveryAddress = defaultAddr ? formatAddressLine(defaultAddr) : null;
+      const res = await fetch('/api/customer-api', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-member-id': ownerId,
+          'x-session-token': sessionToken,
+        },
+        body: JSON.stringify({ action: 'save-addresses', addresses, deliveryAddress }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.user) {
+        showToast(json?.error || '地址儲存失敗，請重新登入後再試', 'error');
+        return false;
+      }
+      const mapped = mapMemberRowToUser(json.user as SupabaseMemberRow);
+      setMembers(prev => {
+        const idx = prev.findIndex(m => m.id === mapped.id);
+        if (idx === -1) return [...prev, mapped];
+        const next = [...prev];
+        next[idx] = mapped;
+        return next;
+      });
+      setUser(prev => (prev && prev.id === mapped.id ? mapped : prev));
+      if (editingMember && editingMember.id === mapped.id) setEditingMember(mapped);
+      return true;
+    } catch {
+      showToast('地址儲存失敗，請稍後再試', 'error');
+      return false;
+    }
+  };
+
+  const saveMemberAddresses = async (baseMember: UserType, addresses: UserAddress[]): Promise<boolean> => {
+    const nextMember = { ...baseMember, addresses };
+    if (!isAdminRoute && user?.id === baseMember.id) {
+      return persistOwnMemberAddresses(baseMember.id, addresses);
+    }
+    return upsertMember(nextMember);
+  };
+
   const handleSetDefaultAddress = async (ownerId: string, addressId: string) => {
     const updateMember = (m: UserType) => {
       if (m.id !== ownerId) return m;
@@ -2193,7 +2218,8 @@ const App: React.FC = () => {
       showToast('會員資料不存在', 'error');
       return;
     }
-    const ok = await upsertMember(updateMember(baseMember));
+    const updatedMember = updateMember(baseMember);
+    const ok = await saveMemberAddresses(updatedMember, updatedMember.addresses || []);
     if (ok) showToast('已設為預設地址');
   };
 
@@ -2216,7 +2242,7 @@ const App: React.FC = () => {
       return;
     }
     const updatedMember = updateMember(baseMember);
-    const ok = await upsertMember(updatedMember);
+    const ok = await saveMemberAddresses(updatedMember, updatedMember.addresses || []);
     if (ok) {
       setAddressEditor(null);
       showToast(isNew ? '地址已新增' : '地址已更新');
@@ -2234,7 +2260,7 @@ const App: React.FC = () => {
     const nextAddresses = wasDefault && addresses.length > 0
       ? addresses.map((a, i) => ({ ...a, isDefault: i === 0 }))
       : addresses;
-    const ok = await upsertMember({ ...baseMember, addresses: nextAddresses });
+    const ok = await saveMemberAddresses(baseMember, nextAddresses);
     if (ok) showToast('地址已刪除');
   };
 
@@ -3453,12 +3479,17 @@ const App: React.FC = () => {
         return;
       }
     }
+    const lockerContactPhone = (user?.phoneNumber ?? checkoutGuestPhone).trim();
+    if (deliveryMethod === 'sf_locker' && !lockerContactPhone) {
+      showToast(lang === 'en' ? 'Please enter a contact phone number' : '請填寫聯絡電話以便發送物流通知', 'error');
+      return;
+    }
     const useDraft = deliveryMethod === 'home' && checkoutAddressDraft && isAddressCompleteForOrder(checkoutAddressDraft);
     const deliveryAddr = deliveryMethod === 'sf_locker' && selectedLockerPoint
       ? formatLockerAddress(selectedLockerPoint, selectedLockerDistrict)
       : (deliveryAddress ? deliveryAddress.detail ?? null : null);
     const contactName = deliveryAddress?.contactName ?? (user?.name ?? null);
-    const customerPhone = deliveryAddress?.phone ?? (user?.phoneNumber ?? null);
+    const customerPhone = deliveryAddress?.phone ?? (deliveryMethod === 'sf_locker' ? lockerContactPhone || null : user?.phoneNumber ?? null);
     const altContactName = deliveryAddress?.altContactName ?? null;
     const altContactPhone = deliveryAddress?.altPhone ?? null;
     const customerName = user?.name ?? '訪客';
@@ -3494,6 +3525,7 @@ const App: React.FC = () => {
       payment_method: 'card',
       member_id: user?.id ?? null,
       coupon_id: selectedCoupon?.couponId ?? null,
+      member_coupon_id: selectedCoupon?.id ?? null,
       coupon_discount: pricingData.couponDiscount ?? 0,
     };
     if (deliveryMethod === 'home' && deliveryAddress) {
@@ -3509,7 +3541,13 @@ const App: React.FC = () => {
     setIsRedirectingToPayment(true);
 
     // Insert order FIRST so the payment API can verify the amount server-side
-    const { error } = await supabase.from('orders').insert(insertRow);
+    let { error } = await supabase.from('orders').insert(insertRow);
+    if (error && String(error.message || '').includes('member_coupon_id')) {
+      const fallbackRow = { ...insertRow };
+      delete fallbackRow.member_coupon_id;
+      const retry = await supabase.from('orders').insert(fallbackRow);
+      error = retry.error;
+    }
     if (error) {
       setIsRedirectingToPayment(false);
       showToast(error.message || '訂單提交失敗', 'error');
@@ -9217,6 +9255,18 @@ const App: React.FC = () => {
                     <p className="text-[10px] font-bold text-blue-500">{selectedLockerPoint.code} · {selectedLockerPoint.hours.weekday}（平日）/ {selectedLockerPoint.hours.weekend}（週末）</p>
                   </div>
                 )}
+                {!user?.phoneNumber && (
+                  <div className="space-y-1">
+                    <label className="block text-[11px] font-bold text-slate-500">{lang === 'en' ? 'Contact phone *' : '聯絡電話 *'}</label>
+                    <input
+                      type="tel"
+                      value={checkoutGuestPhone}
+                      onChange={(e) => setCheckoutGuestPhone(e.target.value)}
+                      className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all"
+                      placeholder={lang === 'en' ? 'Phone number for delivery updates' : '用作送貨通知的電話號碼'}
+                    />
+                  </div>
+                )}
               </div>
             ) : (
               <div className="space-y-3">
@@ -9415,7 +9465,7 @@ const App: React.FC = () => {
               </div>
             </div>
             <div className="px-5 pb-5">
-              <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || (deliveryMethod === 'sf_locker' && !selectedLockerPoint) || isRedirectingToPayment} onClick={handleSubmitOrder} className="w-full py-4 bg-blue-600 text-white rounded-xl font-black text-sm shadow-lg active:scale-[0.98] transition-all disabled:opacity-30 flex items-center justify-center gap-2">
+              <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || (deliveryMethod === 'sf_locker' && (!selectedLockerPoint || !(user?.phoneNumber ?? checkoutGuestPhone).trim())) || isRedirectingToPayment} onClick={handleSubmitOrder} className="w-full py-4 bg-blue-600 text-white rounded-xl font-black text-sm shadow-lg active:scale-[0.98] transition-all disabled:opacity-30 flex items-center justify-center gap-2">
                 {isRedirectingToPayment ? <RefreshCw size={16} className="animate-spin" /> : <CreditCard size={16} />}
                 {isRedirectingToPayment ? (lang === 'en' ? 'Processing...' : '處理中...') : (lang === 'en' ? `Pay $${total}` : `前往付款 $${total}`)}
               </button>
@@ -9767,7 +9817,7 @@ const App: React.FC = () => {
         }}
         onLogin={async (form) => {
           const input = form.email.trim();
-          if (!input || !form.password) { showToast('請輸入電話及密碼', 'error'); return; }
+          if (!input || !form.password) { showToast('請輸入電郵或電話及密碼', 'error'); return; }
           try {
             const res = await fetch('/api/customer-auth', {
               method: 'POST',
@@ -9966,9 +10016,6 @@ const App: React.FC = () => {
               setSuccessWaybillLoading={setSuccessWaybillLoading}
               highlightOrderId={highlightOrderId}
               orders={orders}
-              cart={cart}
-              total={pricingData.total}
-              deliveryMethod={deliveryMethod}
               onViewOrders={() => { if (window.history.replaceState) window.history.replaceState({}, '', '/'); setView('orders'); const latestId = orders.length > 0 ? orders[0].id : null; if (latestId) setHighlightOrderId(latestId); }}
               onRefreshOrders={fetchOrders}
             />

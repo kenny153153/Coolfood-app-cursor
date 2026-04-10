@@ -369,6 +369,10 @@ export interface SupabaseOrderRow {
   total: number;
   subtotal?: number;
   delivery_fee?: number;
+  coupon_id?: string | null;
+  member_coupon_id?: string | null;
+  coupon_discount?: number | null;
+  points_earned?: number | null;
   status: string;
   order_date: string;
   items_count: number;

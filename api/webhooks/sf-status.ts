@@ -41,23 +41,42 @@ async function sendWA(to: string, body: string): Promise<{ success: boolean; err
   } catch (e) { return { success: false, error: e instanceof Error ? e.message : String(e) }; }
 }
 
-function buildStatusMessage(orderId: string, status: string, waybillNo?: string): string | null {
+function estimateArrivalDateLabel(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  const month = d.getMonth() + 1;
+  const day = d.getDate();
+  return `${month}月${day}日`;
+}
+
+function buildStatusMessage(status: string, waybillNo?: string): string | null {
   switch (status) {
-    case 'shipped': return `Coolfood: 順豐已取件，單號 ${waybillNo || '（處理中）'}，留意收件。`;
+    case 'shipped':
+      return `你好，多謝你支持 Cool Food! 閣下的貨品會大約於${estimateArrivalDateLabel()}送達 😊
+
+貨件追蹤編號: ${waybillNo || '處理中'}
+
+貨件追蹤 URL: https://htm.sf-express.com/hk/tc/`;
     case 'delivered': return `Coolfood: 順豐顯示你已經收到貨。多謝支持！`;
     default: return null;
   }
 }
 
-async function notifyCustomer(supabase: SupabaseClient, orderId: string, status: string, waybillNo: string, phone?: string | null) {
+async function notifyCustomer(supabase: SupabaseClient, orderId: string, status: string, waybillNo: string, phone?: string | null, memberId?: string | null) {
   try {
-    const message = buildStatusMessage(orderId, status, waybillNo);
+    const message = buildStatusMessage(status, waybillNo);
     if (!message) return;
 
     let customerPhone = phone?.trim() || null;
-    if (!customerPhone) {
-      const { data } = await supabase.from('orders').select('customer_phone').eq('id', orderId).maybeSingle();
-      customerPhone = data?.customer_phone?.trim() || null;
+    let orderMemberId = memberId?.trim() || null;
+    if (!customerPhone || !orderMemberId) {
+      const { data } = await supabase.from('orders').select('customer_phone, member_id').eq('id', orderId).maybeSingle();
+      customerPhone = customerPhone || data?.customer_phone?.trim() || null;
+      orderMemberId = orderMemberId || data?.member_id?.trim() || null;
+    }
+    if (!customerPhone && orderMemberId) {
+      const { data: memberRow } = await supabase.from('members').select('phone_number').eq('id', orderMemberId).maybeSingle();
+      customerPhone = memberRow?.phone_number?.trim() || null;
     }
 
     let deliveryStatus = 'LOGGED';
@@ -141,7 +160,7 @@ export default async function handler(
 
     const { data: orderRows, error: findErr } = await supabase
       .from('orders')
-      .select('id, status, waybill_no, customer_phone')
+      .select('id, status, waybill_no, customer_phone, member_id')
       .eq('waybill_no', waybillNo);
 
     if (findErr || !orderRows?.length) {
@@ -164,7 +183,7 @@ export default async function handler(
 
       if (!upErr) {
         updated++;
-        notifyCustomer(supabase, String(order.id), targetStatus, waybillNo, order.customer_phone).catch(() => {});
+        notifyCustomer(supabase, String(order.id), targetStatus, waybillNo, order.customer_phone, order.member_id).catch(() => {});
       }
     }
 
