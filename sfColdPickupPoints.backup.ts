@@ -5,9 +5,9 @@
  * 此檔案為本地靜態數據，不需要 API 請求，確保極速載入。
  * 按地區 (district) 分組，供二級下拉選單使用。
  *
- * 最後自動更新：2026-04-10
+ * 最後自動更新：2026-02-10
  * 由 scripts/update-sf-cold-points.ts (Playwright) 自動生成
- * 來源頁面：https://hk.sf-express.com/hk/tc/more/sf-store-address
+ * 來源頁面：https://htm.sf-express.com/hk/tc/dynamic_function/S.F.Network/SF_store_address/
  *
  * ⚠️ 重要：自動腳本只會覆蓋 SF_COLD_PICKUP_DISTRICTS_RAW 區塊。
  *    下方的 MANUAL_OVERRIDES 區塊不會被覆蓋，你可以安全地手動編輯。
@@ -93,7 +93,7 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         code: '852MD',
         name: '上環嘉安大廈順豐站',
         address: '香港香港島中西區上環新街市街15-27號，干諾道西8-14號嘉安大廈地下15號舖',
-        area: '852MD',
+        area: '上環',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
       },
       {
@@ -121,7 +121,7 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         code: '852Z501',
         name: '西環曉暉大廈順豐站',
         address: '香港香港島中西區西環卑路乍街1L-1Q號曉暉大廈地下1號',
-        area: '852Z501',
+        area: '堅尼地城',
         hours: { weekday: '11:00-20:30', weekend: '12:00-20:00' },
       },
     ],
@@ -134,14 +134,14 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         code: '852TA',
         name: '灣仔莊士敦大樓順豐站',
         address: '香港香港島灣仔區灣仔聯發街9, 11-13號莊士敦大樓地下D舖',
-        area: '852TA',
+        area: '灣仔',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
       },
       {
         code: '852TC',
         name: '灣仔謝菲道順豐站',
         address: '香港香港島灣仔區灣仔謝菲道182號地下',
-        area: '852TC',
+        area: '灣仔',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
       },
     ],
@@ -168,7 +168,7 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         code: '852PCL',
         name: '柴灣國貿中心順豐站',
         address: '香港香港島東區柴灣祥利街29號國貿中心5樓1室',
-        area: '852PCL',
+        area: '柴灣',
         hours: { weekday: '11:00-21:00', weekend: '星期六 12:00-20:00 / 星期日 休息' },
       },
       {
@@ -196,7 +196,7 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         code: '852NPTM',
         name: '北角豐富商場順豐站',
         address: '香港香港島東區北角英皇道480號豐富商場地下8號舖',
-        area: '852NPTM',
+        area: '北角',
         hours: { weekday: '10:00-22:00', weekend: '12:00-20:00' },
       },
     ],
@@ -216,7 +216,7 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         code: '852TE',
         name: '黃竹坑保濟工廈順豐站',
         address: '香港香港島南區黃竹坑黃竹坑道28號保濟工業大廈地下A室',
-        area: '852TE',
+        area: '黃竹坑',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
       },
       {
@@ -230,7 +230,7 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         code: '852Z601',
         name: '鴨脷洲海怡西商場順豐站',
         address: '香港香港島南區鴨脷洲海怡路12A號海怡西商場209D舖',
-        area: '852Z601',
+        area: '鴨脷洲',
         hours: { weekday: '11:00-21:00', weekend: '12:00-20:00' },
       },
     ],
@@ -257,15 +257,22 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         code: '852BF',
         name: '太子基隆街順豐站',
         address: '香港九龍油尖旺區太子基隆街19號地下',
-        area: '852BF',
+        area: '太子',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
       },
       {
         code: '852BDL',
         name: '太子大南街順豐站',
         address: '香港九龍油尖旺區太子大南街24, 24A及26號地下A舖',
-        area: '852BDL',
+        area: '太子',
         hours: { weekday: '10:00-22:00', weekend: '12:00-20:00' },
+      },
+      {
+        code: '852BD',
+        name: '旺角福全街順豐站',
+        address: '香港九龍油尖旺區旺角福全街福康大樓17-19號地下AB1舖',
+        area: '旺角',
+        hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 09:00-18:00' },
       },
       {
         code: '852BE',
@@ -285,35 +292,28 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         code: '852EB',
         name: '尖沙咀南洋中心順豐站',
         address: '香港九龍油尖旺區東部麽地道75號南洋中心UG層21&22室',
-        area: '852EB',
+        area: '尖沙咀',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
       },
       {
         code: '852EE',
         name: '尖沙咀漆咸圍順豐站',
         address: '香港九龍油尖旺區尖沙咀漆咸圍10-12號意公寓地下商舖',
-        area: '852EE',
+        area: '尖沙咀',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
       },
       {
         code: '852ED',
         name: '尖沙咀力寶太陽廣場順豐站',
         address: '香港九龍油尖旺區尖沙咀廣東道28號力寶太陽廣場310室',
-        area: '852ED',
+        area: '尖沙咀',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
-      },
-      {
-        code: '852BD',
-        name: '大角咀華源工廠大廈順豐站',
-        address: '香港九龍油尖旺區大角咀華源工廠大廈地下5號鋪',
-        area: '大角咀',
-        hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 09:00-18:00' },
       },
       {
         code: '852BFL',
         name: '大角咀中興樓順豐站',
         address: '香港九龍油尖旺區大角咀中匯街41號中興樓地下12號舖',
-        area: '852BFL',
+        area: '大角咀',
         hours: { weekday: '11:00-21:00', weekend: '12:00-20:00' },
       },
     ],
@@ -333,21 +333,21 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         code: '852DB',
         name: '荔枝角福源廣場順豐站',
         address: '香港九龍深水埗區荔枝角永康街37號福源廣場地下A2舖',
-        area: '852DB',
+        area: '荔枝角',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
       },
       {
         code: '852NC',
         name: '荔枝角麗昌工廠大廈順豐站',
         address: '香港九龍深水埗區荔枝角青山道479-479A號麗昌工廠大廈地下3號舖',
-        area: '852NC',
+        area: '荔枝角',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
       },
       {
         code: '852DCL',
         name: '荔枝角泓景匯順豐站',
         address: '香港九龍深水埗區荔枝角荔枝角道863號泓景台泓景匯地下2A舖',
-        area: '852DCL',
+        area: '荔枝角',
         hours: { weekday: '11:00-22:00', weekend: '12:00-20:00' },
       },
       {
@@ -388,7 +388,7 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         code: '852KEL',
         name: '紅磡黃埔花園順豐站',
         address: '香港九龍九龍城區紅磡黃埔花園12期地庫9A及9B號舖',
-        area: '852KEL',
+        area: '紅磡',
         hours: { weekday: '11:00-22:00', weekend: '12:00-20:00' },
       },
       {
@@ -416,7 +416,7 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         code: '852KFL',
         name: '土瓜灣樂民新邨順豐站',
         address: '香港九龍九龍城區土瓜灣樂民新邨G座平台地下126號舖（連閣樓）',
-        area: '852KFL',
+        area: '土瓜灣',
         hours: { weekday: '12:00-21:00', weekend: '12:00-20:00' },
       },
     ],
@@ -449,14 +449,14 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         code: '852HB',
         name: '九龍灣環球工商大廈順豐站',
         address: '香港九龍觀塘區九龍灣常悅街20號環球工商大廈地下4A號舖',
-        area: '852HB',
+        area: '九龍灣',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
       },
       {
         code: '852HC',
         name: '九龍灣榮發工廈順豐站',
         address: '香港九龍觀塘區九龍灣宏泰道12號榮發工業大廈地下5號舖',
-        area: '852HC',
+        area: '九龍灣',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
       },
       {
@@ -470,42 +470,42 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         code: '852CAB',
         name: '觀塘鴻圖工廈順豐站',
         address: '香港九龍觀塘區觀塘鴻圖道80號鴻圖工業大廈地下1號舖',
-        area: '852CAB',
+        area: '觀塘',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 09:00-18:00' },
       },
       {
         code: '852CAC',
         name: '觀塘友聯大廈順豐站',
         address: '香港九龍觀塘區觀塘巧明街112號友聯大廈地倉',
-        area: '852CAC',
+        area: '觀塘',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
       },
       {
         code: '852CH',
         name: '觀塘金凱工廈順豐站',
         address: '香港九龍觀塘區觀塘鴻圖道58號金凱工業大廈地下',
-        area: '852CH',
+        area: '觀塘',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
       },
       {
         code: '852HD',
         name: '觀塘振邦工廈順豐站',
         address: '香港九龍觀塘區觀塘偉業街103號振邦工業大廈地下',
-        area: '852HD',
+        area: '觀塘',
         hours: { weekday: '09:00-20:00', weekend: '星期六 09:00-20:00 / 星期日 休息' },
       },
       {
         code: '852Z151',
         name: '觀塘泓富廣場順豐站',
         address: '香港九龍觀塘區觀塘成業街6號泓富廣場7樓708室',
-        area: '852Z151',
+        area: '觀塘',
         hours: { weekday: '11:00-20:00', weekend: '星期六 12:00-20:00 / 星期日 星期日及公眾假期休息' },
       },
       {
         code: '852Z152',
         name: '秀茂坪寶達商場順豐站',
         address: '香港九龍觀塘區秀茂坪寶達邨寶達商場P1樓108號',
-        area: '852Z152',
+        area: '觀塘',
         hours: { weekday: '12:00- 21:00', weekend: '12:00- 20:00' },
       },
       {
@@ -824,18 +824,11 @@ export const SF_COLD_PICKUP_DISTRICTS_RAW: SfColdDistrict[] = [
         hours: { weekday: '11:00-21:00', weekend: '12:00-20:00' },
       },
       {
-        code: '852Z102',
-        name: '調景嶺維景灣畔順豐站',
-        address: '香港新界西貢區調景嶺澳景路88號維景灣畔3期低層地下2樓A1號舖',
-        area: '調景嶺',
-        hours: { weekday: '12:00- 21:00', weekend: '12:00- 20:00' },
-      },
-      {
         code: '852SKL',
         name: '西貢宜春街順豐站',
         address: '香港新界西貢區西貢宜春街66號地下10號舖',
         area: '西貢',
-        hours: { weekday: '12:00-21:00', weekend: '12:00-20:00' },
+        hours: { weekday: '11:00-21:00', weekend: '12:00-20:00' },
       },
     ],
   },
@@ -955,6 +948,6 @@ export const findPointByCode = (code: string): SfColdPickupPoint | undefined =>
 export const getPointsByDistrict = (district: string): SfColdPickupPoint[] =>
   SF_COLD_PICKUP_DISTRICTS.find(d => d.district === district)?.points ?? [];
 
-/** Format receiver address text for SF order (no embedded point code) */
+/** Format address for SF order: 地區 + 自提點名稱 + 點碼 */
 export const formatLockerAddress = (point: SfColdPickupPoint, district: string): string =>
-  `${district} ${point.name} ${point.address}`;
+  `${district} ${point.name} [${point.code}]`;

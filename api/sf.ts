@@ -178,6 +178,7 @@ async function handleLabel(req: any, res: any) {
           company: '',
         },
       ],
+      ...buildSfLockerFields(orderRow.delivery_method, orderRow.locker_code),
     };
 
     console.log('[sf-label] Calling EXP_RECE_CREATE_ORDER with isGenEletricPic=1 for', orderId);
@@ -253,6 +254,22 @@ type SfOrderPayload = {
 
 const COLD_CHAIN_EXPRESS_TYPE = Number(process.env.SF_COLD_EXPRESS_TYPE ?? '21') || 21;
 
+type SfExtraInfoItem = { attrName: string; attrValue: string };
+
+function buildSfLockerFields(deliveryMethod?: string, lockerCode?: string): {
+  isOneselfPickup?: number;
+  extraInfoList?: SfExtraInfoItem[];
+} {
+  const code = (lockerCode ?? '').trim();
+  if (deliveryMethod !== 'sf_locker' || !code) return {};
+
+  // Self-pickup orders must pass locker/network code as structured fields for SF sorting.
+  return {
+    isOneselfPickup: 1,
+    extraInfoList: [{ attrName: 'destDeptCode', attrValue: code }],
+  };
+}
+
 function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: string; address: string }) {
   const monthlyCard = (process.env.SF_MONTHLY_CARD ?? process.env.SF_PARTNER_ID ?? '').trim();
   const addr = [
@@ -302,6 +319,7 @@ function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: 
         company: '',
       },
     ],
+    ...buildSfLockerFields(payload.delivery_method, payload.locker_code),
   };
 }
 

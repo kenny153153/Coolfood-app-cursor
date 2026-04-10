@@ -37,7 +37,12 @@ const __dirname = path.dirname(__filename);
 // 常數
 // ────────────────────────────────────────────────────────────────────
 
-const SF_STORE_URL = 'https://htm.sf-express.com/hk/tc/dynamic_function/S.F.Network/SF_store_address/';
+const SF_STORE_URLS = [
+  'https://hk.sf-express.com/hk/tc/more/sf-store-address',
+  'https://hk.sf-express.com/hk/en/more/sf-store-address',
+  'https://htm.sf-express.com/hk/tc/dynamic_function/S.F.Network/SF_store_address/',
+  'https://htm.sf-express.com/HK/tc/dynamic_function/store/',
+];
 
 /** 新數據若比舊數據少超過此比例，拒絕更新 */
 const DROP_THRESHOLD = 0.40;
@@ -214,97 +219,174 @@ async function scrapeStoreAddressPage(headed: boolean): Promise<ScrapedPoint[]> 
   const page = await browser.newPage();
 
   try {
-    await page.goto(SF_STORE_URL, { waitUntil: 'networkidle', timeout: 30000 });
-    console.log(`   頁面載入完成: ${await page.title()}`);
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'zh-HK,zh;q=0.9,en;q=0.8' });
 
-    // 爬取所有 3 個表格（香港島、九龍、新界）
-    const allPoints = await page.evaluate(() => {
-      const results: {
-        code: string;
-        name: string;
-        address: string;
-        area: string;
-        region: string;
-        weekday: string;
-        saturday: string;
-        sunday: string;
-        hasCold: boolean;
-      }[] = [];
+    let allPoints: {
+      code: string;
+      name: string;
+      address: string;
+      area: string;
+      region: string;
+      weekday: string;
+      saturday: string;
+      sunday: string;
+      hasCold: boolean;
+    }[] = [];
 
-      const tables = document.querySelectorAll('.content table, .news-detail table');
-      const regionNames = ['香港島', '九龍', '新界'];
-
-      // Only process the first 3 data tables (the main store tables)
-      const dataTables = Array.from(tables).filter(t => {
-        const firstRow = (t as HTMLTableElement).rows[0];
-        if (!firstRow) return false;
-        const headerText = Array.from(firstRow.cells).map(c => c.textContent?.trim() || '').join('|');
-        return headerText.includes('點碼') && headerText.includes('冷運服務');
-      });
-
-      for (let tIdx = 0; tIdx < dataTables.length; tIdx++) {
-        const table = dataTables[tIdx] as HTMLTableElement;
-        const region = regionNames[tIdx] || `區域${tIdx + 1}`;
-        let currentArea = '';
-
-        // Skip header rows (first 2 rows are headers)
-        for (let r = 2; r < table.rows.length; r++) {
-          const row = table.rows[r];
-          const cells = Array.from(row.cells).map(c => c.textContent?.trim() || '');
-
-          if (cells.length === 0) continue;
-
-          let code: string, name: string, address: string;
-          let weekday: string, saturday: string, sunday: string;
-          let coldCell: string;
-
-          if (cells.length >= 10) {
-            // Full row: 地區, 點碼, 網點簡稱, 地址, Mon-Fri, Sat, Sun, 冷運, 行李, 尺寸
-            currentArea = cells[0] || currentArea;
-            code = cells[1];
-            name = cells[2];
-            address = cells[3];
-            weekday = cells[4];
-            saturday = cells[5];
-            sunday = cells[6];
-            coldCell = cells[7];
-          } else if (cells.length >= 9) {
-            // Continuation row (area cell rowSpan'd from previous):
-            // 點碼, 網點簡稱, 地址, Mon-Fri, Sat, Sun, 冷運, 行李, 尺寸
-            code = cells[0];
-            name = cells[1];
-            address = cells[2];
-            weekday = cells[3];
-            saturday = cells[4];
-            sunday = cells[5];
-            coldCell = cells[6];
-          } else {
-            continue;
-          }
-
-          // Validate it looks like a station code
-          if (!/^852/.test(code)) continue;
-
-          results.push({
-            code,
-            name,
-            address,
-            area: currentArea,
-            region,
-            weekday,
-            saturday,
-            sunday,
-            hasCold: coldCell === '適用',
-          });
-        }
+    for (const url of SF_STORE_URLS) {
+      console.log(`   嘗試載入: ${url}`);
+      try {
+        await page.goto(url, { waitUntil: 'networkidle', timeout: 40000 });
+        console.log(`   頁面載入完成: ${await page.title()}`);
+      } catch (err: any) {
+        console.warn(`   ⚠️ 載入失敗: ${err?.message || String(err)}`);
+        continue;
       }
 
-      return results;
-    });
+      const parsed = await page.evaluate(() => {
+        const results: {
+          code: string;
+          name: string;
+          address: string;
+          area: string;
+          region: string;
+          weekday: string;
+          saturday: string;
+          sunday: string;
+          hasCold: boolean;
+        }[] = [];
+
+        const tables = Array.from(document.querySelectorAll('table'));
+        for (const tableEl of tables) {
+          const table = tableEl as HTMLTableElement;
+          const rows = Array.from(table.rows);
+          if (rows.length < 2) continue;
+
+          let headerRowIdx = -1;
+          let idxArea = -1;
+          let idxCode = -1;
+          let idxName = -1;
+          let idxAddress = -1;
+          let idxWeekday = -1;
+          let idxSat = -1;
+          let idxSun = -1;
+          let idxCold = -1;
+
+          for (let i = 0; i < Math.min(rows.length, 6); i++) {
+            const headers = Array.from(rows[i].cells).map(c => (c.textContent || '').trim());
+            if (!headers.length) continue;
+            const lowered = headers.map(h => h.replace(/\s+/g, ' ').trim().toLowerCase());
+            const codeIdx = lowered.findIndex(h => ['點碼', '点码', 'code'].some(k => h.includes(k)));
+            const coldIdx = lowered.findIndex(h => ['冷運服務', '冷运服务', 'cold chain'].some(k => h.includes(k)));
+            if (codeIdx >= 0 && coldIdx >= 0) {
+              headerRowIdx = i;
+              idxArea = lowered.findIndex(h => ['地區', '地区', 'district', 'area'].some(k => h.includes(k)));
+              idxCode = codeIdx;
+              idxName = lowered.findIndex(h => ['網點簡稱', '网点简称', 'name', 'station'].some(k => h.includes(k)));
+              idxAddress = lowered.findIndex(h => ['地址', 'address'].some(k => h.includes(k)));
+              idxWeekday = lowered.findIndex(h => ['mon to fri', 'mon-fri', '星期一至五', '週一至週五'].some(k => h.includes(k)));
+              idxSat = lowered.findIndex(h => ['sat', '星期六', '週六'].some(k => h.includes(k)));
+              idxSun = lowered.findIndex(h => ['sun', '星期日', '假期', 'holidays'].some(k => h.includes(k)));
+              idxCold = coldIdx;
+              break;
+            }
+          }
+
+          if (headerRowIdx < 0 || idxCode < 0 || idxCold < 0) continue;
+
+          let currentArea = '';
+          for (let r = headerRowIdx + 1; r < rows.length; r++) {
+            const cells = Array.from(rows[r].cells).map(c => (c.textContent || '').trim());
+            if (!cells.length) continue;
+
+            // SF address tables usually use rowSpan on area and grouped business-hours columns:
+            // full row(10): area, code, name, addr, weekday, sat, sun, cold, baggage, limit
+            // cont row(9):  code, name, addr, weekday, sat, sun, cold, baggage, limit
+            const hasAreaCell = cells.length >= 10;
+            const maybeArea = hasAreaCell
+              ? cells[0]
+              : (idxArea >= 0 && idxArea < cells.length ? cells[idxArea] : '');
+            if (maybeArea) currentArea = maybeArea;
+
+            let code = '';
+            let name = '';
+            let address = '';
+            let weekday = '';
+            let saturday = '';
+            let sunday = '';
+            let coldCell = '';
+
+            if (cells.length >= 10) {
+              code = cells[1] || '';
+              name = cells[2] || '';
+              address = cells[3] || '';
+              weekday = cells[4] || '';
+              saturday = cells[5] || '';
+              sunday = cells[6] || '';
+              coldCell = cells[7] || '';
+            } else if (cells.length >= 9) {
+              code = cells[0] || '';
+              name = cells[1] || '';
+              address = cells[2] || '';
+              weekday = cells[3] || '';
+              saturday = cells[4] || '';
+              sunday = cells[5] || '';
+              coldCell = cells[6] || '';
+            } else {
+              code = idxCode >= 0 && idxCode < cells.length ? cells[idxCode] : '';
+              name = idxName >= 0 && idxName < cells.length ? cells[idxName] : '';
+              address = idxAddress >= 0 && idxAddress < cells.length ? cells[idxAddress] : '';
+              weekday = idxWeekday >= 0 && idxWeekday < cells.length ? cells[idxWeekday] : '';
+              saturday = idxSat >= 0 && idxSat < cells.length ? cells[idxSat] : '';
+              sunday = idxSun >= 0 && idxSun < cells.length ? cells[idxSun] : '';
+              coldCell = idxCold >= 0 && idxCold < cells.length ? cells[idxCold] : '';
+            }
+
+            if (!/^852[A-Z0-9]+$/i.test((code || '').trim())) {
+              const fallbackCode = cells.find(c => /^852[A-Z0-9]+$/i.test((c || '').trim()));
+              code = fallbackCode || '';
+            }
+            if (!/^852[A-Z0-9]+$/i.test((code || '').trim())) continue;
+
+            const coldLower = (coldCell || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            if (!coldLower) continue;
+            if (/(不適用|不适用|\bno\b|✗|x|not available|unsupported)/i.test(coldLower)) continue;
+            const hasCold = /(適用|适用|\byes\b|√|✔|supported|available)/i.test(coldLower);
+
+            results.push({
+              code: code.trim(),
+              name,
+              address,
+              area: currentArea,
+              region: '香港',
+              weekday,
+              saturday,
+              sunday,
+              hasCold,
+            });
+          }
+        }
+
+        // 去重：同一點碼可能在多個 table 重複
+        const dedup = new Map<string, typeof results[number]>();
+        for (const row of results) {
+          if (!dedup.has(row.code)) dedup.set(row.code, row);
+        }
+        return Array.from(dedup.values());
+      });
+
+      console.log(`   此頁解析到 ${parsed.length} 個順豐站，其中冷運: ${parsed.filter(p => p.hasCold).length} 個`);
+      if (parsed.length > 0) {
+        allPoints = parsed;
+        break;
+      }
+    }
+
+    if (allPoints.length === 0) {
+      throw new Error('未能從所有候選頁面解析到任何順豐站點（可能 DOM/API 再次改版）');
+    }
 
     console.log(`   共解析 ${allPoints.length} 個順豐站，其中冷運: ${allPoints.filter(p => p.hasCold).length} 個`);
-
-    await browser.close();
 
     // 過濾冷運站點，提取地區
     const coldPoints: ScrapedPoint[] = allPoints
@@ -334,8 +416,9 @@ async function scrapeStoreAddressPage(headed: boolean): Promise<ScrapedPoint[]> 
 
     return coldPoints;
   } catch (err) {
-    await browser.close();
     throw err;
+  } finally {
+    await browser.close();
   }
 }
 
@@ -449,7 +532,7 @@ function generateTsFile(points: ScrapedPoint[], manualOverrides: ManualOverrides
  *
  * 最後自動更新：${now}
  * 由 scripts/update-sf-cold-points.ts (Playwright) 自動生成
- * 來源頁面：${SF_STORE_URL}
+ * 來源頁面：${SF_STORE_URLS[0]}
  *
  * ⚠️ 重要：自動腳本只會覆蓋 SF_COLD_PICKUP_DISTRICTS_RAW 區塊。
  *    下方的 MANUAL_OVERRIDES 區塊不會被覆蓋，你可以安全地手動編輯。
