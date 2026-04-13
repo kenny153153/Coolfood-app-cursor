@@ -399,6 +399,7 @@ export interface SupabaseOrderRow {
   wholesale_brand?: string | null;
   wholesale_client_id?: string | null;
   route_id?: string | null;
+  created_at?: string | null;
 }
 
 /** Supabase public.products table – column names must match (snake_case). */

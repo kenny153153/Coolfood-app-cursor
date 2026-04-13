@@ -220,6 +220,38 @@ export default async function handler(
           .eq('id', updateId)
           .maybeSingle();
 
+        if (orderData?.order_type === 'retail' && orderData?.payment_method === 'card' && orderData?.member_id) {
+          try {
+            const lineItemsFingerprint = JSON.stringify(orderData.line_items ?? []);
+            const { data: siblingPending } = await supabaseAdmin
+              .from('orders')
+              .select('id,total,status,order_date,line_items')
+              .eq('member_id', orderData.member_id)
+              .eq('order_type', 'retail')
+              .eq('payment_method', 'card')
+              .eq('status', 'pending_payment')
+              .eq('order_date', orderData.order_date)
+              .order('id', { ascending: false })
+              .limit(20);
+
+            const toFailIds = (Array.isArray(siblingPending) ? siblingPending : [])
+              .filter((row: any) => String(row.id) !== String(updateId))
+              .filter((row: any) => Math.abs(Number(row.total || 0) - Number(orderData.total || 0)) < 0.01)
+              .filter((row: any) => JSON.stringify(row.line_items ?? []) === lineItemsFingerprint)
+              .map((row: any) => row.id);
+
+            if (toFailIds.length > 0) {
+              await supabaseAdmin
+                .from('orders')
+                .update({ status: 'payment_failed' })
+                .in('id', toFailIds);
+              console.log('[confirm-payment] Marked duplicate pending orders as payment_failed:', toFailIds.length);
+            }
+          } catch (dupErr) {
+            console.warn('[confirm-payment] Duplicate pending cleanup failed (non-blocking):', dupErr instanceof Error ? dupErr.message : dupErr);
+          }
+        }
+
         if (orderData?.order_type === 'retail' && Array.isArray(orderData.line_items)) {
           for (const li of orderData.line_items as Array<{ product_id?: string; qty?: number }>) {
             if (li.product_id && li.qty && li.qty > 0) {
@@ -383,17 +415,25 @@ export default async function handler(
     const errMsg = error instanceof Error ? error.message : String(error);
     console.error('[confirm-payment] Unexpected:', errMsg);
 
-    try {
-      const dbId = getOrderDbId(orderId);
-      const numId = /^\d+$/.test(String(dbId)) ? Number(dbId) : dbId;
-      const fallbackPayload: Record<string, unknown> = { status: 'paid' };
-      if (paymentIntentId) fallbackPayload.payment_intent_id = paymentIntentId;
-      await supabaseAdmin.from('orders').update(fallbackPayload).eq('id', numId);
-      return res.status(200).json({
-        success: true, orderId, confirmed: true,
-        warning: '支付已確認（部分流程有延遲，不影響訂單）',
-      });
-    } catch { /* fall through */ }
+    if (stripeVerified && orderId) {
+      try {
+        const dbId = getOrderDbId(orderId);
+        const numId = /^\d+$/.test(String(dbId)) ? Number(dbId) : dbId;
+        const { data: latest } = await supabaseAdmin
+          .from('orders')
+          .select('id,status')
+          .eq('id', numId)
+          .maybeSingle();
+        if (latest?.status === 'paid') {
+          return res.status(200).json({
+            success: true, orderId, confirmed: true,
+            warning: '支付已確認（部分流程有延遲，不影響訂單）',
+          });
+        }
+      } catch {
+        // fall through to PARTIAL_FAILURE response
+      }
+    }
 
     return res.status(500).json({
       error: '支付處理遇到問題，但你的付款已記錄。如有疑問請聯繫客服。',

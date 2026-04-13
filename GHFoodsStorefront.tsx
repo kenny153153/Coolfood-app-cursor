@@ -871,14 +871,17 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                           o.status === 'delivered' ? 'bg-emerald-100 text-emerald-700' :
                           o.status === 'shipping' || o.status === 'shipped' ? 'bg-blue-100 text-blue-700' :
                           o.status === 'paid' || o.status === 'preparing' ? 'bg-amber-100 text-amber-700' :
+                          o.status === 'payment_failed' || o.status === 'cancelled' ? 'bg-rose-100 text-rose-700' :
                           'bg-slate-100 text-slate-600'
                         }`}>
                           {o.status === 'pending_payment' ? '待付款' :
+                           o.status === 'payment_failed' ? '付款失敗' :
                            o.status === 'paid' ? '已付款' :
                            o.status === 'preparing' ? '備貨中' :
                            o.status === 'shipping' ? '送貨中' :
                            o.status === 'shipped' ? '已送達' :
                            o.status === 'delivered' ? '完成' :
+                           o.status === 'cancelled' ? '已取消' :
                            o.status}
                         </span>
                       </td>

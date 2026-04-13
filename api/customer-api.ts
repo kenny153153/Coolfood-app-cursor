@@ -67,6 +67,57 @@ type Res = {
   status: (n: number) => { json: (o: object) => void };
 };
 
+async function fetchOrdersWithFallback(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  memberId: string,
+  selectCols: string,
+  extraParams = ''
+) {
+  const headers = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
+  const encodedMemberId = encodeURIComponent(memberId);
+  const suffix = extraParams ? `&${extraParams}` : '';
+  const primaryUrl = `${supabaseUrl}/rest/v1/orders?member_id=eq.${encodedMemberId}&select=${selectCols}&order=created_at.desc,id.desc${suffix}`;
+  let res = await fetch(primaryUrl, { headers });
+  if (!res.ok) {
+    const fallbackUrl = `${supabaseUrl}/rest/v1/orders?member_id=eq.${encodedMemberId}&select=${selectCols}&order=order_date.desc,id.desc${suffix}`;
+    res = await fetch(fallbackUrl, { headers });
+  }
+  return res;
+}
+
+async function expireStalePendingOrders(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  memberId: string,
+) {
+  // Big-brand behavior: card payment intents that are not completed within timeout should not stay "pending" forever.
+  const cutoffIso = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  const encodedMemberId = encodeURIComponent(memberId);
+  const encodedCutoff = encodeURIComponent(cutoffIso);
+  const filter =
+    `member_id=eq.${encodedMemberId}` +
+    `&status=eq.pending_payment` +
+    `&payment_method=eq.card` +
+    `&order_type=eq.retail` +
+    `&created_at=lt.${encodedCutoff}`;
+
+  try {
+    await fetch(`${supabaseUrl}/rest/v1/orders?${filter}`, {
+      method: 'PATCH',
+      headers: {
+        apikey: serviceRoleKey,
+        Authorization: `Bearer ${serviceRoleKey}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({ status: 'payment_failed' }),
+    });
+  } catch {
+    // Non-blocking cleanup: never fail customer order list for this.
+  }
+}
+
 async function authenticate(req: Req, res: Res) {
   const memberId = safeTrim(req.headers?.['x-member-id'] as string);
   const sessionToken = safeTrim(req.headers?.['x-session-token'] as string);
@@ -121,9 +172,12 @@ export default async function handler(req: Req, res: Res) {
 
   try {
     if (action === 'list') {
-      const ordersRes = await fetch(
-        `${supabaseUrl}/rest/v1/orders?member_id=eq.${encodeURIComponent(memberId)}&select=id,customer_name,total,status,order_date,items_count,tracking_number,waybill_no,order_type,wholesale_brand,member_id&order=order_date.desc`,
-        { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
+      await expireStalePendingOrders(supabaseUrl, serviceRoleKey, memberId);
+      const ordersRes = await fetchOrdersWithFallback(
+        supabaseUrl,
+        serviceRoleKey,
+        memberId,
+        'id,customer_name,total,status,order_date,items_count,tracking_number,waybill_no,order_type,wholesale_brand,member_id,created_at,payment_method,payment_intent_id',
       );
       const orders = await ordersRes.json();
       return res.status(200).json({ data: Array.isArray(orders) ? orders : [] });
@@ -155,9 +209,12 @@ export default async function handler(req: Req, res: Res) {
     }
 
     if (action === 'reorder') {
-      const ordersRes = await fetch(
-        `${supabaseUrl}/rest/v1/orders?member_id=eq.${encodeURIComponent(memberId)}&status=in.(paid,preparing,shipping,shipped,delivered)&select=line_items&order=order_date.desc&limit=1`,
-        { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
+      const ordersRes = await fetchOrdersWithFallback(
+        supabaseUrl,
+        serviceRoleKey,
+        memberId,
+        'line_items',
+        'status=in.(paid,preparing,shipping,shipped,delivered)&limit=1',
       );
       const orders = await ordersRes.json();
       if (!Array.isArray(orders) || orders.length === 0) {

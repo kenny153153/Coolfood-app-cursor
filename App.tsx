@@ -1385,10 +1385,20 @@ const App: React.FC = () => {
       return;
     }
     if (isAdminRoute) {
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from('orders')
-        .select('id, customer_name, total, status, order_date, items_count, tracking_number, waybill_no, order_type, wholesale_brand, member_id')
-        .order('order_date', { ascending: false });
+        .select('id, customer_name, total, status, order_date, items_count, tracking_number, waybill_no, order_type, wholesale_brand, member_id, created_at')
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false });
+      if (error && String(error.message || '').toLowerCase().includes('created_at')) {
+        const fallback = await supabase
+          .from('orders')
+          .select('id, customer_name, total, status, order_date, items_count, tracking_number, waybill_no, order_type, wholesale_brand, member_id')
+          .order('order_date', { ascending: false })
+          .order('id', { ascending: false });
+        data = fallback.data;
+        error = fallback.error;
+      }
       if (error) {
         if (!handleSchemaError(error, 'orders')) {
           showToast('訂單資料載入失敗', 'error');
