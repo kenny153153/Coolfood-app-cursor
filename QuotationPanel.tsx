@@ -7,6 +7,7 @@ import {
 import { supabase } from './supabaseClient';
 import { useWorkspace, WHOLESALE_BRAND_META } from './WorkspaceContext';
 import type { WholesaleBrand, Quotation, QuotationStatus, QuotationLineItem } from './types';
+import { roundMoney, formatMoney } from './money';
 
 interface Props {
   showToast: (msg: string, type?: 'success' | 'error') => void;
@@ -100,7 +101,7 @@ const QuotationPanel: React.FC<Props> = ({ showToast }) => {
     if (!editing) return;
     setSaving(true);
     const lines = (editing.lines || []).filter(l => l.productName);
-    const subtotal = lines.reduce((s, l) => s + l.lineTotal, 0);
+    const subtotal = roundMoney(lines.reduce((s, l) => s + l.lineTotal, 0));
 
     const payload = {
       quote_number: editing.quoteNumber || `QT-${Date.now()}`,
@@ -138,9 +139,9 @@ const QuotationPanel: React.FC<Props> = ({ showToast }) => {
     const lineItems = quote.lineItems.map(l => ({
       product_id: l.productId || '',
       name: l.productName,
-      unit_price: l.unitPrice,
+      unit_price: roundMoney(l.unitPrice),
       qty: l.qty,
-      line_total: l.lineTotal,
+      line_total: roundMoney(l.lineTotal),
       unit: l.unit,
       processing_type_name: l.processingTypeName,
       processing_spec: l.processingSpec,
@@ -150,8 +151,8 @@ const QuotationPanel: React.FC<Props> = ({ showToast }) => {
     const orderPayload = {
       id: Date.now(),
       customer_name: quote.clientName,
-      total: quote.total,
-      subtotal: quote.subtotal,
+      total: roundMoney(quote.total),
+      subtotal: roundMoney(quote.subtotal),
       status: 'paid',
       order_date: new Date().toISOString(),
       items_count: lineItems.length,
@@ -182,7 +183,7 @@ const QuotationPanel: React.FC<Props> = ({ showToast }) => {
     const lines = [...(editing.lines || [])];
     lines[idx] = { ...lines[idx], [field]: value };
     if (field === 'qty' || field === 'unitPrice') {
-      lines[idx].lineTotal = (lines[idx].qty || 0) * (lines[idx].unitPrice || 0);
+      lines[idx].lineTotal = roundMoney((lines[idx].qty || 0) * (lines[idx].unitPrice || 0));
     }
     setEditing({ ...editing, lines });
   };
@@ -281,7 +282,7 @@ const QuotationPanel: React.FC<Props> = ({ showToast }) => {
                   </td>
                   <td className="px-4 py-3 text-xs text-slate-500 font-bold">{q.quoteDate}</td>
                   <td className="px-4 py-3 text-xs text-slate-500 font-bold">{q.validUntil || '—'}</td>
-                  <td className="px-4 py-3 text-right font-black text-slate-900">${q.total.toLocaleString()}</td>
+                  <td className="px-4 py-3 text-right font-black text-slate-900">${formatMoney(q.total)}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-center gap-1">
                       <button onClick={() => setEditing({ ...q, isNew: false, lines: [...q.lineItems] })}
@@ -390,7 +391,7 @@ const QuotationPanel: React.FC<Props> = ({ showToast }) => {
                         <input type="number" step="0.01" value={line.unitPrice || ''} onChange={e => updateLine(idx, 'unitPrice', parseFloat(e.target.value) || 0)}
                           className="w-full px-2 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs font-bold outline-none text-center" />
                       </td>
-                      <td className="px-3 py-2 text-right font-black text-slate-800">${line.lineTotal.toFixed(2)}</td>
+                      <td className="px-3 py-2 text-right font-black text-slate-800">${formatMoney(line.lineTotal)}</td>
                       <td className="px-3 py-2">
                         <button onClick={() => removeLine(idx)} className="p-1 rounded hover:bg-rose-50 text-rose-400"><Trash2 size={12} /></button>
                       </td>
@@ -405,7 +406,7 @@ const QuotationPanel: React.FC<Props> = ({ showToast }) => {
               <div className="text-right">
                 <span className="text-xs font-bold text-slate-400 mr-4">合計</span>
                 <span className="text-xl font-black text-slate-900">
-                  ${(editing.lines || []).reduce((s, l) => s + l.lineTotal, 0).toFixed(2)}
+                  {formatMoney((editing.lines || []).reduce((s, l) => s + l.lineTotal, 0))}
                 </span>
               </div>
             </div>

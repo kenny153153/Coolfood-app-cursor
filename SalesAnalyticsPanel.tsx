@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import type { OrderLineItem, WholesaleBrand } from './types';
+import { formatMoney } from './money';
 
 interface Props {
   showToast: (msg: string, type?: 'success' | 'error') => void;
@@ -35,7 +36,7 @@ type AnalyticsTab = 'overview' | 'clients' | 'products' | 'monthly' | 'salespers
 
 const VALID_STATUSES = ['paid', 'preparing', 'shipping', 'shipped', 'delivered'];
 
-const fmtK = (v: number) => v >= 10000 ? `$${(v / 1000).toFixed(0)}K` : `$${v.toLocaleString()}`;
+const fmtK = (v: number) => `$${formatMoney(v)}`;
 
 const SalesAnalyticsPanel: React.FC<Props> = ({ showToast }) => {
   const [tab, setTab] = useState<AnalyticsTab>('overview');
@@ -225,7 +226,7 @@ const SalesAnalyticsPanel: React.FC<Props> = ({ showToast }) => {
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 {[
                   { label: '總營收', value: fmtK(totalRevenue), icon: <DollarSign className="text-emerald-500" size={18} />, sub: `${totalOrders} 筆訂單` },
-                  { label: '平均單價', value: `$${avgOrderValue.toFixed(0)}`, icon: <ShoppingBag className="text-blue-500" size={18} />, sub: `${topClients.length} 位客戶` },
+                  { label: '平均單價', value: `$${formatMoney(avgOrderValue)}`, icon: <ShoppingBag className="text-blue-500" size={18} />, sub: `${topClients.length} 位客戶` },
                   { label: '本月營收', value: fmtK(thisMonthRev), icon: <Calendar className="text-violet-500" size={18} />,
                     sub: momChange !== 0 ? `${momChange > 0 ? '↑' : '↓'} ${Math.abs(momChange).toFixed(1)}% MoM` : '—' },
                   { label: '上月營收', value: fmtK(prevMonthRev), icon: <TrendingUp className="text-amber-500" size={18} />, sub: prevMonthStr },
@@ -267,7 +268,7 @@ const SalesAnalyticsPanel: React.FC<Props> = ({ showToast }) => {
                       <span className="w-6 h-6 flex items-center justify-center bg-slate-100 rounded-lg text-[10px] font-black text-slate-500">{i + 1}</span>
                       <span className="flex-1 text-sm font-bold text-slate-700 truncate">{c.name}</span>
                       <span className="text-xs font-bold text-slate-400">{c.orders}單</span>
-                      <span className="text-sm font-black text-slate-900">${c.revenue.toLocaleString()}</span>
+                      <span className="text-sm font-black text-slate-900">${formatMoney(c.revenue)}</span>
                     </div>
                   ))}
                 </div>
@@ -278,7 +279,7 @@ const SalesAnalyticsPanel: React.FC<Props> = ({ showToast }) => {
                       <span className="w-6 h-6 flex items-center justify-center bg-slate-100 rounded-lg text-[10px] font-black text-slate-500">{i + 1}</span>
                       <span className="flex-1 text-sm font-bold text-slate-700 truncate">{p.name}</span>
                       <span className="text-xs font-bold text-slate-400">{p.qty}件</span>
-                      <span className="text-sm font-black text-slate-900">${p.revenue.toLocaleString()}</span>
+                      <span className="text-sm font-black text-slate-900">${formatMoney(p.revenue)}</span>
                     </div>
                   ))}
                 </div>
@@ -308,7 +309,7 @@ const SalesAnalyticsPanel: React.FC<Props> = ({ showToast }) => {
                         <td className="px-6 py-2.5 font-bold text-slate-400">{i + 1}</td>
                         <td className="px-4 py-2.5 font-bold text-slate-800">{c.name}</td>
                         <td className="px-4 py-2.5 text-right font-bold text-slate-600">{c.orders}</td>
-                        <td className="px-4 py-2.5 text-right font-black text-slate-900">${c.revenue.toLocaleString()}</td>
+                        <td className="px-4 py-2.5 text-right font-black text-slate-900">${formatMoney(c.revenue)}</td>
                         <td className="px-4 py-2.5 text-right font-bold text-slate-500">{pct.toFixed(1)}%</td>
                         <td className="px-4 py-2.5">
                           <div className="w-full bg-slate-100 rounded-full h-2">
@@ -346,7 +347,7 @@ const SalesAnalyticsPanel: React.FC<Props> = ({ showToast }) => {
                         <td className="px-6 py-2.5 font-bold text-slate-400">{i + 1}</td>
                         <td className="px-4 py-2.5 font-bold text-slate-800">{p.name}</td>
                         <td className="px-4 py-2.5 text-right font-bold text-slate-600">{p.qty}</td>
-                        <td className="px-4 py-2.5 text-right font-black text-slate-900">${p.revenue.toLocaleString()}</td>
+                        <td className="px-4 py-2.5 text-right font-black text-slate-900">${formatMoney(p.revenue)}</td>
                         <td className="px-4 py-2.5 text-right font-bold text-slate-500">{pct.toFixed(1)}%</td>
                         <td className="px-4 py-2.5">
                           <div className="w-full bg-slate-100 rounded-full h-2">
@@ -393,8 +394,8 @@ const SalesAnalyticsPanel: React.FC<Props> = ({ showToast }) => {
                       <tr key={m.month} className="border-t border-slate-50 hover:bg-slate-50/50">
                         <td className="px-6 py-2.5 font-bold text-slate-700">{m.month}</td>
                         <td className="px-4 py-2.5 text-right font-bold text-slate-600">{m.orders}</td>
-                        <td className="px-4 py-2.5 text-right font-black text-slate-900">${m.revenue.toLocaleString()}</td>
-                        <td className="px-4 py-2.5 text-right font-bold text-slate-600">${m.orders > 0 ? (m.revenue / m.orders).toFixed(0) : '—'}</td>
+                        <td className="px-4 py-2.5 text-right font-black text-slate-900">${formatMoney(m.revenue)}</td>
+                        <td className="px-4 py-2.5 text-right font-bold text-slate-600">${m.orders > 0 ? formatMoney(m.revenue / m.orders) : '—'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -422,8 +423,8 @@ const SalesAnalyticsPanel: React.FC<Props> = ({ showToast }) => {
                       <td className="px-6 py-2.5 font-bold text-slate-400">{i + 1}</td>
                       <td className="px-4 py-2.5 font-bold text-slate-800">{sp.name}</td>
                       <td className="px-4 py-2.5 text-right font-bold text-slate-600">{sp.clientCount}</td>
-                      <td className="px-4 py-2.5 text-right font-black text-slate-900">${sp.revenue.toLocaleString()}</td>
-                      <td className="px-4 py-2.5 text-right font-bold text-amber-600">${sp.commission.toLocaleString()}</td>
+                      <td className="px-4 py-2.5 text-right font-black text-slate-900">${formatMoney(sp.revenue)}</td>
+                      <td className="px-4 py-2.5 text-right font-bold text-amber-600">${formatMoney(sp.commission)}</td>
                     </tr>
                   ))}
                 </tbody>

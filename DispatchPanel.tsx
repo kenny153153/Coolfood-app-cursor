@@ -8,6 +8,7 @@ import {
 import { supabase } from './supabaseClient';
 import { WHOLESALE_BRAND_META } from './WorkspaceContext';
 import type { DeliveryRoute, WholesaleBrand } from './types';
+import { formatMoney } from './money';
 
 interface Props {
   showToast: (msg: string, type?: 'success' | 'error') => void;
@@ -210,7 +211,7 @@ const DispatchPanel: React.FC<Props> = ({ showToast }) => {
       @media print{body{margin:0;padding:10px}.order-block{break-inside:avoid}}
     </style></head><body>
     <div class="route-header">${routeName} — ${dispatchDate} 派車單</div>
-    <p style="font-size:13px;margin-bottom:12px">共 ${routeOrders.length} 單 · 總額 $${routeOrders.reduce((s, o) => s + o.total, 0).toLocaleString()}</p>
+    <p style="font-size:13px;margin-bottom:12px">共 ${routeOrders.length} 單 · 總額 $${formatMoney(routeOrders.reduce((s, o) => s + o.total, 0))}</p>
     ${routeOrders.map((order, idx) => {
       const brand = getOrderBrand(order);
       const bLabel = brand ? WHOLESALE_BRAND_META[brand].label : '';
@@ -219,14 +220,14 @@ const DispatchPanel: React.FC<Props> = ({ showToast }) => {
         <p style="font-weight:bold;font-size:14px">#${idx + 1} ${order.customerName} ${bLabel ? `(${bLabel})` : ''}</p>
         <p style="font-size:11px;color:#666">電話：${order.customerPhone} · 地址：${addr || '—'}</p>
         <table><thead><tr><th>品名</th><th>數量</th><th>金額</th></tr></thead><tbody>
-        ${(order.lineItems || []).map((li: any) => `<tr><td>${li.name}</td><td>${li.qty}</td><td>$${li.line_total}</td></tr>`).join('')}
+        ${(order.lineItems || []).map((li: any) => `<tr><td>${li.name}</td><td>${li.qty}</td><td>$${formatMoney(li.line_total)}</td></tr>`).join('')}
         </tbody></table>
-        <p style="text-align:right;font-weight:bold;font-size:13px">小計：$${order.total.toLocaleString()}</p>
+        <p style="text-align:right;font-weight:bold;font-size:13px">小計：$${formatMoney(order.total)}</p>
       </div>`;
     }).join('')}
     <div class="summary">
       <p style="font-weight:bold;font-size:14px">車線總結</p>
-      <p>總單數：${routeOrders.length} · 總金額：$${routeOrders.reduce((s, o) => s + o.total, 0).toLocaleString()}</p>
+      <p>總單數：${routeOrders.length} · 總金額：$${formatMoney(routeOrders.reduce((s, o) => s + o.total, 0))}</p>
     </div>
     </body></html>`;
 
@@ -274,7 +275,7 @@ const DispatchPanel: React.FC<Props> = ({ showToast }) => {
             </div>
             <div className="flex items-center gap-4 text-sm font-bold text-slate-500">
               <span>批發訂單：<strong className="text-slate-900">{orders.length}</strong> 張</span>
-              <span>總額：<strong className="text-slate-900">${orders.reduce((s, o) => s + o.total, 0).toLocaleString()}</strong></span>
+              <span>總額：<strong className="text-slate-900">${formatMoney(orders.reduce((s, o) => s + o.total, 0))}</strong></span>
             </div>
           </div>
 
@@ -311,7 +312,7 @@ const DispatchPanel: React.FC<Props> = ({ showToast }) => {
                       </button>
                       <div className="flex items-center gap-3 text-sm flex-shrink-0">
                         <span className="font-bold text-slate-500">{routeOrders.length} 單</span>
-                        <span className="font-black text-slate-700">${routeTotal.toLocaleString()}</span>
+                        <span className="font-black text-slate-700">${formatMoney(routeTotal)}</span>
                         {routeOrders.length > 0 && (
                           <>
                             <button
@@ -376,7 +377,7 @@ const DispatchPanel: React.FC<Props> = ({ showToast }) => {
                                     {addr || '—'}
                                   </td>
                                   <td className="px-4 py-3 text-right font-bold text-slate-600">{order.itemsCount}</td>
-                                  <td className="px-6 py-3 text-right font-black text-slate-900">${order.total.toLocaleString()}</td>
+                                  <td className="px-6 py-3 text-right font-black text-slate-900">${formatMoney(order.total)}</td>
                                 </tr>
                               );
                             })}
@@ -433,7 +434,7 @@ const DispatchPanel: React.FC<Props> = ({ showToast }) => {
                                 </td>
                                 <td className="px-4 py-3 font-bold text-slate-800">{order.customerName}</td>
                                 <td className="px-4 py-3 text-right font-bold text-slate-600">{order.itemsCount}</td>
-                                <td className="px-6 py-3 text-right font-black text-slate-900">${order.total.toLocaleString()}</td>
+                                <td className="px-6 py-3 text-right font-black text-slate-900">${formatMoney(order.total)}</td>
                               </tr>
                             );
                           })}

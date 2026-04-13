@@ -2,6 +2,7 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Search, ShoppingCart, X, Plus, Minus, Trash2, ChevronDown, Send, LogOut, Phone, Truck, Clock, DollarSign, Package, User, Coins, ChevronRight, Check, Scissors, Upload } from 'lucide-react';
 import type { Product, CartItem, User as UserType, Category, Order, OrderStatus, OrderLineItem, Ingredient, CostItem, WholesalePricingRules, ProcessingType, ProductGroup } from './types';
+import { roundMoney, formatMoney } from './money';
 
 interface WholesaleRegForm {
   name: string;
@@ -94,12 +95,13 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
   }, [wholesaleProducts, categories]);
 
   const cartTotal = useMemo(() => {
-    return cart.reduce((sum, item) => {
+    const total = cart.reduce((sum, item) => {
       const unitPrice = getPrice(item, item.qty);
       const isByPiece = item.pricingMode === 'by_piece';
       const effectiveQty = isByPiece && item.packWeightLb ? item.packWeightLb * item.qty : item.qty;
       return sum + unitPrice * effectiveQty;
     }, 0);
+    return roundMoney(total);
   }, [cart, getPrice]);
 
   const cartCount = cart.reduce((s, i) => s + i.qty, 0);
@@ -520,7 +522,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                               <td className="px-3 py-2 text-right text-slate-400 text-xs">{user ? '多款' : ''}</td>
                               <td className="px-3 py-2"></td>
                               <td className="px-3 py-2 text-right font-bold text-slate-800">
-                                {!user ? '' : groupCartCount > 0 ? `$${variantGroup!.variants.reduce((sum, v) => { const c = cart.find(ci => ci.id === v.id); return sum + (c ? getPrice(v, c.qty) * c.qty : 0); }, 0)}` : '—'}
+                                {!user ? '' : groupCartCount > 0 ? `$${formatMoney(variantGroup!.variants.reduce((sum, v) => { const c = cart.find(ci => ci.id === v.id); return sum + (c ? getPrice(v, c.qty) * c.qty : 0); }, 0))}` : '—'}
                               </td>
                             </tr>
                             {isExpanded && variantGroup!.variants.map(spec => {
@@ -543,7 +545,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                                   <td className="px-3 py-2 text-right">
                                     {user ? (
                                       <>
-                                        <span className="font-bold text-slate-800">${price}{isByPiece ? '/磅' : ''}</span>
+                                        <span className="font-bold text-slate-800">${formatMoney(price)}{isByPiece ? '/磅' : ''}</span>
                                         {isByPiece && spec.packWeightLb && (
                                           <p className="text-[9px] text-slate-400">~{spec.packWeightLb}磅/件</p>
                                         )}
@@ -574,8 +576,8 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                                   <td className="px-3 py-2 text-right font-bold text-slate-800">
                                     {!user ? '—' : qty > 0 ? (
                                       isByPiece ? (
-                                        <span className="text-pink-600">~${spec.packWeightLb ? (price * spec.packWeightLb * qty).toFixed(0) : price * qty}<span className="text-[9px] text-slate-400 ml-0.5">預估</span></span>
-                                      ) : `$${price * qty}`
+                                        <span className="text-pink-600">~${formatMoney(spec.packWeightLb ? (price * spec.packWeightLb * qty) : price * qty)}<span className="text-[9px] text-slate-400 ml-0.5">預估</span></span>
+                                      ) : `$${formatMoney(price * qty)}`
                                     ) : '—'}
                                   </td>
                                 </tr>
@@ -615,7 +617,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                           <td className="px-3 py-2 text-right">
                             {user ? (
                               <>
-                                <span className="font-bold text-slate-800">${price}{isByPiece ? '/磅' : ''}</span>
+                                <span className="font-bold text-slate-800">${formatMoney(price)}{isByPiece ? '/磅' : ''}</span>
                                 {isByPiece && p.packWeightLb && (
                                   <p className="text-[9px] text-slate-400">~{p.packWeightLb}磅/件</p>
                                 )}
@@ -646,8 +648,8 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                           <td className="px-3 py-2 text-right font-bold text-slate-800">
                             {!user ? '—' : qty > 0 ? (
                               isByPiece ? (
-                                <span className="text-pink-600">~${p.packWeightLb ? (price * p.packWeightLb * qty).toFixed(0) : price * qty}<span className="text-[9px] text-slate-400 ml-0.5">預估</span></span>
-                              ) : `$${price * qty}`
+                                <span className="text-pink-600">~${formatMoney(p.packWeightLb ? (price * p.packWeightLb * qty) : price * qty)}<span className="text-[9px] text-slate-400 ml-0.5">預估</span></span>
+                              ) : `$${formatMoney(price * qty)}`
                             ) : '—'}
                           </td>
                         </tr>
@@ -669,7 +671,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                     <ShoppingCart size={16} className="inline mr-1" />
                     {cartCount} 件商品
                   </span>
-                  <span className="text-xl font-black text-slate-900">${cartTotal}</span>
+                  <span className="text-xl font-black text-slate-900">${formatMoney(cartTotal)}</span>
                 </div>
                 <button
                   onClick={() => setView('cart')}
@@ -724,7 +726,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                             <span className="font-bold text-slate-800">{item.name}</span>
                             {item.weight && <span className="text-xs text-slate-400 ml-1">({item.weight})</span>}
                           </td>
-                          <td className="px-3 py-2.5 text-right text-slate-600">${price}</td>
+                          <td className="px-3 py-2.5 text-right text-slate-600">${formatMoney(price)}</td>
                           <td className="px-3 py-2.5">
                             <div className="flex items-center justify-center gap-1">
                               <button onClick={() => updateQty(item.id, item.qty - 1)} className="w-7 h-7 rounded bg-slate-200 text-slate-600 flex items-center justify-center hover:bg-slate-300">
@@ -746,7 +748,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                               </button>
                             </div>
                           </td>
-                          <td className="px-3 py-2.5 text-right font-bold text-slate-800">${price * item.qty}</td>
+                          <td className="px-3 py-2.5 text-right font-bold text-slate-800">${formatMoney(price * item.qty)}</td>
                           <td className="px-1 py-2.5">
                             <button onClick={() => removeFromCart(item.id)} className="p-1.5 text-slate-400 hover:text-red-500 transition-colors">
                               <Trash2 size={14} />
@@ -759,7 +761,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                   <tfoot>
                     <tr className="bg-slate-50">
                       <td colSpan={3} className="px-3 py-3 text-right font-bold text-slate-500 text-xs uppercase tracking-wider">合計</td>
-                      <td className="px-3 py-3 text-right font-black text-lg text-slate-900">${cartTotal}</td>
+                      <td className="px-3 py-3 text-right font-black text-lg text-slate-900">${formatMoney(cartTotal)}</td>
                       <td></td>
                     </tr>
                   </tfoot>
@@ -831,7 +833,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                 className="w-full py-3.5 bg-amber-600 text-white rounded-lg font-bold text-sm hover:bg-amber-700 transition-colors disabled:opacity-30 flex items-center justify-center gap-2 shadow-lg"
               >
                 <Send size={16} />
-                確認下單 (${cartTotal})
+                確認下單 (${formatMoney(cartTotal)})
               </button>
             </>
           )}
@@ -863,7 +865,7 @@ const GHFoodsStorefront: React.FC<GHFoodsStorefrontProps> = ({
                     <tr key={o.id} className="border-b border-slate-100 hover:bg-slate-50">
                       <td className="px-3 py-2.5 font-mono text-xs text-slate-600">#{o.id}</td>
                       <td className="px-3 py-2.5 text-slate-600">{o.date}</td>
-                      <td className="px-3 py-2.5 text-right font-bold text-slate-800">${o.total}</td>
+                      <td className="px-3 py-2.5 text-right font-bold text-slate-800">${formatMoney(o.total)}</td>
                       <td className="px-3 py-2.5 text-center">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                           o.status === 'delivered' ? 'bg-emerald-100 text-emerald-700' :

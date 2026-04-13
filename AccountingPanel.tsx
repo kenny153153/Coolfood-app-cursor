@@ -11,6 +11,7 @@ import {
 import { supabase } from './supabaseClient';
 import { WHOLESALE_BRAND_META } from './WorkspaceContext';
 import { buildStatementHtml } from './printUtils';
+import { formatMoney } from './money';
 import type { StatementData, StatementEntry } from './printUtils';
 import type {
   AccountPayable, AccountReceivable, ExpenseRecord,
@@ -841,8 +842,8 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                           <td className="px-4 py-3 text-slate-600 font-bold max-w-[200px] truncate">{ap.description}</td>
                           <td className="px-4 py-3 text-center text-slate-500 font-bold">{ap.invoiceDate}</td>
                           <td className="px-4 py-3 text-center text-slate-500 font-bold">{ap.dueDate || '—'}</td>
-                          <td className="px-4 py-3 text-right font-black text-slate-900">${ap.amount.toLocaleString()}</td>
-                          <td className="px-4 py-3 text-right font-bold text-slate-500">${ap.paidAmount.toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-black text-slate-900">${formatMoney(ap.amount)}</td>
+                          <td className="px-4 py-3 text-right font-bold text-slate-500">${formatMoney(ap.paidAmount)}</td>
                           <td className="px-4 py-3 text-center">
                             <span className={`px-2 py-0.5 rounded text-[10px] font-black ${AP_STATUS_MAP[ap.status].color}`}>
                               {AP_STATUS_MAP[ap.status].label}
@@ -917,8 +918,8 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                             </td>
                             <td className="px-4 py-3 text-center text-slate-500 font-bold">{ar.orderId ? `#${ar.orderId.toString().slice(-6)}` : '—'}</td>
                             <td className="px-4 py-3 text-center text-slate-500 font-bold">{ar.invoiceDate}</td>
-                            <td className="px-4 py-3 text-right font-black text-slate-900">${ar.amount.toLocaleString()}</td>
-                            <td className="px-4 py-3 text-right font-bold text-slate-500">${ar.paidAmount.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-right font-black text-slate-900">${formatMoney(ar.amount)}</td>
+                            <td className="px-4 py-3 text-right font-bold text-slate-500">${formatMoney(ar.paidAmount)}</td>
                             <td className="px-4 py-3 text-center">
                               <span className={`px-2 py-0.5 rounded text-[10px] font-black ${AR_STATUS_MAP[ar.status].color}`}>
                                 {AR_STATUS_MAP[ar.status].label}
@@ -984,7 +985,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                           <p className="text-[10px] text-slate-400 font-bold">{exp.voucherNumber && <span className="text-blue-500 font-mono mr-1.5">{exp.voucherNumber}</span>}{exp.date} · {catInfo?.label || exp.category}</p>
                         </div>
                         <p className={`text-lg font-black ${exp.type === 'income' ? 'text-emerald-600' : 'text-rose-600'}`}>
-                          {exp.type === 'income' ? '+' : '-'}${exp.amount.toLocaleString()}
+                          {exp.type === 'income' ? '+' : '-'}${formatMoney(exp.amount)}
                         </p>
                         <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button onClick={() => setEditingExpense({ ...exp, isNew: false })} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400"><Edit size={13} /></button>
@@ -1015,7 +1016,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                 </div>
                 <div className="flex items-center gap-3">
                   <div className="text-xs font-black text-slate-400">
-                    待付佣金: <span className="text-amber-600">${commPendingTotal.toLocaleString()}</span>
+                    待付佣金: <span className="text-amber-600">${formatMoney(commPendingTotal)}</span>
                   </div>
                 </div>
               </div>
@@ -1047,9 +1048,9 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                           <td className="px-3 py-3">
                             <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded text-[10px] font-black">{comm.priceTier}</span>
                           </td>
-                          <td className="px-3 py-3 text-right font-bold text-slate-600">${comm.orderAmount.toLocaleString()}</td>
+                          <td className="px-3 py-3 text-right font-bold text-slate-600">${formatMoney(comm.orderAmount)}</td>
                           <td className="px-3 py-3 text-right font-bold text-slate-500">{comm.commissionRate}%</td>
-                          <td className="px-3 py-3 text-right font-black text-slate-800">${comm.commissionAmount.toLocaleString()}</td>
+                          <td className="px-3 py-3 text-right font-black text-slate-800">${formatMoney(comm.commissionAmount)}</td>
                           <td className="px-3 py-3 text-center">
                             <span className={`px-2 py-0.5 rounded text-[10px] font-black ${COMMISSION_STATUS_MAP[comm.status]?.color || ''}`}>
                               {COMMISSION_STATUS_MAP[comm.status]?.label || comm.status}
@@ -1108,12 +1109,12 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="bg-white p-5 rounded-[2rem] border border-emerald-100 shadow-sm">
                     <p className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest">貸項通知 (Credit Notes)</p>
-                    <p className="text-2xl font-black text-emerald-700 mt-1">${creditNotes.reduce((s, n) => s + n.amount, 0).toLocaleString()}</p>
+                    <p className="text-2xl font-black text-emerald-700 mt-1">${formatMoney(creditNotes.reduce((s, n) => s + n.amount, 0))}</p>
                     <p className="text-[10px] text-slate-400 font-bold">{creditNotes.length} 筆</p>
                   </div>
                   <div className="bg-white p-5 rounded-[2rem] border border-rose-100 shadow-sm">
                     <p className="text-[10px] font-bold text-rose-500 uppercase tracking-widest">借項通知 (Debit Notes)</p>
-                    <p className="text-2xl font-black text-rose-700 mt-1">${debitNotes.reduce((s, n) => s + n.amount, 0).toLocaleString()}</p>
+                    <p className="text-2xl font-black text-rose-700 mt-1">${formatMoney(debitNotes.reduce((s, n) => s + n.amount, 0))}</p>
                     <p className="text-[10px] text-slate-400 font-bold">{debitNotes.length} 筆</p>
                   </div>
                 </div>
@@ -1147,7 +1148,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                             <td className="px-4 py-2.5 text-xs font-bold text-slate-600">{n.date}</td>
                             <td className="px-4 py-2.5 text-xs font-mono text-blue-500">{n.voucherNumber || '—'}</td>
                             <td className="px-4 py-2.5 font-bold text-slate-800">{n.description}</td>
-                            <td className={`px-4 py-2.5 text-right font-black ${n.type === 'credit_note' ? 'text-emerald-600' : 'text-rose-600'}`}>${n.amount.toLocaleString()}</td>
+                            <td className={`px-4 py-2.5 text-right font-black ${n.type === 'credit_note' ? 'text-emerald-600' : 'text-rose-600'}`}>${formatMoney(n.amount)}</td>
                             <td className="px-4 py-2.5 text-center">
                               <button onClick={() => setEditingExpense({ ...n, isNew: false })} className="p-1 rounded hover:bg-slate-100 text-slate-400">
                                 <Edit size={12} />
@@ -1205,8 +1206,8 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                               <p className="font-bold text-sm text-slate-700 truncate mt-0.5">{je.description}</p>
                             </div>
                             <div className="text-right flex-shrink-0">
-                              <p className="text-[10px] font-bold text-slate-400">借 <span className="text-slate-800 font-black">${totalDebit.toLocaleString()}</span></p>
-                              <p className="text-[10px] font-bold text-slate-400">貸 <span className="text-slate-800 font-black">${totalCredit.toLocaleString()}</span></p>
+                              <p className="text-[10px] font-bold text-slate-400">借 <span className="text-slate-800 font-black">${formatMoney(totalDebit)}</span></p>
+                              <p className="text-[10px] font-bold text-slate-400">貸 <span className="text-slate-800 font-black">${formatMoney(totalCredit)}</span></p>
                             </div>
                           </div>
                           {isExpanded && lines.length > 0 && (
@@ -1227,8 +1228,8 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                                       <td className="px-6 py-2 font-mono font-bold text-blue-600">{line.accountCode}</td>
                                       <td className="px-4 py-2 font-bold text-slate-700">{line.accountName}</td>
                                       <td className="px-4 py-2 text-slate-500">{line.description || '—'}</td>
-                                      <td className="px-4 py-2 text-right font-black text-slate-800">{line.debit > 0 ? `$${line.debit.toLocaleString()}` : ''}</td>
-                                      <td className="px-4 py-2 text-right font-black text-slate-800">{line.credit > 0 ? `$${line.credit.toLocaleString()}` : ''}</td>
+                                      <td className="px-4 py-2 text-right font-black text-slate-800">{line.debit > 0 ? `$${formatMoney(line.debit)}` : ''}</td>
+                                      <td className="px-4 py-2 text-right font-black text-slate-800">{line.credit > 0 ? `$${formatMoney(line.credit)}` : ''}</td>
                                     </tr>
                                   ))}
                                 </tbody>
@@ -1299,7 +1300,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                             <div key={status} className="flex items-center justify-between py-1.5">
                               <span className={`px-2 py-0.5 rounded text-[10px] font-black ${meta.color}`}>{meta.label}</span>
                               <div className="text-right">
-                                <span className="font-black text-sm text-slate-800">${total.toLocaleString()}</span>
+                                <span className="font-black text-sm text-slate-800">${formatMoney(total)}</span>
                                 <span className="text-[10px] text-slate-400 font-bold ml-2">({items.length}筆)</span>
                               </div>
                             </div>
@@ -1315,7 +1316,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                               <span className="font-bold text-slate-700 truncate">{ap.supplierName}</span>
                               {ap.voucherNumber && <span className="text-[9px] font-mono text-blue-400">{ap.voucherNumber}</span>}
                             </div>
-                            <span className="font-black text-slate-800 flex-shrink-0">${ap.amount.toLocaleString()}</span>
+                            <span className="font-black text-slate-800 flex-shrink-0">${formatMoney(ap.amount)}</span>
                           </div>
                         ))}
                       </div>
@@ -1339,7 +1340,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                             <div key={status} className="flex items-center justify-between py-1.5">
                               <span className={`px-2 py-0.5 rounded text-[10px] font-black ${meta.color}`}>{meta.label}</span>
                               <div className="text-right">
-                                <span className="font-black text-sm text-slate-800">${total.toLocaleString()}</span>
+                                <span className="font-black text-sm text-slate-800">${formatMoney(total)}</span>
                                 <span className="text-[10px] text-slate-400 font-bold ml-2">({items.length}筆)</span>
                               </div>
                             </div>
@@ -1355,7 +1356,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                               <span className="font-bold text-slate-700 truncate">{ar.clientName}</span>
                               {ar.voucherNumber && <span className="text-[9px] font-mono text-blue-400">{ar.voucherNumber}</span>}
                             </div>
-                            <span className="font-black text-slate-800 flex-shrink-0">${ar.amount.toLocaleString()}</span>
+                            <span className="font-black text-slate-800 flex-shrink-0">${formatMoney(ar.amount)}</span>
                           </div>
                         ))}
                       </div>
@@ -1381,7 +1382,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                               <span className="text-lg">{cat.emoji}</span>
                               <div className="flex-1 min-w-0">
                                 <p className="text-[10px] font-bold text-slate-400">{cat.label}</p>
-                                <p className="font-black text-sm text-slate-800">${total.toLocaleString()}</p>
+                                <p className="font-black text-sm text-slate-800">${formatMoney(total)}</p>
                               </div>
                             </div>
                           );
@@ -1398,7 +1399,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                               {items.map(e => (
                                 <div key={e.id} className="flex items-center justify-between py-0.5 text-xs pl-4">
                                   <span className="text-slate-600 font-bold truncate">{e.date} · {e.description || '—'}</span>
-                                  <span className="font-black text-slate-800 flex-shrink-0">${e.amount.toLocaleString()}</span>
+                                  <span className="font-black text-slate-800 flex-shrink-0">${formatMoney(e.amount)}</span>
                                 </div>
                               ))}
                             </div>
@@ -1454,17 +1455,17 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                           </tr>
                           <tr className="border-t border-slate-50">
                             <td className="px-6 py-2 pl-10 text-slate-600 font-bold">銷售收入</td>
-                            <td className="px-4 py-2 text-right font-black text-slate-800">${salesRevenue.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-800">${formatMoney(salesRevenue)}</td>
                             <td className="px-4 py-2 text-right text-slate-500 font-bold">{pct(salesRevenue)}</td>
                           </tr>
                           <tr className="border-t border-slate-50">
                             <td className="px-6 py-2 pl-10 text-slate-600 font-bold">其他收入</td>
-                            <td className="px-4 py-2 text-right font-black text-slate-800">${otherIncome.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-800">${formatMoney(otherIncome)}</td>
                             <td className="px-4 py-2 text-right text-slate-500 font-bold">{pct(otherIncome)}</td>
                           </tr>
                           <tr className="border-t border-slate-200 bg-slate-50">
                             <td className="px-6 py-2 font-black text-slate-900">總收入</td>
-                            <td className="px-4 py-2 text-right font-black text-slate-900">${totalRevenue.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-900">${formatMoney(totalRevenue)}</td>
                             <td className="px-4 py-2 text-right font-black text-slate-500">100%</td>
                           </tr>
 
@@ -1473,12 +1474,12 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                           </tr>
                           <tr className="border-t border-slate-50">
                             <td className="px-6 py-2 pl-10 text-slate-600 font-bold">供應商採購</td>
-                            <td className="px-4 py-2 text-right font-black text-slate-800">${cogs.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-800">${formatMoney(cogs)}</td>
                             <td className="px-4 py-2 text-right text-slate-500 font-bold">{pct(cogs)}</td>
                           </tr>
                           <tr className="border-t border-slate-200 bg-slate-50">
                             <td className="px-6 py-2 font-black text-slate-900">毛利 Gross Profit</td>
-                            <td className={`px-4 py-2 text-right font-black ${grossProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>${grossProfit.toLocaleString()}</td>
+                            <td className={`px-4 py-2 text-right font-black ${grossProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>${formatMoney(grossProfit)}</td>
                             <td className="px-4 py-2 text-right font-black text-slate-500">{pct(grossProfit)}</td>
                           </tr>
 
@@ -1488,19 +1489,19 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                           {opexByCat.filter(c => c.total > 0).map(cat => (
                             <tr key={cat.value} className="border-t border-slate-50">
                               <td className="px-6 py-2 pl-10 text-slate-600 font-bold">{cat.emoji} {cat.label}</td>
-                              <td className="px-4 py-2 text-right font-black text-slate-800">${cat.total.toLocaleString()}</td>
+                              <td className="px-4 py-2 text-right font-black text-slate-800">${formatMoney(cat.total)}</td>
                               <td className="px-4 py-2 text-right text-slate-500 font-bold">{pct(cat.total)}</td>
                             </tr>
                           ))}
                           <tr className="border-t border-slate-200 bg-slate-50">
                             <td className="px-6 py-2 font-black text-slate-900">總開支</td>
-                            <td className="px-4 py-2 text-right font-black text-slate-900">${totalOpex.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-900">${formatMoney(totalOpex)}</td>
                             <td className="px-4 py-2 text-right font-black text-slate-500">{pct(totalOpex)}</td>
                           </tr>
 
                           <tr className="border-t-2 border-slate-300 bg-slate-100">
                             <td className="px-6 py-3 font-black text-lg text-slate-900">淨利 / 虧損</td>
-                            <td className={`px-4 py-3 text-right font-black text-lg ${netProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>${netProfit.toLocaleString()}</td>
+                            <td className={`px-4 py-3 text-right font-black text-lg ${netProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>${formatMoney(netProfit)}</td>
                             <td className="px-4 py-3 text-right font-black text-slate-500">{pct(netProfit)}</td>
                           </tr>
                         </tbody>
@@ -1533,7 +1534,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                       )}
                       {!isBalanced && rows.length > 0 && (
                         <span className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 text-rose-600 rounded-lg text-[10px] font-black">
-                          <AlertTriangle size={12} /> 借貸不平衡 (差額 ${Math.abs(totalDebit - totalCredit).toLocaleString()})
+                          <AlertTriangle size={12} /> 借貸不平衡 (差額 ${formatMoney(Math.abs(totalDebit - totalCredit))})
                         </span>
                       )}
                       {rows.length === 0 && (
@@ -1557,16 +1558,16 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                               <tr key={row.code} className="border-t border-slate-50 hover:bg-slate-50/50">
                                 <td className="px-6 py-2.5 font-mono font-bold text-blue-600">{row.code}</td>
                                 <td className="px-4 py-2.5 font-bold text-slate-700">{row.name}</td>
-                                <td className="px-4 py-2.5 text-right font-black text-slate-800">{row.debit > 0 ? `$${row.debit.toLocaleString()}` : ''}</td>
-                                <td className="px-4 py-2.5 text-right font-black text-slate-800">{row.credit > 0 ? `$${row.credit.toLocaleString()}` : ''}</td>
+                                <td className="px-4 py-2.5 text-right font-black text-slate-800">{row.debit > 0 ? `$${formatMoney(row.debit)}` : ''}</td>
+                                <td className="px-4 py-2.5 text-right font-black text-slate-800">{row.credit > 0 ? `$${formatMoney(row.credit)}` : ''}</td>
                               </tr>
                             ))}
                           </tbody>
                           <tfoot>
                             <tr className="border-t-2 border-slate-300 bg-slate-100">
                               <td className="px-6 py-3 font-black text-slate-900" colSpan={2}>合計 Total</td>
-                              <td className="px-4 py-3 text-right font-black text-slate-900">${totalDebit.toLocaleString()}</td>
-                              <td className="px-4 py-3 text-right font-black text-slate-900">${totalCredit.toLocaleString()}</td>
+                              <td className="px-4 py-3 text-right font-black text-slate-900">${formatMoney(totalDebit)}</td>
+                              <td className="px-4 py-3 text-right font-black text-slate-900">${formatMoney(totalCredit)}</td>
                             </tr>
                           </tfoot>
                         </table>
@@ -1622,9 +1623,9 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                                   <td className="px-6 py-2.5 text-slate-500 font-bold">{je?.entryDate || '—'}</td>
                                   <td className="px-4 py-2.5 font-mono text-[10px] font-bold text-blue-500">{je?.voucherNumber || '—'}</td>
                                   <td className="px-4 py-2.5 text-slate-600 font-bold truncate max-w-[200px]">{line.description || je?.description || '—'}</td>
-                                  <td className="px-4 py-2.5 text-right font-black text-slate-800">{line.debit > 0 ? `$${line.debit.toLocaleString()}` : ''}</td>
-                                  <td className="px-4 py-2.5 text-right font-black text-slate-800">{line.credit > 0 ? `$${line.credit.toLocaleString()}` : ''}</td>
-                                  <td className={`px-4 py-2.5 text-right font-black ${runningBalance >= 0 ? 'text-slate-900' : 'text-rose-600'}`}>${runningBalance.toLocaleString()}</td>
+                                  <td className="px-4 py-2.5 text-right font-black text-slate-800">{line.debit > 0 ? `$${formatMoney(line.debit)}` : ''}</td>
+                                  <td className="px-4 py-2.5 text-right font-black text-slate-800">{line.credit > 0 ? `$${formatMoney(line.credit)}` : ''}</td>
+                                  <td className={`px-4 py-2.5 text-right font-black ${runningBalance >= 0 ? 'text-slate-900' : 'text-rose-600'}`}>${formatMoney(runningBalance)}</td>
                                 </tr>
                               );
                             })}
@@ -1632,9 +1633,9 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                           <tfoot>
                             <tr className="border-t-2 border-slate-300 bg-slate-100">
                               <td className="px-6 py-3 font-black text-slate-900" colSpan={3}>合計</td>
-                              <td className="px-4 py-3 text-right font-black text-slate-900">${selectedLines.reduce((s, l) => s + l.debit, 0).toLocaleString()}</td>
-                              <td className="px-4 py-3 text-right font-black text-slate-900">${selectedLines.reduce((s, l) => s + l.credit, 0).toLocaleString()}</td>
-                              <td className={`px-4 py-3 text-right font-black ${runningBalance >= 0 ? 'text-slate-900' : 'text-rose-600'}`}>${runningBalance.toLocaleString()}</td>
+                              <td className="px-4 py-3 text-right font-black text-slate-900">${formatMoney(selectedLines.reduce((s, l) => s + l.debit, 0))}</td>
+                              <td className="px-4 py-3 text-right font-black text-slate-900">${formatMoney(selectedLines.reduce((s, l) => s + l.credit, 0))}</td>
+                              <td className={`px-4 py-3 text-right font-black ${runningBalance >= 0 ? 'text-slate-900' : 'text-rose-600'}`}>${formatMoney(runningBalance)}</td>
                             </tr>
                           </tfoot>
                         </table>
@@ -1686,7 +1687,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                   <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
                     <div className="px-6 py-4 border-b border-slate-100">
                       <h4 className="font-black text-sm text-slate-800">{title}</h4>
-                      <p className="text-xs text-slate-400 font-bold mt-0.5">未結餘額：<span className={`font-black ${color}`}>${grandTotal.toLocaleString()}</span></p>
+                      <p className="text-xs text-slate-400 font-bold mt-0.5">未結餘額：<span className={`font-black ${color}`}>${formatMoney(grandTotal)}</span></p>
                     </div>
                     <table className="w-full text-sm">
                       <thead>
@@ -1706,7 +1707,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                             <tr key={b} className="border-t border-slate-50 hover:bg-slate-50/50">
                               <td className="px-6 py-2.5"><span className={`px-2 py-0.5 rounded text-[10px] font-black ${BUCKET_COLORS[b]}`}>{b} 天</span></td>
                               <td className="px-4 py-2.5 text-right font-bold text-slate-600">{d.count}</td>
-                              <td className="px-4 py-2.5 text-right font-black text-slate-900">${d.total.toLocaleString()}</td>
+                              <td className="px-4 py-2.5 text-right font-black text-slate-900">${formatMoney(d.total)}</td>
                               <td className="px-4 py-2.5 text-right font-bold text-slate-500">{pct.toFixed(1)}%</td>
                               <td className="px-4 py-2.5">
                                 <div className="w-full bg-slate-100 rounded-full h-2">
@@ -1721,7 +1722,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                         <tr className="border-t-2 border-slate-300 bg-slate-100">
                           <td className="px-6 py-3 font-black text-slate-900">合計</td>
                           <td className="px-4 py-3 text-right font-black text-slate-900">{Object.values(data).reduce((s, d) => s + d.count, 0)}</td>
-                          <td className="px-4 py-3 text-right font-black text-slate-900">${grandTotal.toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-black text-slate-900">${formatMoney(grandTotal)}</td>
                           <td className="px-4 py-3 text-right font-black text-slate-500">100%</td>
                           <td></td>
                         </tr>
@@ -1781,7 +1782,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                       <tr key={item.code} className="border-t border-slate-50">
                         <td className="px-6 py-2 pl-10 font-mono text-blue-600 text-xs">{item.code}</td>
                         <td className="px-4 py-2 font-bold text-slate-600">{item.name}</td>
-                        <td className="px-4 py-2 text-right font-black text-slate-800">${Math.abs(item.balance).toLocaleString()}</td>
+                        <td className="px-4 py-2 text-right font-black text-slate-800">${formatMoney(Math.abs(item.balance))}</td>
                       </tr>
                     ))}
                   </>
@@ -1797,7 +1798,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                       )}
                       {!isBalanced && totalAssets > 0 && (
                         <span className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 text-rose-600 rounded-lg text-[10px] font-black">
-                          <AlertTriangle size={12} /> 不平衡 (差額 ${Math.abs(totalAssets - totalLiabEquity).toLocaleString()})
+                          <AlertTriangle size={12} /> 不平衡 (差額 ${formatMoney(Math.abs(totalAssets - totalLiabEquity))})
                         </span>
                       )}
                     </div>
@@ -1815,28 +1816,28 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                           {renderSection('資產 Assets', assets, 'bg-sky-50/30')}
                           <tr className="border-t-2 border-slate-200 bg-slate-50">
                             <td className="px-6 py-2 font-black text-slate-900" colSpan={2}>總資產</td>
-                            <td className="px-4 py-2 text-right font-black text-slate-900">${totalAssets.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-900">${formatMoney(totalAssets)}</td>
                           </tr>
 
                           {renderSection('負債 Liabilities', liabilities, 'bg-pink-50/30')}
                           <tr className="border-t border-slate-200 bg-slate-50">
                             <td className="px-6 py-2 font-black text-slate-700" colSpan={2}>總負債</td>
-                            <td className="px-4 py-2 text-right font-black text-slate-700">${totalLiabilities.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-700">${formatMoney(totalLiabilities)}</td>
                           </tr>
 
                           {renderSection('權益 Equity', equity, 'bg-purple-50/30')}
                           <tr className="border-t border-slate-50">
                             <td className="px-6 py-2 pl-10 font-bold text-slate-600 italic" colSpan={2}>本期損益 (Net Income)</td>
-                            <td className={`px-4 py-2 text-right font-black ${netIncome >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>${netIncome.toLocaleString()}</td>
+                            <td className={`px-4 py-2 text-right font-black ${netIncome >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>${formatMoney(netIncome)}</td>
                           </tr>
                           <tr className="border-t border-slate-200 bg-slate-50">
                             <td className="px-6 py-2 font-black text-slate-700" colSpan={2}>總權益</td>
-                            <td className="px-4 py-2 text-right font-black text-slate-700">${totalEquity.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right font-black text-slate-700">${formatMoney(totalEquity)}</td>
                           </tr>
 
                           <tr className="border-t-2 border-slate-300 bg-slate-100">
                             <td className="px-6 py-3 font-black text-lg text-slate-900" colSpan={2}>負債 + 權益</td>
-                            <td className="px-4 py-3 text-right font-black text-lg text-slate-900">${totalLiabEquity.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-right font-black text-lg text-slate-900">${formatMoney(totalLiabEquity)}</td>
                           </tr>
                         </tbody>
                       </table>
@@ -2023,7 +2024,7 @@ const AccountingPanel: React.FC<Props> = ({ showToast }) => {
                           </div>
                         </div>
                         {tpl.defaultAmount != null && tpl.defaultAmount > 0 && (
-                          <p className="text-lg font-black text-slate-800">${tpl.defaultAmount.toLocaleString()}</p>
+                          <p className="text-lg font-black text-slate-800">${formatMoney(tpl.defaultAmount)}</p>
                         )}
                         <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
                           <button onClick={() => handleUseTemplate(tpl)} className="px-2.5 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-black hover:bg-blue-100" title="使用此範本新增應付">
@@ -2379,7 +2380,7 @@ const SummaryCard: React.FC<{ label: string; value: number; color: string }> = (
   return (
     <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{label}</p>
-      <p className="text-xl font-black text-slate-900 mt-1">${value.toLocaleString()}</p>
+      <p className="text-xl font-black text-slate-900 mt-1">${formatMoney(value)}</p>
     </div>
   );
 };

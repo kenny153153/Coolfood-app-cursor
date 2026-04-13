@@ -1,5 +1,6 @@
 // printUtils.ts — Shared HTML generators for picking slips and aggregate picking lists.
 // Used by App.tsx (retail + wholesale batch print) and NewOrderPanel.tsx (wholesale per-order).
+import { formatMoney } from './money';
 
 export interface PickingLineItem {
   productCode?: string;
@@ -334,9 +335,9 @@ export function buildStatementHtml(statements: StatementData[]): string {
         <td class="date">${e.date}</td>
         <td class="voucher">${e.voucherNumber || ''}</td>
         <td class="desc">${e.description}</td>
-        <td class="amt">${e.debit > 0 ? '$' + e.debit.toLocaleString() : ''}</td>
-        <td class="amt">${e.credit > 0 ? '$' + e.credit.toLocaleString() : ''}</td>
-        <td class="bal">${running >= 0 ? '' : '-'}$${Math.abs(running).toLocaleString()}</td>
+        <td class="amt">${e.debit > 0 ? '$' + formatMoney(e.debit) : ''}</td>
+        <td class="amt">${e.credit > 0 ? '$' + formatMoney(e.credit) : ''}</td>
+        <td class="bal">${running >= 0 ? '' : '-'}$${formatMoney(Math.abs(running))}</td>
       </tr>`;
     }).join('');
 
@@ -351,10 +352,10 @@ export function buildStatementHtml(statements: StatementData[]): string {
       <table>
         <thead><tr><th style="width:80px">日期</th><th style="width:80px">憑單</th><th>說明</th><th style="width:90px;text-align:right">借方</th><th style="width:90px;text-align:right">貸方</th><th style="width:100px;text-align:right">餘額</th></tr></thead>
         <tbody>
-          <tr class="opening"><td colspan="5" class="desc">上期結存 Opening Balance</td><td class="bal">${st.openingBalance >= 0 ? '' : '-'}$${Math.abs(st.openingBalance).toLocaleString()}</td></tr>
+          <tr class="opening"><td colspan="5" class="desc">上期結存 Opening Balance</td><td class="bal">${st.openingBalance >= 0 ? '' : '-'}$${formatMoney(Math.abs(st.openingBalance))}</td></tr>
           ${rows}
         </tbody>
-        <tfoot><tr class="closing"><td colspan="5" class="desc">本期結存 Closing Balance</td><td class="bal">${st.closingBalance >= 0 ? '' : '-'}$${Math.abs(st.closingBalance).toLocaleString()}</td></tr></tfoot>
+        <tfoot><tr class="closing"><td colspan="5" class="desc">本期結存 Closing Balance</td><td class="bal">${st.closingBalance >= 0 ? '' : '-'}$${formatMoney(Math.abs(st.closingBalance))}</td></tr></tfoot>
       </table>
       <div class="st-footer"><p>如有疑問請於 10 天內提出 · Any discrepancies must be reported within 10 days</p></div>
     </div>`;

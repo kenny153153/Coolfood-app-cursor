@@ -222,6 +222,7 @@ const Toast: React.FC<{ message: string; type: 'success' | 'error'; onClose: () 
 };
 
 import { roundPrice, getEffectiveUnitPrice, getWholesaleUnitPrice } from './pricingEngine';
+import { roundMoney, formatMoney } from './money';
 
 const getOrderStatusLabel = (status: OrderStatus | string, t?: { orderStatus: Record<string, string> }) => {
   if (t) {
@@ -1887,11 +1888,12 @@ const App: React.FC = () => {
         const effectiveQty = isByPiece && item.packWeightLb ? item.packWeightLb * item.qty : item.qty;
         subtotal += unitPrice * effectiveQty;
       });
+      subtotal = roundMoney(subtotal);
       const deliveryFee = 0;
       return {
         subtotal,
         deliveryFee,
-        total: subtotal + deliveryFee,
+        total: roundMoney(subtotal + deliveryFee),
         shippingThreshold: 0,
         shippingFee: 0,
         lockerThreshold: 0,
@@ -1903,18 +1905,19 @@ const App: React.FC = () => {
     cart.forEach(item => {
       subtotal += getEffectiveUnitPrice(item, item.qty, pricingTier) * item.qty;
     });
+    subtotal = roundMoney(subtotal);
 
     // Coupon discount (applied to subtotal)
     let couponDiscount = 0;
     if (selectedCoupon?.coupon && subtotal >= (selectedCoupon.coupon.minSpend || 0)) {
       const c = selectedCoupon.coupon;
       if (c.couponType === 'fixed_amount') {
-        couponDiscount = Math.min(c.discountValue, subtotal);
+        couponDiscount = roundMoney(Math.min(c.discountValue, subtotal));
       } else if (c.couponType === 'percentage') {
-        couponDiscount = Math.round(subtotal * c.discountValue / 100 * 100) / 100;
+        couponDiscount = roundMoney(subtotal * c.discountValue / 100);
       }
     }
-    const postCouponSubtotal = subtotal - couponDiscount;
+    const postCouponSubtotal = roundMoney(subtotal - couponDiscount);
 
     // Free delivery based on post-coupon subtotal
     const configKey = deliveryMethod === 'home' ? 'sf_delivery' : 'sf_locker';
@@ -1923,6 +1926,7 @@ const App: React.FC = () => {
     if (selectedCoupon?.coupon?.couponType === 'free_delivery' && subtotal >= (selectedCoupon.coupon.minSpend || 0)) {
       deliveryFee = 0;
     }
+    deliveryFee = roundMoney(deliveryFee);
 
     const lockerConfig = shippingConfigs['sf_locker'] || SHIPPING_FALLBACKS['sf_locker'];
     const deliveryConfig = shippingConfigs['sf_delivery'] || SHIPPING_FALLBACKS['sf_delivery'];
@@ -1932,7 +1936,7 @@ const App: React.FC = () => {
       couponDiscount,
       postCouponSubtotal,
       deliveryFee, 
-      total: postCouponSubtotal + deliveryFee,
+      total: roundMoney(postCouponSubtotal + deliveryFee),
       shippingThreshold: sc.threshold,
       shippingFee: sc.fee,
       lockerThreshold: lockerConfig.threshold,
@@ -3150,7 +3154,7 @@ const App: React.FC = () => {
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        showToast(`退款成功：$${amount}，狀態已更新為「${data.newStatus === 'refunded' ? '退款' : '部份退款'}」`);
+        showToast(`退款成功：$${formatMoney(amount)}，狀態已更新為「${data.newStatus === 'refunded' ? '退款' : '部份退款'}」`);
         setRefundModal(null);
         setRefundAmount('');
         setRefundType('full');
@@ -3346,10 +3350,10 @@ const App: React.FC = () => {
     const orderDate = new Date().toISOString().slice(0, 10);
 
     const lineItems: OrderLineItem[] = cart.map(item => {
-      const unitPrice = getPrice(item, item.qty);
+      const unitPrice = roundMoney(getPrice(item, item.qty));
       const isByPiece = item.pricingMode === 'by_piece';
       const estimatedWeight = isByPiece && item.packWeightLb ? item.packWeightLb * item.qty : undefined;
-      const lineTotal = estimatedWeight ? unitPrice * estimatedWeight : unitPrice * item.qty;
+      const lineTotal = roundMoney(estimatedWeight ? unitPrice * estimatedWeight : unitPrice * item.qty);
       return {
         product_id: item.id, name: item.name, unit_price: unitPrice, qty: item.qty, line_total: lineTotal, image: item.image ?? null,
         pricing_mode: item.pricingMode || undefined,
@@ -3389,7 +3393,7 @@ const App: React.FC = () => {
           .in('status', ['pending', 'overdue']);
         const outstandingAR = (arRows || []).reduce((sum, r) => sum + (Number(r.amount) - Number(r.paid_amount)), 0);
         if (outstandingAR + total > wsCreditLimit) {
-          showToast(`已超出信用額度（額度 $${wsCreditLimit.toLocaleString()}，未結 $${outstandingAR.toLocaleString()}，本單 $${total.toLocaleString()}）`, 'error');
+          showToast(`已超出信用額度（額度 $${formatMoney(wsCreditLimit)}，未結 $${formatMoney(outstandingAR)}，本單 $${formatMoney(total)}）`, 'error');
           return;
         }
       }
@@ -3497,7 +3501,7 @@ const App: React.FC = () => {
     const newOrder: Order = {
       id: orderIdDisplay,
       customerName,
-      total,
+      total: roundMoney(total),
       status: OrderStatus.PENDING_PAYMENT,
       date: orderDate,
       items: itemsCount,
@@ -3509,9 +3513,9 @@ const App: React.FC = () => {
       id: orderIdNum,
       customer_name: customerName,
       customer_phone: customerPhone,
-      total,
-      subtotal,
-      delivery_fee: deliveryFee,
+      total: roundMoney(total),
+      subtotal: roundMoney(subtotal),
+      delivery_fee: roundMoney(deliveryFee),
       status: OrderStatus.PENDING_PAYMENT,
       order_date: orderDate,
       items_count: itemsCount,
@@ -3526,7 +3530,7 @@ const App: React.FC = () => {
       member_id: user?.id ?? null,
       coupon_id: selectedCoupon?.couponId ?? null,
       member_coupon_id: selectedCoupon?.id ?? null,
-      coupon_discount: pricingData.couponDiscount ?? 0,
+      coupon_discount: roundMoney(pricingData.couponDiscount ?? 0),
     };
     if (deliveryMethod === 'home' && deliveryAddress) {
       insertRow.delivery_district = deliveryAddress.district ?? null;
@@ -4278,7 +4282,7 @@ const App: React.FC = () => {
                                 <span className="text-xs font-bold text-slate-700">{spec.variantLabel || spec.name}</span>
                                 {spec.processingSpec && <span className="px-1.5 py-0.5 bg-amber-50 text-amber-600 rounded text-[9px] font-bold">{spec.processingSpec}</span>}
                                 <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${spec.pricingMode === 'by_piece' ? 'bg-pink-50 text-pink-600' : 'bg-slate-100 text-slate-500'}`}>{pricingLabel}</span>
-                                <span className="text-[10px] font-black text-slate-800 ml-auto">${spec.price}{spec.pricingMode === 'by_piece' ? `/${spec.weight || '磅'}` : ''}</span>
+                                <span className="text-[10px] font-black text-slate-800 ml-auto">${formatMoney(spec.price)}{spec.pricingMode === 'by_piece' ? `/${spec.weight || '磅'}` : ''}</span>
                               </div>
                             </td>
                             <td className="px-4 py-3"></td>
@@ -4497,7 +4501,7 @@ const App: React.FC = () => {
         return (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 animate-fade-in">
             {[
-              { label: '今日營收', value: `$${todayRevenue.toLocaleString()}`, icon: <DollarSign className="text-emerald-500" />, trend: `${orders.filter(o => o.date.startsWith(todayStr)).length} 單` },
+              { label: '今日營收', value: `$${formatMoney(todayRevenue)}`, icon: <DollarSign className="text-emerald-500" />, trend: `${orders.filter(o => o.date.startsWith(todayStr)).length} 單` },
               { label: '待處理訂單', value: String(pendingCount), icon: <Package className="text-amber-500" />, trend: pendingCount > 0 ? '需處理' : '全部完成' },
               { label: '會員總數', value: String(totalMembers), icon: <Users className="text-blue-500" />, trend: `${members.filter(m => m.tier === 'Gold' || m.tier === 'VIP').length} VIP/Gold` },
               { label: '庫存預警', value: String(lowStockCount), icon: <AlertTriangle className="text-rose-500" />, trend: lowStockCount > 0 ? '需補貨' : '充足' }
@@ -4607,7 +4611,7 @@ const App: React.FC = () => {
                               {o.orderType === 'wholesale' && <span className="ml-1.5 px-1.5 py-0.5 bg-orange-50 text-orange-600 rounded text-[8px] font-black">批發</span>}
                             </td>
                             <td className="px-6 py-4 font-bold text-slate-700">{o.customerName}</td>
-                            <td className="px-6 py-4 font-black text-slate-900">${o.total}</td>
+                            <td className="px-6 py-4 font-black text-slate-900">${formatMoney(o.total)}</td>
                             <td className="px-6 py-4"><StatusBadge status={o.status}/></td>
                             <td className="px-6 py-4 text-xs font-bold text-slate-400 uppercase tracking-widest">{o.date}</td>
                          </tr>
@@ -5077,14 +5081,14 @@ const App: React.FC = () => {
                     <div className="space-y-2 text-xs">
                       <div className="flex justify-between items-center p-2.5 bg-slate-50 rounded-xl">
                         <span className="text-slate-500 font-bold">📦 成本</span>
-                        <span className="font-black text-slate-900">${rtExampleCost}</span>
+                        <span className="font-black text-slate-900">${formatMoney(rtExampleCost)}</span>
                       </div>
                       <div className="flex justify-between items-center p-2.5 bg-orange-50 rounded-xl">
                         <div>
                           <span className="text-orange-600 font-bold">建議售價</span>
                           <span className="text-[9px] text-orange-400 ml-1">÷ {rtFactor} ({rtMarginPct}% 毛利)</span>
                         </div>
-                        <span className="font-black text-orange-700">${rtSuggestedPrice.toFixed(1)}</span>
+                        <span className="font-black text-orange-700">${formatMoney(rtSuggestedPrice)}</span>
                       </div>
                       <div className="flex justify-between items-center p-2.5 bg-blue-50 rounded-xl">
                         <span className="text-blue-600 font-bold">👤 會員價</span>
@@ -5228,10 +5232,10 @@ const App: React.FC = () => {
                                 />
                               </td>
                               <td className="text-right px-4 py-3">
-                                {hasDiscount ? <span className="font-black text-blue-600">${memberP}</span> : <span className="text-slate-300">${base}</span>}
+                                {hasDiscount ? <span className="font-black text-blue-600">${formatMoney(memberP)}</span> : <span className="text-slate-300">${formatMoney(base)}</span>}
                               </td>
                               {showCostColumns && (
-                                <td className="text-right px-4 py-3 font-bold text-amber-600">{totalCost > 0 ? `$${totalCost.toFixed(1)}` : <span className="text-slate-300">—</span>}</td>
+                                <td className="text-right px-4 py-3 font-bold text-amber-600">{totalCost > 0 ? `$${formatMoney(totalCost)}` : <span className="text-slate-300">—</span>}</td>
                               )}
                               {showCostColumns && (
                                 <td className={`text-right px-4 py-3 font-black ${marginPct !== null ? (marginPct >= 0 ? 'text-emerald-600' : 'text-rose-600') : 'text-slate-300'}`}>
@@ -5303,14 +5307,14 @@ const App: React.FC = () => {
                     <div className="space-y-2 text-xs">
                       <div className="flex justify-between items-center p-2.5 bg-slate-50 rounded-xl">
                         <span className="text-slate-500 font-bold">📦 成本</span>
-                        <span className="font-black text-slate-900">${wsExampleCost}</span>
+                        <span className="font-black text-slate-900">${formatMoney(wsExampleCost)}</span>
                       </div>
                       <div className="flex justify-between items-center p-2.5 bg-orange-50 rounded-xl">
                         <div>
                           <span className="text-orange-600 font-bold">P0 直銷價</span>
                           <span className="text-[9px] text-orange-400 ml-1">÷ {wsRules.targetMarginFactor}</span>
                         </div>
-                        <span className="font-black text-orange-700">${wsP0.toFixed(1)}</span>
+                        <span className="font-black text-orange-700">${formatMoney(wsP0)}</span>
                       </div>
                       {wsRules.priceTiers.map(tier => {
                         const tierPrice = wsP0 / tier.factor;
@@ -5320,7 +5324,7 @@ const App: React.FC = () => {
                               <span className="text-teal-600 font-bold">{tier.name}</span>
                               <span className="text-[9px] text-teal-400 ml-1">P0 ÷ {tier.factor}{tier.description ? ` (${tier.description})` : ''}</span>
                             </div>
-                            <span className="font-black text-teal-700">${tierPrice.toFixed(1)}</span>
+                            <span className="font-black text-teal-700">${formatMoney(tierPrice)}</span>
                           </div>
                         );
                       })}
@@ -5409,10 +5413,10 @@ const App: React.FC = () => {
                                 </div>
                               </td>
                               {showCostColumns && (
-                                <td className="text-right px-4 py-3 font-bold text-amber-600">{totalCost > 0 ? `$${totalCost.toFixed(1)}` : <span className="text-slate-300">—</span>}</td>
+                                <td className="text-right px-4 py-3 font-bold text-amber-600">{totalCost > 0 ? `$${formatMoney(totalCost)}` : <span className="text-slate-300">—</span>}</td>
                               )}
                               <td className="text-right px-4 py-3 text-slate-400 font-bold">
-                                {computedP0 != null ? `$${computedP0}` : <span className="text-slate-200">—</span>}
+                                {computedP0 != null ? `$${formatMoney(computedP0)}` : <span className="text-slate-200">—</span>}
                               </td>
                               <td className="text-right px-4 py-3">
                                 <input
@@ -5513,7 +5517,7 @@ const App: React.FC = () => {
                             }} className="p-2 text-rose-400 hover:bg-rose-50 rounded-xl transition-colors mt-5"><Trash2 size={16}/></button>
                           </div>
                         </div>
-                        <div className="text-[10px] text-teal-600 font-bold">如果成本=$100 → {tier.name} 價 = ${(wsExampleCost / wsRules.targetMarginFactor / tier.factor).toFixed(1)}</div>
+                        <div className="text-[10px] text-teal-600 font-bold">如果成本=$100 → {tier.name} 價 = ${formatMoney(wsExampleCost / wsRules.targetMarginFactor / tier.factor)}</div>
                       </div>
                     ))}
                   </div>
@@ -5635,7 +5639,7 @@ const App: React.FC = () => {
                             <div className="w-10 h-10 bg-white rounded-xl border border-slate-100 flex items-center justify-center text-lg overflow-hidden flex-shrink-0">
                               {isMediaUrl(p?.image) ? <img src={p!.image} className="w-full h-full object-cover" alt="" /> : <span>{p?.image || '📦'}</span>}
                             </div>
-                            <div className="min-w-0"><p className="text-sm font-black text-slate-700 truncate">{p?.name || pid}</p><p className="text-[10px] text-slate-400 font-bold">${p?.price ?? '?'}</p></div>
+                            <div className="min-w-0"><p className="text-sm font-black text-slate-700 truncate">{p?.name || pid}</p><p className="text-[10px] text-slate-400 font-bold">{p ? `$${formatMoney(p.price)}` : '$?'}</p></div>
                           </div>
                           <button onClick={() => setUpsellProductIds(prev => prev.filter(x => x !== pid))} className="p-2 text-slate-300 hover:text-red-500 transition-colors"><X size={16}/></button>
                         </div>
@@ -5652,7 +5656,7 @@ const App: React.FC = () => {
                   >
                     <option value="">＋ 新增推薦產品...</option>
                     {products.filter(p => !upsellProductIds.includes(p.id)).map(p => (
-                      <option key={p.id} value={p.id}>{p.name} — ${p.price}</option>
+                      <option key={p.id} value={p.id}>{p.name} — ${formatMoney(p.price)}</option>
                     ))}
                   </select>
                 )}
@@ -6111,10 +6115,10 @@ const App: React.FC = () => {
                               {ingredientCategories.map(c => <option key={c} value={c}>{c}</option>)}
                             </select>
                           </td>
-                          <td className="text-right px-4 py-3 font-black text-blue-600">${ing.baseCostPerLb.toFixed(2)}</td>
+                          <td className="text-right px-4 py-3 font-black text-blue-600">${formatMoney(ing.baseCostPerLb)}</td>
                           <td className="text-center px-4 py-3 text-slate-500">{ing.unit}</td>
                           <td className="px-4 py-3 text-slate-500">{ing.supplier || '—'}</td>
-                          <td className="text-right px-4 py-3">{ing.marketBenchmark != null ? <span className="text-emerald-600 font-bold">${ing.marketBenchmark.toFixed(2)}</span> : <span className="text-slate-300">—</span>}</td>
+                          <td className="text-right px-4 py-3">{ing.marketBenchmark != null ? <span className="text-emerald-600 font-bold">${formatMoney(ing.marketBenchmark)}</span> : <span className="text-slate-300">—</span>}</td>
                           <td className="text-center px-4 py-3"><span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full text-[10px] font-bold">{linkedCount} 個產品</span></td>
                           <td className="text-right px-4 py-3">
                             <div className="flex items-center justify-end gap-1">
@@ -7214,7 +7218,7 @@ const App: React.FC = () => {
                  </>
                ) : (
                  <>
-                   <div><p className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1">精選價</p><p className="text-3xl font-black">${getPrice(selectedProduct)}</p>{getPrice(selectedProduct) < selectedProduct.price && <p className="text-xs text-white/40 line-through">${selectedProduct.price}</p>}</div>
+                   <div><p className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1">精選價</p><p className="text-3xl font-black">${formatMoney(getPrice(selectedProduct))}</p>{getPrice(selectedProduct) < selectedProduct.price && <p className="text-xs text-white/40 line-through">${formatMoney(selectedProduct.price)}</p>}</div>
                    <button onClick={() => { updateCart(selectedProduct, 1); setSelectedProduct(null); showToast('已加入購物車'); }} className={`${accentClass} text-white px-10 py-5 rounded-[1.5rem] font-black text-sm shadow-2xl active:scale-95 transition-all`}>立即選購</button>
                  </>
                )}
@@ -7520,7 +7524,7 @@ const App: React.FC = () => {
                           </div>
                           <span className="flex-1 text-xs font-bold text-slate-800">{pName(p)}</span>
                           <div className="flex items-center gap-1.5">
-                            <span className="text-[10px] text-blue-600 font-bold">${getPrice(p)}</span>
+                            <span className="text-[10px] text-blue-600 font-bold">${formatMoney(getPrice(p))}</span>
                             <div className="flex items-center rounded-full p-0.5 border border-slate-100 bg-white shadow-sm">
                               {qty > 0 && (
                                 <><button onClick={(e) => updateCart(p, -1, e)} className="w-6 h-6 flex items-center justify-center text-slate-300 active:scale-75"><Minus size={12}/></button><span className="mx-1 text-[11px] font-black text-slate-900 w-3 text-center">{qty}</span></>
@@ -7609,25 +7613,25 @@ const App: React.FC = () => {
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                         <div className="p-2.5 bg-white rounded-xl border border-emerald-100">
                           <p className="text-[9px] text-slate-400 font-bold">成本/磅</p>
-                          <p className="font-black text-slate-800">${perLbCost.toFixed(2)}</p>
+                          <p className="font-black text-slate-800">${formatMoney(perLbCost)}</p>
                         </div>
                         {editingProduct.pricingMode === 'fixed_pack' && editingProduct.packWeightLb ? (
                           <div className="p-2.5 bg-white rounded-xl border border-emerald-100">
                             <p className="text-[9px] text-slate-400 font-bold">成本/包 ({editingProduct.packWeightLb}磅)</p>
-                            <p className="font-black text-amber-700">${packCost.toFixed(2)}</p>
+                            <p className="font-black text-amber-700">${formatMoney(packCost)}</p>
                           </div>
                         ) : null}
                         <div className="p-2.5 bg-white rounded-xl border border-emerald-100">
                           <p className="text-[9px] text-slate-400 font-bold">建議零售價</p>
-                          <p className="font-black text-blue-600">${suggestedRetail}</p>
+                          <p className="font-black text-blue-600">${formatMoney(suggestedRetail)}</p>
                         </div>
                         <div className="p-2.5 bg-white rounded-xl border border-emerald-100">
                           <p className="text-[9px] text-slate-400 font-bold">建議批發 P0</p>
-                          <p className="font-black text-orange-600">${suggestedP0}</p>
+                          <p className="font-black text-orange-600">${formatMoney(suggestedP0)}</p>
                         </div>
                         <div className="p-2.5 bg-white rounded-xl border border-slate-100">
                           <p className="text-[9px] text-slate-400 font-bold">當前售價</p>
-                          <p className="font-black text-slate-800">${editingProduct.price}</p>
+                          <p className="font-black text-slate-800">${formatMoney(editingProduct.price)}</p>
                         </div>
                       </div>
                     );
@@ -7717,9 +7721,9 @@ const App: React.FC = () => {
                             {ingredientCategories.map(cat => {
                               const catIngs = ingredients.filter(i => i.category === cat);
                               if (catIngs.length === 0) return null;
-                              return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>;
+                              return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${formatMoney(ing.baseCostPerLb)}/{ing.unit})</option>)}</optgroup>;
                             })}
-                            {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>}
+                            {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${formatMoney(ing.baseCostPerLb)}/{ing.unit})</option>)}</optgroup>}
                           </select>
                         </div>
                       )}
@@ -7810,11 +7814,11 @@ const App: React.FC = () => {
                     const suggestedCost = (parentIng.baseCostPerLb / yr) + surcharge + (editingProduct.packagingCost || 0);
                     return (
                       <div className="mt-2 p-3 bg-white rounded-xl border border-violet-100 text-xs space-y-1">
-                        <div className="flex justify-between"><span className="text-slate-400">原材料成本</span><span className="font-bold">${parentIng.baseCostPerLb.toFixed(1)}/{parentIng.unit}</span></div>
-                        <div className="flex justify-between"><span className="text-slate-400">加工費 ({pt.name})</span><span className="font-bold text-violet-600">+${surcharge.toFixed(1)}/磅</span></div>
+                        <div className="flex justify-between"><span className="text-slate-400">原材料成本</span><span className="font-bold">${formatMoney(parentIng.baseCostPerLb)}/{parentIng.unit}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-400">加工費 ({pt.name})</span><span className="font-bold text-violet-600">+${formatMoney(surcharge)}/磅</span></div>
                         {yr < 1 && <div className="flex justify-between"><span className="text-slate-400">出成率</span><span className="font-bold">{(yr * 100).toFixed(0)}%</span></div>}
-                        <div className="flex justify-between border-t border-slate-100 pt-1 mt-1"><span className="text-slate-500 font-bold">建議成本</span><span className="font-black text-amber-700">${suggestedCost.toFixed(1)}/磅</span></div>
-                        <div className="flex justify-between"><span className="text-slate-500 font-bold">當前售價</span><span className="font-black text-blue-600">${editingProduct.price}/磅</span></div>
+                        <div className="flex justify-between border-t border-slate-100 pt-1 mt-1"><span className="text-slate-500 font-bold">建議成本</span><span className="font-black text-amber-700">${formatMoney(suggestedCost)}/磅</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500 font-bold">當前售價</span><span className="font-black text-blue-600">${formatMoney(editingProduct.price)}/磅</span></div>
                       </div>
                     );
                   })()}
@@ -8099,9 +8103,9 @@ const App: React.FC = () => {
                           {ingredientCategories.map(cat => {
                             const catIngs = ingredients.filter(i => i.category === cat);
                             if (catIngs.length === 0) return null;
-                            return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>;
+                            return <optgroup key={cat} label={cat}>{catIngs.map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${formatMoney(ing.baseCostPerLb)}/{ing.unit})</option>)}</optgroup>;
                           })}
-                          {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${ing.baseCostPerLb}/{ing.unit})</option>)}</optgroup>}
+                          {ingredients.filter(i => !i.category).length > 0 && <optgroup label="未分類">{ingredients.filter(i => !i.category).map(ing => <option key={ing.id} value={ing.id}>{ing.name} (${formatMoney(ing.baseCostPerLb)}/{ing.unit})</option>)}</optgroup>}
                         </select>
                       </div>
                     ) : (
@@ -8723,7 +8727,7 @@ const App: React.FC = () => {
                               <div className="flex-1 min-w-0">
                                 <span>{item.name} x {item.qty}</span>
                               </div>
-                              <span className="flex-shrink-0">${item.line_total}</span>
+                              <span className="flex-shrink-0">${formatMoney(item.line_total)}</span>
                             </div>
                           ))}
                         </div>
@@ -8749,9 +8753,9 @@ const App: React.FC = () => {
                       {/* 3. 金額明細 */}
                       <div className="bg-slate-50 rounded-2xl p-4">
                         <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">金額明細</p>
-                        <p className="text-sm font-bold text-slate-900">小計 ${inspectingOrderDetails.subtotal ?? inspectingOrder.total}</p>
-                        <p className="text-xs text-slate-500 font-bold mt-1">運費 ${inspectingOrderDetails.delivery_fee ?? 0}</p>
-                        <p className="text-xs text-slate-700 font-black mt-1">總計 ${inspectingOrderDetails.total}</p>
+                        <p className="text-sm font-bold text-slate-900">小計 ${formatMoney(inspectingOrderDetails.subtotal ?? inspectingOrder.total)}</p>
+                        <p className="text-xs text-slate-500 font-bold mt-1">運費 ${formatMoney(inspectingOrderDetails.delivery_fee ?? 0)}</p>
+                        <p className="text-xs text-slate-700 font-black mt-1">總計 ${formatMoney(inspectingOrderDetails.total)}</p>
                       </div>
 
                       {/* 4. 客戶 */}
@@ -8858,7 +8862,7 @@ const App: React.FC = () => {
               <CreditCard className="text-rose-500" size={20} />
               <h4 className="text-lg font-black text-slate-900">退款操作</h4>
             </div>
-            <p className="text-sm font-bold text-slate-500">訂單 #{refundModal.orderId} ・ 總金額 ${refundModal.total}</p>
+            <p className="text-sm font-bold text-slate-500">訂單 #{refundModal.orderId} ・ 總金額 ${formatMoney(refundModal.total)}</p>
 
             <div className="space-y-3">
               <label className="flex items-center gap-3 p-4 bg-slate-50 rounded-2xl cursor-pointer hover:bg-slate-100 transition-colors"
@@ -8866,7 +8870,7 @@ const App: React.FC = () => {
                 <input type="radio" name="refundType" checked={refundType === 'full'} readOnly className="accent-rose-600" />
                 <div>
                   <span className="font-black text-slate-900">全額退款</span>
-                  <span className="text-sm font-bold text-slate-500 ml-2">${refundModal.total}</span>
+                  <span className="text-sm font-bold text-slate-500 ml-2">${formatMoney(refundModal.total)}</span>
                 </div>
               </label>
               <label className="flex items-center gap-3 p-4 bg-slate-50 rounded-2xl cursor-pointer hover:bg-slate-100 transition-colors"
@@ -8882,7 +8886,7 @@ const App: React.FC = () => {
                       value={refundAmount} onChange={e => setRefundAmount(e.target.value)}
                       placeholder="輸入退款金額" className="flex-1 p-3 bg-white border border-slate-200 rounded-xl font-black text-lg focus:ring-2 focus:ring-rose-100" />
                   </div>
-                  <p className="text-[10px] text-slate-400 font-bold mt-1">最大退款金額：${refundModal.total}</p>
+                  <p className="text-[10px] text-slate-400 font-bold mt-1">最大退款金額：${formatMoney(refundModal.total)}</p>
                 </div>
               )}
             </div>
@@ -8967,8 +8971,8 @@ const App: React.FC = () => {
       const label = tier === 'all_free'
         ? '✓ 全場免運'
         : tier === 'between'
-        ? `自提免運！差$${Math.ceil(deliveryThreshold - subtotal)}上門免運`
-        : `差$${Math.ceil(lockerThreshold - subtotal)}自提免運`;
+        ? `自提免運！差$${formatMoney(Math.max(0, deliveryThreshold - subtotal))}上門免運`
+        : `差$${formatMoney(Math.max(0, lockerThreshold - subtotal))}自提免運`;
       const textColor = tier === 'all_free' ? 'text-emerald-400' : tier === 'between' ? 'text-teal-300' : 'text-orange-300';
 
       return (
@@ -8996,8 +9000,8 @@ const App: React.FC = () => {
           <div className="space-y-2">
             <p className={`text-[11px] font-bold text-center ${tier === 'between' ? 'text-teal-300' : 'text-orange-300'}`}>
               {tier === 'between'
-                ? <>自提櫃已免運！再買 <span className="font-black">${Math.ceil(deliveryThreshold - subtotal)}</span> 即享送貨上門免運 🏠</>
-                : <>仲差 <span className="font-black">${Math.ceil(lockerThreshold - subtotal)}</span> 享自提櫃免運 📦</>
+                ? <>自提櫃已免運！再買 <span className="font-black">${formatMoney(Math.max(0, deliveryThreshold - subtotal))}</span> 即享送貨上門免運 🏠</>
+                : <>仲差 <span className="font-black">${formatMoney(Math.max(0, lockerThreshold - subtotal))}</span> 享自提櫃免運 📦</>
               }
             </p>
             {/* 雙門檻進度條 */}
@@ -9096,9 +9100,9 @@ const App: React.FC = () => {
                       {item.image && <img src={item.image} alt={item.name} className="w-12 h-12 rounded-xl object-cover bg-slate-100" />}
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-bold text-slate-800 truncate">{item.name}</p>
-                        <p className="text-xs text-slate-400 font-bold">${price} × {item.qty}</p>
+                        <p className="text-xs text-slate-400 font-bold">${formatMoney(price)} × {item.qty}</p>
                       </div>
-                      <p className="text-sm font-black text-slate-900">${price * item.qty}</p>
+                      <p className="text-sm font-black text-slate-900">${formatMoney(price * item.qty)}</p>
                     </div>
                   );
                 })}
@@ -9176,11 +9180,11 @@ const App: React.FC = () => {
             {/* ─── Order Total + Submit ─── */}
             <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
               <div className="px-5 pt-5 pb-4 space-y-2">
-                <div className="flex justify-between text-xs font-bold text-slate-400"><span>商品小計</span><span className="text-slate-700">${subtotal}</span></div>
+                <div className="flex justify-between text-xs font-bold text-slate-400"><span>商品小計</span><span className="text-slate-700">${formatMoney(subtotal)}</span></div>
                 <div className="flex justify-between text-xs font-bold text-slate-400"><span>運費</span><span className="text-emerald-600 font-black">免運費</span></div>
                 <div className="pt-3 border-t border-slate-100 flex justify-between items-end">
                   <span className="text-xs font-black text-slate-400 uppercase tracking-widest">合計</span>
-                  <span className="text-2xl font-black text-slate-900">${total}</span>
+                  <span className="text-2xl font-black text-slate-900">${formatMoney(total)}</span>
                 </div>
               </div>
               <div className="px-5 pb-5">
@@ -9190,7 +9194,7 @@ const App: React.FC = () => {
                   className="w-full py-4 bg-orange-600 text-white rounded-xl font-black text-sm shadow-lg active:scale-[0.98] transition-all disabled:opacity-30 flex items-center justify-center gap-2"
                 >
                   {paymentMethod === 'cod' ? <Coins size={16} /> : <DollarSign size={16} />}
-                  {paymentMethod === 'cod' ? `確認訂單 (到付 $${total})` : `確認訂單 (FPS $${total})`}
+                  {paymentMethod === 'cod' ? `確認訂單 (到付 $${formatMoney(total)})` : `確認訂單 (FPS $${formatMoney(total)})`}
                 </button>
                 {!user && <p className="text-center text-xs text-red-500 font-bold mt-2">請先登入批發帳號</p>}
               </div>
@@ -9436,7 +9440,7 @@ const App: React.FC = () => {
                             <span className="text-xs font-bold text-slate-700">{mc.coupon?.name}</span>
                           </div>
                           <span className="text-xs font-black text-blue-600">
-                            {mc.coupon?.couponType === 'fixed_amount' && `-$${mc.coupon.discountValue}`}
+                            {mc.coupon?.couponType === 'fixed_amount' && `-$${formatMoney(mc.coupon.discountValue)}`}
                             {mc.coupon?.couponType === 'percentage' && `-${mc.coupon.discountValue}%`}
                             {mc.coupon?.couponType === 'free_delivery' && t.coupon.freeDelivery}
                             {mc.coupon?.couponType === 'free_product' && t.coupon.freeProduct}
@@ -9453,21 +9457,21 @@ const App: React.FC = () => {
           {/* ─── Section 5: Summary & Pay ─── */}
           <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
             <div className="px-5 pt-5 pb-5 space-y-3">
-              <div className="flex justify-between text-xs font-bold text-slate-400"><span>{lang === 'en' ? 'Subtotal' : '商品小計'}</span><span className="text-slate-700">${subtotal}</span></div>
+              <div className="flex justify-between text-xs font-bold text-slate-400"><span>{lang === 'en' ? 'Subtotal' : '商品小計'}</span><span className="text-slate-700">${formatMoney(subtotal)}</span></div>
               {pricingData.couponDiscount > 0 && (
-                <div className="flex justify-between text-xs font-bold text-emerald-600"><span>{t.coupon.couponDiscount}</span><span>-${pricingData.couponDiscount}</span></div>
+                <div className="flex justify-between text-xs font-bold text-emerald-600"><span>{t.coupon.couponDiscount}</span><span>-${formatMoney(pricingData.couponDiscount)}</span></div>
               )}
-              <div className="flex justify-between text-xs font-bold text-slate-400"><span>{lang === 'en' ? 'Shipping' : '運費'}</span><span className={deliveryFee === 0 ? 'text-emerald-600 font-black' : 'text-slate-700'}>{deliveryFee === 0 ? (lang === 'en' ? 'Free' : '免運費') : `$${deliveryFee}`}</span></div>
+              <div className="flex justify-between text-xs font-bold text-slate-400"><span>{lang === 'en' ? 'Shipping' : '運費'}</span><span className={deliveryFee === 0 ? 'text-emerald-600 font-black' : 'text-slate-700'}>{deliveryFee === 0 ? (lang === 'en' ? 'Free' : '免運費') : `$${formatMoney(deliveryFee)}`}</span></div>
               <FreeShippingNudge />
               <div className="pt-3 border-t border-slate-100 flex justify-between items-end">
                 <span className="text-xs font-black text-slate-400 uppercase tracking-widest">{lang === 'en' ? 'Total' : '合計'}</span>
-                <span className="text-2xl font-black text-slate-900">${total}</span>
+                <span className="text-2xl font-black text-slate-900">${formatMoney(total)}</span>
               </div>
             </div>
             <div className="px-5 pb-5">
               <button disabled={(deliveryMethod === 'home' && !getCheckoutDeliveryAddress()) || (deliveryMethod === 'sf_locker' && (!selectedLockerPoint || !(user?.phoneNumber ?? checkoutGuestPhone).trim())) || isRedirectingToPayment} onClick={handleSubmitOrder} className="w-full py-4 bg-blue-600 text-white rounded-xl font-black text-sm shadow-lg active:scale-[0.98] transition-all disabled:opacity-30 flex items-center justify-center gap-2">
                 {isRedirectingToPayment ? <RefreshCw size={16} className="animate-spin" /> : <CreditCard size={16} />}
-                {isRedirectingToPayment ? (lang === 'en' ? 'Processing...' : '處理中...') : (lang === 'en' ? `Pay $${total}` : `前往付款 $${total}`)}
+                {isRedirectingToPayment ? (lang === 'en' ? 'Processing...' : '處理中...') : (lang === 'en' ? `Pay $${formatMoney(total)}` : `前往付款 $${formatMoney(total)}`)}
               </button>
             </div>
           </section>
@@ -9703,8 +9707,8 @@ const App: React.FC = () => {
                                     const yourPrice = getPrice(p);
                                     const showOriginal = yourPrice < p.price;
                                     return (<>
-                                      <p className={`text-base font-bold ${showOriginal ? 'text-slate-300 text-xs line-through' : 'text-slate-900'}`}>${p.price}</p>
-                                      {showOriginal && <p className="text-base font-bold text-rose-500 animate-fade-in">${yourPrice}</p>}
+                                      <p className={`text-base font-bold ${showOriginal ? 'text-slate-300 text-xs line-through' : 'text-slate-900'}`}>${formatMoney(p.price)}</p>
+                                      {showOriginal && <p className="text-base font-bold text-rose-500 animate-fade-in">${formatMoney(yourPrice)}</p>}
                                     </>);
                                   })()}
                                 </div>
@@ -9759,7 +9763,7 @@ const App: React.FC = () => {
         <div className="fixed bottom-20 inset-x-4 z-[60]">
           <button onClick={(e) => { e.stopPropagation(); setView('checkout'); }} className="w-full bg-slate-900 text-white rounded-2xl shadow-2xl active:scale-[0.98] transition-all ring-4 ring-white/10 overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3">
-              <div className="flex items-center gap-3"><ShoppingBag size={18} /><span className="text-sm font-bold">${pricingData.subtotal}</span></div>
+              <div className="flex items-center gap-3"><ShoppingBag size={18} /><span className="text-sm font-bold">${formatMoney(pricingData.subtotal)}</span></div>
               <div className="flex-1 mx-3"><FreeShippingNudge compact /></div>
               <div className="px-3 py-1.5 bg-white/10 rounded-lg flex items-center gap-1 font-bold text-[10px] uppercase tracking-wider text-white flex-shrink-0">{t.store.goCheckout} <ChevronRight size={12} /></div>
             </div>
@@ -10047,7 +10051,7 @@ const App: React.FC = () => {
                         </div>
                       </div>
                       <div className="flex justify-between items-center flex-wrap gap-2">
-                        <p className="text-2xl font-black text-slate-900">${o.total}</p>
+                        <p className="text-2xl font-black text-slate-900">${formatMoney(o.total)}</p>
                         <div className="flex items-center gap-2">
                           <button onClick={() => setInspectingOrder(o)} className="px-4 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all border border-slate-200 hover:bg-slate-200">{t.orders.viewOrder}</button>
                           <button onClick={() => handleTrackOrder(o)} className={`px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all ${o.trackingNumber ? 'bg-slate-900 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`} disabled={!o.trackingNumber}><Truck size={14} className="inline mr-2"/> {t.orders.trackLogistics}</button>
