@@ -165,14 +165,48 @@ export default async function handler(
     }
 
     const updateId = orderRow.id ?? dbIdValue;
+    const blockedStatuses = new Set(['cancelled', 'refunded']);
+    if (blockedStatuses.has(String(orderRow.status || '').trim().toLowerCase())) {
+      return res.status(409).json({
+        error: `訂單目前狀態為「${orderRow.status}」，無法標記為已付款`,
+        code: 'ORDER_STATUS_CONFLICT',
+      });
+    }
+
     const updatePayload: Record<string, unknown> = { status: 'paid' };
     if (paymentIntentId) updatePayload.payment_intent_id = paymentIntentId;
-    const { error: updateError } = await supabaseAdmin
-      .from('orders').update(updatePayload).eq('id', updateId).eq('status', 'pending_payment');
+    const { data: updatedRows, error: updateError } = await supabaseAdmin
+      .from('orders')
+      .update(updatePayload)
+      .eq('id', updateId)
+      .eq('status', 'pending_payment')
+      .select('id,status')
+      .limit(1);
 
     if (updateError) {
       console.error('[confirm-payment] CRITICAL update failed:', updateError.message);
       return res.status(502).json({ error: '更新訂單狀態失敗，請聯繫客服', code: 'UPDATE_FAILED' });
+    }
+
+    if (!updatedRows || updatedRows.length === 0) {
+      const { data: latestOrder, error: latestErr } = await supabaseAdmin
+        .from('orders')
+        .select('id,status')
+        .eq('id', updateId)
+        .maybeSingle();
+      if (latestErr) {
+        console.error('[confirm-payment] status recheck failed:', latestErr.message);
+        return res.status(502).json({ error: '付款狀態確認失敗，請聯繫客服', code: 'STATUS_RECHECK_FAILED' });
+      }
+      if (latestOrder?.status === 'paid') {
+        console.log('[confirm-payment] Order', latestOrder.id, 'already paid after recheck');
+        return res.status(200).json({ success: true, alreadyPaid: true, orderId });
+      }
+      console.error('[confirm-payment] No rows updated; current status:', latestOrder?.status);
+      return res.status(409).json({
+        error: `付款已記錄，但訂單狀態仍為「${latestOrder?.status ?? 'unknown'}」`,
+        code: 'ORDER_NOT_UPDATED',
+      });
     }
 
     console.log('[confirm-payment] Order', updateId, 'marked as PAID');

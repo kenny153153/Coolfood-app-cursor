@@ -306,7 +306,7 @@ export const mapUserToMemberRow = (user: User, passwordHash?: string | null): Su
 };
 
 export const normalizeOrderStatus = (status: string | null | undefined): OrderStatus => {
-  const normalized = String(status ?? '').toLowerCase();
+  const normalized = String(status ?? '').trim().toLowerCase();
   if ((Object.values(OrderStatus) as string[]).includes(normalized)) {
     return normalized as OrderStatus;
   }
