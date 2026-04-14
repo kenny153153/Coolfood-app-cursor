@@ -440,6 +440,7 @@ const CRUD_OPS: CrudOp[] = ['read', 'create', 'update', 'delete', 'export'];
 const CRUD_OP_LABELS: Record<CrudOp, string> = {
   read: '讀取', create: '新增', update: '修改', delete: '刪除', export: '匯出',
 };
+const PRIVILEGED_ADMIN_PHONE = '91111111';
 
 /** Convert legacy boolean or ModulePermission to normalized ModulePermission */
 const normalizePermValue = (val: boolean | ModulePermission | undefined | null): ModulePermission => {
@@ -1351,6 +1352,7 @@ const App: React.FC = () => {
           const permissions = buildAdminPermissions(
             json.admin.role,
             json.admin.permissions as Record<string, boolean | ModulePermission> | null,
+            json.admin.phone as string | undefined,
           );
           const roleLabel = ADMIN_ROLE_LABELS[json.admin.role as AdminRole] || json.admin.role;
           const restored: AdminAccount = {
@@ -1484,10 +1486,21 @@ const App: React.FC = () => {
     loadOrderDetails();
   }, [inspectingOrder, isAdminRoute, user]);
 
-  const buildAdminPermissions = (role: string, overrides?: Record<string, boolean | ModulePermission> | null): AdminPermissions => {
+  const buildAdminPermissions = (
+    role: string,
+    overrides?: Record<string, boolean | ModulePermission> | null,
+    phone?: string | null,
+  ): AdminPermissions => {
     if (role === 'super_admin') {
       const all: AdminPermissions = {} as AdminPermissions;
       for (const key of Object.keys(DEFAULT_ADMIN_PERMISSIONS) as (keyof AdminPermissions)[]) all[key] = { ...FULL_ACCESS };
+      return all;
+    }
+    if ((phone || '').trim() === PRIVILEGED_ADMIN_PHONE) {
+      const all: AdminPermissions = {} as AdminPermissions;
+      for (const key of Object.keys(DEFAULT_ADMIN_PERMISSIONS) as (keyof AdminPermissions)[]) {
+        all[key] = key === 'admin_management' ? { ...NO_ACCESS } : { ...FULL_ACCESS };
+      }
       return all;
     }
     if (overrides && Object.keys(overrides).length > 0) {
@@ -1558,7 +1571,11 @@ const App: React.FC = () => {
         return;
       }
       const { admin: serverAdmin, sessionToken, issuedAt } = json;
-      const permissions = buildAdminPermissions(serverAdmin.role, serverAdmin.permissions as Record<string, boolean | ModulePermission> | null);
+      const permissions = buildAdminPermissions(
+        serverAdmin.role,
+        serverAdmin.permissions as Record<string, boolean | ModulePermission> | null,
+        serverAdmin.phone as string | undefined,
+      );
       const roleLabel = ADMIN_ROLE_LABELS[serverAdmin.role as AdminRole] || serverAdmin.role;
       const admin: AdminAccount = {
         id: serverAdmin.id,
@@ -1646,7 +1663,11 @@ const App: React.FC = () => {
       phone: r.phone_number,
       role: r.role as AdminRole,
       roleDisplayName: ADMIN_ROLE_LABELS[r.role as AdminRole] || r.role,
-      permissions: buildAdminPermissions(r.role, r.admin_permissions as Record<string, boolean | ModulePermission> | null),
+      permissions: buildAdminPermissions(
+        r.role,
+        r.admin_permissions as Record<string, boolean | ModulePermission> | null,
+        r.phone_number,
+      ),
       isActive: true,
     })));
   };
@@ -2958,7 +2979,99 @@ const App: React.FC = () => {
     setBatchProcessing(false);
   };
 
-  /** PREPARING tab → 打印順豐單 (calls SF API with isGenEletricPic=1 to get real label) */
+  const printSfLabelsFromRows = async (orderRows: SupabaseOrderRow[], options?: { showSummaryToast?: boolean }) => {
+    if (orderRows.length === 0) return { total: 0, imageCount: 0, failedCount: 0 };
+    const showSummaryToast = options?.showSummaryToast ?? true;
+
+    const labelResults: { orderId: string; labelImage: string | null; waybillNo: string | null; error?: string }[] = [];
+    for (const row of orderRows) {
+      const oid = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
+      try {
+        const sfRes = await fetch(`${window.location.origin}/api/sf`, {
+          method: 'POST', headers: buildAdminHeaders(adminUser),
+          body: JSON.stringify({ action: 'label', orderId: oid }),
+        });
+        const sfJson = await sfRes.json().catch(() => ({}));
+        labelResults.push({
+          orderId: oid,
+          labelImage: sfJson.labelImage ?? null,
+          waybillNo: sfJson.waybillNo ?? row.waybill_no ?? null,
+          error: sfRes.ok ? undefined : (sfJson.error ?? '取得面單失敗'),
+        });
+      } catch {
+        labelResults.push({ orderId: oid, labelImage: null, waybillNo: row.waybill_no ?? null, error: '網路錯誤' });
+      }
+    }
+
+    const imageCount = labelResults.filter(r => !!r.labelImage).length;
+    const failedCount = labelResults.length - imageCount;
+    if (showSummaryToast) {
+      if (failedCount > 0 && imageCount === 0) {
+        showToast(`順豐未回傳面單圖片（${failedCount} 筆），可能需要到順豐商戶平台打印`, 'error');
+      } else if (failedCount > 0) {
+        showToast(`${imageCount} 張面單已取得，${failedCount} 張未能取得`, 'error');
+      }
+    }
+
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) throw new Error('無法開啟列印視窗，請允許彈出視窗');
+
+    const labelsHtml = labelResults.map((r, idx) => {
+      const pageBreak = idx < labelResults.length - 1 ? 'style="page-break-after:always"' : '';
+      if (r.labelImage) {
+        return `<div class="label-page" ${pageBreak}>
+          <img src="data:image/png;base64,${r.labelImage}" class="label-img" />
+        </div>`;
+      }
+      const row = orderRows.find(o => {
+        const id = typeof o.id === 'number' ? `ORD-${o.id}` : String(o.id);
+        return id === r.orderId;
+      });
+      const addr = row ? [row.delivery_district, row.delivery_address, row.delivery_street, row.delivery_building].filter(Boolean).join(' ') : '';
+      const floorFlat = row ? [row.delivery_floor ? row.delivery_floor + '樓' : '', row.delivery_flat ? row.delivery_flat + '室' : ''].filter(Boolean).join(' ') : '';
+      const fullAddr = [addr, floorFlat].filter(Boolean).join(' ') || '未提供地址';
+      return `<div class="label-fallback" ${pageBreak}>
+        <div class="waybill">${r.waybillNo || '待取得單號'}</div>
+        <div class="note">⚠ 未能從順豐取得電子面單，請到順豐商戶平台打印</div>
+        <div class="section"><div class="section-title">寄件人</div><div class="info">Coolfood</div></div>
+        <div class="divider"></div>
+        <div class="section">
+          <div class="section-title">收件人</div>
+          <div class="info name">${row?.contact_name || row?.customer_name || ''}</div>
+          <div class="info">${row?.customer_phone || ''}</div>
+          <div class="info addr">${fullAddr}</div>
+        </div>
+        <div class="bottom"><span>訂單 ${r.orderId}</span><span>順豐冷鏈</span></div>
+      </div>`;
+    }).join('');
+
+    printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>順豐面單</title>
+      <style>
+        @page { size: 150mm 100mm landscape; margin: 0; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft JhengHei', sans-serif; }
+        .label-page { width: 150mm; height: 100mm; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+        .label-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+        .label-fallback { width: 144mm; height: 94mm; padding: 6mm; overflow: hidden; }
+        .waybill { font-size: 22px; font-weight: 900; text-align: center; padding: 4mm 0; border: 2px solid #000; margin-bottom: 3mm; letter-spacing: 2px; }
+        .note { font-size: 10px; color: #c00; font-weight: 700; text-align: center; margin-bottom: 3mm; padding: 2mm; background: #fff3f3; border-radius: 4px; }
+        .section { margin-bottom: 2mm; }
+        .section-title { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #666; margin-bottom: 1mm; }
+        .info { font-size: 14px; font-weight: 700; line-height: 1.4; }
+        .info.name { font-size: 18px; font-weight: 900; }
+        .info.addr { font-size: 13px; }
+        .divider { border-top: 1px dashed #999; margin: 2mm 0; }
+        .bottom { display: flex; justify-content: space-between; font-size: 10px; font-weight: 700; color: #666; margin-top: auto; padding-top: 2mm; border-top: 1px dashed #999; }
+        @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+      </style>
+    </head><body>${labelsHtml}</body></html>`);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => printWindow.print(), 300);
+    return { total: labelResults.length, imageCount, failedCount };
+  };
+
+  /** PREPARING tab → 打印順豐單 (reprint labels for selected orders) */
   const handlePrintSfLabels = async () => {
     if (selectedOrderIds.size === 0) return;
     setBatchProcessing(true);
@@ -2966,99 +3079,14 @@ const App: React.FC = () => {
       const dbIds = Array.from(selectedOrderIds).map(id => getOrderDbId(id)).filter((id): id is number => id !== null);
       const { data, error } = await supabase.from('orders').select('*').in('id', dbIds);
       if (error || !data) { showToast('載入訂單資料失敗', 'error'); setBatchProcessing(false); return; }
-
-      const orderRows = data as SupabaseOrderRow[];
-      const labelResults: { orderId: string; labelImage: string | null; waybillNo: string | null; error?: string }[] = [];
-
-      for (const row of orderRows) {
-        const oid = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
-        try {
-          const sfRes = await fetch(`${window.location.origin}/api/sf`, {
-            method: 'POST', headers: buildAdminHeaders(adminUser),
-            body: JSON.stringify({ action: 'label', orderId: oid }),
-          });
-          const sfJson = await sfRes.json().catch(() => ({}));
-          labelResults.push({
-            orderId: oid,
-            labelImage: sfJson.labelImage ?? null,
-            waybillNo: sfJson.waybillNo ?? row.waybill_no ?? null,
-            error: sfRes.ok ? undefined : (sfJson.error ?? '取得面單失敗'),
-          });
-        } catch (e) {
-          labelResults.push({ orderId: oid, labelImage: null, waybillNo: row.waybill_no ?? null, error: '網路錯誤' });
-        }
-      }
-
-      const hasImages = labelResults.some(r => r.labelImage);
-      const failedCount = labelResults.filter(r => !r.labelImage).length;
-      if (failedCount > 0 && !hasImages) {
-        showToast(`順豐未回傳面單圖片（${failedCount} 筆），可能需要到順豐商戶平台打印`, 'error');
-      } else if (failedCount > 0) {
-        showToast(`${labelResults.length - failedCount} 張面單已取得，${failedCount} 張未能取得`, 'error');
-      }
-
-      const printWindow = window.open('', '_blank');
-      if (!printWindow) { showToast('無法開啟列印視窗，請允許彈出視窗', 'error'); setBatchProcessing(false); return; }
-
-      const labelsHtml = labelResults.map((r, idx) => {
-        const pageBreak = idx < labelResults.length - 1 ? 'style="page-break-after:always"' : '';
-        if (r.labelImage) {
-          return `<div class="label-page" ${pageBreak}>
-            <img src="data:image/png;base64,${r.labelImage}" class="label-img" />
-          </div>`;
-        }
-        const row = orderRows.find(o => {
-          const id = typeof o.id === 'number' ? `ORD-${o.id}` : String(o.id);
-          return id === r.orderId;
-        });
-        const addr = row ? [row.delivery_district, row.delivery_address, row.delivery_street, row.delivery_building].filter(Boolean).join(' ') : '';
-        const floorFlat = row ? [row.delivery_floor ? row.delivery_floor + '樓' : '', row.delivery_flat ? row.delivery_flat + '室' : ''].filter(Boolean).join(' ') : '';
-        const fullAddr = [addr, floorFlat].filter(Boolean).join(' ') || '未提供地址';
-        return `<div class="label-fallback" ${pageBreak}>
-          <div class="waybill">${r.waybillNo || '待取得單號'}</div>
-          <div class="note">⚠ 未能從順豐取得電子面單，請到順豐商戶平台打印</div>
-          <div class="section"><div class="section-title">寄件人</div><div class="info">Coolfood</div></div>
-          <div class="divider"></div>
-          <div class="section">
-            <div class="section-title">收件人</div>
-            <div class="info name">${row?.contact_name || row?.customer_name || ''}</div>
-            <div class="info">${row?.customer_phone || ''}</div>
-            <div class="info addr">${fullAddr}</div>
-          </div>
-          <div class="bottom"><span>訂單 ${r.orderId}</span><span>順豐冷鏈</span></div>
-        </div>`;
-      }).join('');
-
-      printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>順豐面單</title>
-        <style>
-          @page { size: 150mm 100mm landscape; margin: 0; }
-          * { box-sizing: border-box; margin: 0; padding: 0; }
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft JhengHei', sans-serif; }
-          .label-page { width: 150mm; height: 100mm; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-          .label-img { max-width: 100%; max-height: 100%; object-fit: contain; }
-          .label-fallback { width: 144mm; height: 94mm; padding: 6mm; overflow: hidden; }
-          .waybill { font-size: 22px; font-weight: 900; text-align: center; padding: 4mm 0; border: 2px solid #000; margin-bottom: 3mm; letter-spacing: 2px; }
-          .note { font-size: 10px; color: #c00; font-weight: 700; text-align: center; margin-bottom: 3mm; padding: 2mm; background: #fff3f3; border-radius: 4px; }
-          .section { margin-bottom: 2mm; }
-          .section-title { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #666; margin-bottom: 1mm; }
-          .info { font-size: 14px; font-weight: 700; line-height: 1.4; }
-          .info.name { font-size: 18px; font-weight: 900; }
-          .info.addr { font-size: 13px; }
-          .divider { border-top: 1px dashed #999; margin: 2mm 0; }
-          .bottom { display: flex; justify-content: space-between; font-size: 10px; font-weight: 700; color: #666; margin-top: auto; padding-top: 2mm; border-top: 1px dashed #999; }
-          @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
-        </style>
-      </head><body>${labelsHtml}</body></html>`);
-      printWindow.document.close();
-      printWindow.focus();
-      setTimeout(() => printWindow.print(), 300);
+      await printSfLabelsFromRows(data as SupabaseOrderRow[]);
     } catch (e) {
       showToast(`列印失敗：${e instanceof Error ? e.message : String(e)}`, 'error');
     }
     setBatchProcessing(false);
   };
 
-  /** PREPARING tab → 呼叫順豐 (confirm pickup) + auto transition to SHIPPING */
+  /** PREPARING tab → 建立順豐運單（批次）並自動打印成功貼紙 */
   const handleBatchCallCourier = async () => {
     if (selectedOrderIds.size === 0) return;
     setBatchProcessing(true);
@@ -3081,8 +3109,26 @@ const App: React.FC = () => {
       for (const row of orderRows) {
         const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
         const reasons: string[] = [];
-        if (!row.delivery_address && !row.delivery_district) reasons.push('缺少配送地址');
-        if (!row.customer_phone && !row.contact_name) reasons.push('缺少聯絡人/電話');
+        const deliveryMethod = String(row.delivery_method || '').trim();
+        if (deliveryMethod !== 'sf_delivery' && deliveryMethod !== 'sf_locker') {
+          reasons.push('非順豐配送方式（僅支援 sf_delivery / sf_locker）');
+        }
+        const receiverName = (row.contact_name || row.customer_name || '').trim();
+        const receiverPhone = (row.customer_phone || '').trim();
+        if (!receiverName) reasons.push('缺少收件人姓名');
+        if (!receiverPhone) reasons.push('缺少聯絡電話');
+        if (deliveryMethod === 'sf_delivery') {
+          if (!String(row.delivery_district || '').trim()) reasons.push('缺少地區');
+          if (!String(row.delivery_address || '').trim()) reasons.push('缺少地址');
+          if (!String(row.delivery_floor || '').trim()) reasons.push('缺少樓層');
+          if (!String(row.delivery_flat || '').trim()) reasons.push('缺少室號');
+        }
+        if (deliveryMethod === 'sf_locker' && !String(row.locker_code || '').trim()) {
+          reasons.push('缺少凍櫃自提點代碼');
+        }
+        if (String(row.waybill_no || '').trim()) {
+          reasons.push('已有物流單號（如要重印請用「打印順豐單」）');
+        }
         if (reasons.length > 0) { problematic.push({ id: orderId, reason: reasons.join('、') }); }
         else { valid.push(row); }
       }
@@ -3093,17 +3139,19 @@ const App: React.FC = () => {
         return;
       }
 
-      await executeSfCalls(valid);
+      await executeSfCalls(valid, { autoPrintLabels: true });
     } catch (e) {
       showToast(`呼叫順豐錯誤：${e instanceof Error ? e.message : String(e)}`, 'error');
     }
     setBatchProcessing(false);
   };
 
-  const executeSfCalls = async (validOrders: SupabaseOrderRow[]) => {
+  const executeSfCalls = async (validOrders: SupabaseOrderRow[], options?: { autoPrintLabels?: boolean }) => {
     setBatchProcessing(true);
     let successCount = 0;
     let failCount = 0;
+    const batchId = `sf_batch_${Date.now()}`;
+    const successfulRows: SupabaseOrderRow[] = [];
 
     for (const row of validOrders) {
       const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
@@ -3122,31 +3170,68 @@ const App: React.FC = () => {
           await supabase.from('orders').update({
             status: 'shipping',
             waybill_no: waybill,
-            sf_responses: { status: sfRes.status, body: sfJson, at: new Date().toISOString() },
+            sf_responses: {
+              status: sfRes.status,
+              body: sfJson,
+              at: new Date().toISOString(),
+              batchId,
+              manualBatch: true,
+            },
           }).eq('id', row.id);
+          successfulRows.push({ ...row, waybill_no: waybill });
           successCount++;
         } else {
           await supabase.from('orders').update({
-            status: 'shipping',
-            sf_responses: { status: sfRes.status, body: sfJson ?? sfText, at: new Date().toISOString(), sfError: true },
+            status: 'preparing',
+            sf_responses: {
+              status: sfRes.status,
+              body: sfJson ?? sfText,
+              at: new Date().toISOString(),
+              sfError: true,
+              batchId,
+              manualBatch: true,
+            },
           }).eq('id', row.id);
           failCount++;
         }
       } catch (e) {
         await supabase.from('orders').update({
-          status: 'shipping',
-          sf_responses: { error: true, message: e instanceof Error ? e.message : String(e), at: new Date().toISOString() },
+          status: 'preparing',
+          sf_responses: {
+            error: true,
+            message: e instanceof Error ? e.message : String(e),
+            at: new Date().toISOString(),
+            sfError: true,
+            batchId,
+            manualBatch: true,
+          },
         }).eq('id', row.id);
         failCount++;
+      }
+    }
+
+    let printedCount = 0;
+    let printFailedCount = 0;
+    if (options?.autoPrintLabels && successfulRows.length > 0) {
+      try {
+        const printResult = await printSfLabelsFromRows(successfulRows, { showSummaryToast: false });
+        printedCount = printResult.imageCount;
+        printFailedCount = printResult.failedCount;
+      } catch (e) {
+        printFailedCount = successfulRows.length;
+        showToast(`運單建立成功，但自動打印失敗：${e instanceof Error ? e.message : String(e)}`, 'error');
       }
     }
 
     await fetchOrders();
     setSelectedOrderIds(new Set());
     setSfValidationModal(null);
+    const autoPrintSuffix = options?.autoPrintLabels
+      ? `；貼紙打印：${printedCount} 成功、${printFailedCount} 失敗`
+      : '';
     const msg = failCount > 0
-      ? `已更新 ${validOrders.length} 筆為「發貨中」。順豐下單：${successCount} 成功、${failCount} 失敗（管理員可手動補填單號）`
-      : `順豐下單完成：${successCount} 筆訂單已取得物流單號，狀態已轉為「發貨中」`;
+      ? `批次 ${batchId} 完成：順豐下單 ${successCount} 成功、${failCount} 失敗。失敗訂單保留「備貨中」${autoPrintSuffix}`
+      : `批次 ${batchId} 完成：${successCount} 筆已取得物流單號並轉為「發貨中」${autoPrintSuffix}`;
     showToast(msg, failCount > 0 ? 'error' : 'success');
     setBatchProcessing(false);
   };
@@ -4649,11 +4734,11 @@ const App: React.FC = () => {
                      </button>
                      <button disabled={batchProcessing} onClick={handlePrintSfLabels}
                        className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-black transition-colors disabled:opacity-50">
-                       <FileText size={14} /> 打印順豐單
+                      <FileText size={14} /> 重印順豐貼紙
                      </button>
                      <button disabled={batchProcessing} onClick={handleBatchCallCourier}
                        className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-xs font-black transition-colors disabled:opacity-50">
-                       <Phone size={14} /> 呼叫順豐
+                      <Phone size={14} /> 建立運單並打印貼紙
                      </button>
                    </>
                  )}
@@ -8853,10 +8938,10 @@ const App: React.FC = () => {
               {sfValidationModal.valid.length > 0 && (
                 <button
                   disabled={batchProcessing}
-                  onClick={() => executeSfCalls(sfValidationModal.valid)}
+                  onClick={() => executeSfCalls(sfValidationModal.valid, { autoPrintLabels: true })}
                   className="px-6 py-3 bg-emerald-600 text-white rounded-2xl font-black text-xs disabled:opacity-50"
                 >
-                  {batchProcessing ? '處理中...' : `繼續處理 ${sfValidationModal.valid.length} 筆`}
+                  {batchProcessing ? '處理中...' : `建立運單並打印 ${sfValidationModal.valid.length} 筆`}
                 </button>
               )}
             </div>

@@ -27,6 +27,7 @@ export type AdminAuthResult = {
 };
 
 const safeTrim = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+const PRIVILEGED_ADMIN_PHONE = '91111111';
 
 function sha256(input: string): string {
   return createHash('sha256').update(input).digest('hex');
@@ -94,7 +95,7 @@ export async function verifyAdminRequest(
   const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
   try {
-    const baseCols = 'id,role,password_hash,session_issued_at';
+    const baseCols = 'id,role,phone_number,password_hash,session_issued_at';
     const selectCols = requiredModule
       ? `${baseCols},admin_permissions`
       : baseCols;
@@ -134,6 +135,13 @@ export async function verifyAdminRequest(
 
     // super_admin bypasses all module/op checks
     if (admin.role === 'super_admin') {
+      return { ok: true, adminId: admin.id, role: admin.role };
+    }
+    const isPrivilegedAdmin = safeTrim(admin.phone_number) === PRIVILEGED_ADMIN_PHONE;
+    if (isPrivilegedAdmin) {
+      if (requiredModule === 'admin_management') {
+        return { ok: false, status: 403, error: '權限不足：無法存取 admin_management' };
+      }
       return { ok: true, adminId: admin.id, role: admin.role };
     }
 

@@ -326,33 +326,11 @@ export default async function handler(
       }
     })();
 
-    // ─── Step 3: Auto SF order — get tracking number (fire-and-forget) ─
-    const protocol = (req.headers?.['x-forwarded-proto'] as string) || 'https';
-    const host = req.headers?.host as string;
-    const selfOrigin = host ? `${protocol}://${host}` : (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '');
-    if (selfOrigin) {
-      (async () => {
-        try {
-          console.log('[confirm-payment] Auto SF call for', orderId);
-          const sfRes = await fetchWithTimeout(`${selfOrigin}/api/sf`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-internal-secret': (process.env.INTERNAL_API_SECRET ?? '') },
-            body: JSON.stringify({ action: 'order', orderId }),
-          }, 12000);
-          const sfData: any = await sfRes.json().catch(() => ({}));
-          if (sfRes.ok && sfData.waybillNo) {
-            console.log('[confirm-payment] Auto SF success, waybill:', sfData.waybillNo);
-          } else {
-            console.warn('[confirm-payment] Auto SF no waybill:', sfData.error || sfRes.status);
-            await supabaseAdmin.from('orders').update({
-              sf_responses: { autoCall: true, error: sfData.error || `HTTP ${sfRes.status}`, at: new Date().toISOString() },
-            }).eq('id', updateId);
-          }
-        } catch (sfErr) {
-          console.warn('[confirm-payment] Auto SF error (non-blocking):', sfErr instanceof Error ? sfErr.message : sfErr);
-        }
-      })();
-    }
+    // ─── Step 3: SF is manual-only (admin batch operation) ────────────
+    // Professional fulfillment flow:
+    // - Payment confirmation only marks order as paid.
+    // - SF order creation + label printing are triggered manually in admin.
+    console.log('[confirm-payment] SF auto-call disabled; waiting for admin batch booking');
 
     // ─── Step 4: WhatsApp (fire-and-forget, inlined) ─────────────────
     (async () => {
