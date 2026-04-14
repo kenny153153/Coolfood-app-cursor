@@ -3168,9 +3168,11 @@ const App: React.FC = () => {
     setBatchProcessing(true);
     let successCount = 0;
     let failCount = 0;
+    let pendingWaybillCount = 0;
     const batchId = `sf_batch_${Date.now()}`;
     const successfulRows: SupabaseOrderRow[] = [];
     const failureDetails: string[] = [];
+    const pendingDetails: string[] = [];
 
     for (const row of validOrders) {
       const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
@@ -3181,7 +3183,7 @@ const App: React.FC = () => {
           body: JSON.stringify({ action: 'order', orderId }),
         });
         const sfText = await sfRes.text();
-        let sfJson: { waybillNo?: string; waybill_no?: string; success?: boolean } | null = null;
+        let sfJson: { waybillNo?: string; waybill_no?: string; success?: boolean; code?: string; message?: string } | null = null;
         try { sfJson = sfText ? JSON.parse(sfText) : null; } catch { sfJson = null; }
         const waybill = sfJson?.waybill_no ?? sfJson?.waybillNo ?? null;
 
@@ -3199,6 +3201,22 @@ const App: React.FC = () => {
           }).eq('id', row.id);
           successfulRows.push({ ...row, waybill_no: waybill });
           successCount++;
+        } else if (sfRes.ok && sfJson?.success && !waybill && sfJson?.code === 'SF_ACCEPTED_NO_WAYBILL') {
+          const pendingReason = sfJson?.message || '順豐已受理但未回傳運單號';
+          await supabase.from('orders').update({
+            status: 'preparing',
+            sf_responses: {
+              status: sfRes.status,
+              body: sfJson,
+              at: new Date().toISOString(),
+              sfPendingWaybill: true,
+              sfErrorMsg: String(pendingReason).slice(0, 300),
+              batchId,
+              manualBatch: true,
+            },
+          }).eq('id', row.id);
+          pendingDetails.push(`#${orderId}: ${String(pendingReason).slice(0, 80)}`);
+          pendingWaybillCount++;
         } else {
           const failReason = (sfJson as any)?.error || (sfJson as any)?.code || sfText || `HTTP ${sfRes.status}`;
           await supabase.from('orders').update({
@@ -3254,13 +3272,19 @@ const App: React.FC = () => {
     const autoPrintSuffix = options?.autoPrintLabels
       ? `；貼紙打印：${printedCount} 成功、${printFailedCount} 失敗`
       : '';
+    const pendingSuffix = pendingWaybillCount > 0
+      ? `；待回單號：${pendingWaybillCount} 筆（請稍後重試）`
+      : '';
     const reasonSuffix = failureDetails.length > 0
       ? `；原因：${failureDetails.slice(0, 2).join(' / ')}${failureDetails.length > 2 ? ' ...' : ''}`
       : '';
-    const msg = failCount > 0
-      ? `批次 ${batchId} 完成：順豐下單 ${successCount} 成功、${failCount} 失敗。失敗訂單保留「備貨中」${autoPrintSuffix}${reasonSuffix}`
+    const pendingDetailSuffix = pendingDetails.length > 0
+      ? `；待處理：${pendingDetails.slice(0, 2).join(' / ')}${pendingDetails.length > 2 ? ' ...' : ''}`
+      : '';
+    const msg = (failCount > 0 || pendingWaybillCount > 0)
+      ? `批次 ${batchId} 完成：順豐下單 ${successCount} 成功、${failCount} 失敗${pendingSuffix}。失敗/待回單號訂單保留「備貨中」${autoPrintSuffix}${reasonSuffix}${pendingDetailSuffix}`
       : `批次 ${batchId} 完成：${successCount} 筆已取得物流單號並轉為「發貨中」${autoPrintSuffix}`;
-    showToast(msg, failCount > 0 ? 'error' : 'success');
+    showToast(msg, (failCount > 0 || pendingWaybillCount > 0) ? 'error' : 'success');
     setBatchProcessing(false);
   };
 

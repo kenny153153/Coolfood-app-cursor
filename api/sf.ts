@@ -34,6 +34,65 @@ function computeMsgDigest(msgData: string, timestamp: string, checkword: string)
   return Buffer.from(md5).toString('base64');
 }
 
+function parseApiResultData(raw: unknown): any {
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw); } catch { return {}; }
+  }
+  if (raw && typeof raw === 'object') return raw;
+  return {};
+}
+
+function deepCollectWaybillCandidates(node: any, acc: string[], depth = 0): void {
+  if (!node || depth > 6) return;
+  if (typeof node === 'string') return;
+  if (Array.isArray(node)) {
+    for (const item of node) deepCollectWaybillCandidates(item, acc, depth + 1);
+    return;
+  }
+  if (typeof node !== 'object') return;
+
+  const keyCandidates = ['waybillNo', 'waybill_no', 'mailNo', 'mainMailNo', 'masterWaybillNo'];
+  for (const key of keyCandidates) {
+    const value = (node as Record<string, unknown>)[key];
+    if (typeof value === 'string' && value.trim()) acc.push(value.trim());
+  }
+
+  for (const value of Object.values(node as Record<string, unknown>)) {
+    if (typeof value === 'object' && value !== null) {
+      deepCollectWaybillCandidates(value, acc, depth + 1);
+    }
+  }
+}
+
+function extractWaybillNoFromSfData(innerData: any): string | null {
+  const msgData = innerData?.msgData ?? innerData;
+  const directCandidates = [
+    msgData?.waybillNoInfoList?.[0]?.waybillNo,
+    msgData?.routeLabelInfo?.[0]?.routeLabelData?.waybillNo,
+    msgData?.routeLabelInfo?.[0]?.waybillNo,
+    msgData?.mailNo,
+    msgData?.mainMailNo,
+    innerData?.waybillNoInfoList?.[0]?.waybillNo,
+    innerData?.routeLabelInfo?.[0]?.routeLabelData?.waybillNo,
+    innerData?.mailNo,
+    innerData?.mainMailNo,
+  ];
+  for (const item of directCandidates) {
+    if (typeof item === 'string' && item.trim()) return item.trim();
+  }
+
+  const deepCandidates: string[] = [];
+  deepCollectWaybillCandidates(innerData, deepCandidates);
+  const first = deepCandidates.find(v => v && !v.startsWith('{') && !v.startsWith('['));
+  return first ?? null;
+}
+
+async function queryWaybillFromSearchOrder(orderId: string): Promise<string | null> {
+  const result = await callSfService('EXP_RECE_SEARCH_ORDER_RESP', { orderId, language: 'Zh-CN' });
+  if (!result.ok) return null;
+  return extractWaybillNoFromSfData(result.data);
+}
+
 async function callSfService(serviceCode: string, msgDataObj: object): Promise<{ ok: boolean; data?: any; error?: string }> {
   const partnerID = (process.env.SF_PARTNER_ID ?? process.env.SF_CLIENT_CODE ?? '').trim();
   const checkword = (process.env.SF_CHECKWORD ?? process.env.SF_CHECK_WORD ?? '').trim();
@@ -73,8 +132,7 @@ async function callSfService(serviceCode: string, msgDataObj: object): Promise<{
       return { ok: false, error: `SF: ${json.apiErrorMsg || json.apiResultCode}` };
     }
 
-    let innerData: any;
-    try { innerData = JSON.parse(json.apiResultData ?? '{}'); } catch { innerData = {}; }
+    const innerData = parseApiResultData(json.apiResultData);
     return { ok: true, data: innerData };
   } catch (e) {
     const isTimeout = e instanceof Error && e.name === 'AbortError';
@@ -189,7 +247,7 @@ async function handleLabel(req: any, res: any) {
     }
 
     const msgData = result.data?.msgData ?? result.data;
-    const waybillNo = msgData?.waybillNoInfoList?.[0]?.waybillNo ?? null;
+    const waybillNo = extractWaybillNoFromSfData(result.data);
     const routeLabel = msgData?.routeLabelInfo?.[0] ?? null;
     const routeLabelData = routeLabel?.routeLabelData ?? null;
     const labelImage = routeLabelData?.image ?? routeLabel?.image ?? null;
@@ -460,11 +518,19 @@ async function handleOrder(req: any, res: any) {
     }
 
     const sfResponseData = json as { apiResultData?: string };
-    let innerData: any;
-    try { innerData = JSON.parse(sfResponseData.apiResultData ?? '{}'); } catch { innerData = {}; }
-    let waybillNo = innerData.msgData?.waybillNoInfoList?.[0]?.waybillNo;
-    if (!waybillNo) waybillNo = innerData.msgData?.routeLabelInfo?.[0]?.routeLabelData?.waybillNo;
-    const waybillNoStr = waybillNo ? String(waybillNo).trim() : null;
+    const innerData = parseApiResultData(sfResponseData.apiResultData);
+    let waybillNoStr = extractWaybillNoFromSfData(innerData);
+    if (!waybillNoStr) {
+      const searchOrderIdCandidates = [String(payload.orderId || '').trim(), String(orderId || '').trim()].filter(Boolean);
+      for (const candidate of searchOrderIdCandidates) {
+        const searchedWaybill = await queryWaybillFromSearchOrder(candidate);
+        if (searchedWaybill) {
+          waybillNoStr = searchedWaybill;
+          console.log('[SF] Waybill resolved by search-order:', candidate, waybillNoStr);
+          break;
+        }
+      }
+    }
     console.log('[SF] Waybill:', waybillNoStr);
 
     if (waybillNoStr && supabaseUrl && supabaseKey) {
@@ -482,6 +548,16 @@ async function handleOrder(req: any, res: any) {
       } catch (e) {
         console.warn('[SF] DB update error:', e instanceof Error ? e.message : e);
       }
+    }
+
+    if (!waybillNoStr) {
+      return res.status(200).json({
+        success: true,
+        orderId,
+        waybillNo: null,
+        code: 'SF_ACCEPTED_NO_WAYBILL',
+        message: '順豐已受理訂單，但尚未回傳運單號，請稍後重試',
+      });
     }
 
     return res.status(200).json({ success: true, orderId, waybillNo: waybillNoStr });
