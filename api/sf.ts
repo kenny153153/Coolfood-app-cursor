@@ -88,7 +88,7 @@ type LabelPayload = { orderId?: string; waybillNos?: string[] };
 
 async function handleLabel(req: any, res: any) {
   const { verifyAdminRequest } = await import('./_adminAuth.js');
-  const authResult = await verifyAdminRequest(req, 'dispatch', 'read');
+  const authResult = await verifyAdminRequest(req, 'orders', 'read');
   if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
   const body = req.body as LabelPayload;
@@ -341,7 +341,7 @@ function validateSfRequiredFields(msgData: ReturnType<typeof buildSfMsgData>) {
 
 async function handleOrder(req: any, res: any) {
   const { verifyAdminRequest } = await import('./_adminAuth.js');
-  const authResult = await verifyAdminRequest(req, 'dispatch', 'create');
+  const authResult = await verifyAdminRequest(req, 'orders', 'update');
   if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
 
   const partnerID = (process.env.SF_PARTNER_ID ?? process.env.SF_CLIENT_CODE ?? '').trim();

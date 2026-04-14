@@ -3170,6 +3170,7 @@ const App: React.FC = () => {
     let failCount = 0;
     const batchId = `sf_batch_${Date.now()}`;
     const successfulRows: SupabaseOrderRow[] = [];
+    const failureDetails: string[] = [];
 
     for (const row of validOrders) {
       const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
@@ -3199,6 +3200,7 @@ const App: React.FC = () => {
           successfulRows.push({ ...row, waybill_no: waybill });
           successCount++;
         } else {
+          const failReason = (sfJson as any)?.error || (sfJson as any)?.code || sfText || `HTTP ${sfRes.status}`;
           await supabase.from('orders').update({
             status: 'preparing',
             sf_responses: {
@@ -3206,24 +3208,29 @@ const App: React.FC = () => {
               body: sfJson ?? sfText,
               at: new Date().toISOString(),
               sfError: true,
+              sfErrorMsg: String(failReason).slice(0, 300),
               batchId,
               manualBatch: true,
             },
           }).eq('id', row.id);
+          failureDetails.push(`#${orderId}: ${String(failReason).slice(0, 80)}`);
           failCount++;
         }
       } catch (e) {
+        const failReason = e instanceof Error ? e.message : String(e);
         await supabase.from('orders').update({
           status: 'preparing',
           sf_responses: {
             error: true,
-            message: e instanceof Error ? e.message : String(e),
+            message: failReason,
             at: new Date().toISOString(),
             sfError: true,
+            sfErrorMsg: String(failReason).slice(0, 300),
             batchId,
             manualBatch: true,
           },
         }).eq('id', row.id);
+        failureDetails.push(`#${orderId}: ${String(failReason).slice(0, 80)}`);
         failCount++;
       }
     }
@@ -3247,8 +3254,11 @@ const App: React.FC = () => {
     const autoPrintSuffix = options?.autoPrintLabels
       ? `；貼紙打印：${printedCount} 成功、${printFailedCount} 失敗`
       : '';
+    const reasonSuffix = failureDetails.length > 0
+      ? `；原因：${failureDetails.slice(0, 2).join(' / ')}${failureDetails.length > 2 ? ' ...' : ''}`
+      : '';
     const msg = failCount > 0
-      ? `批次 ${batchId} 完成：順豐下單 ${successCount} 成功、${failCount} 失敗。失敗訂單保留「備貨中」${autoPrintSuffix}`
+      ? `批次 ${batchId} 完成：順豐下單 ${successCount} 成功、${failCount} 失敗。失敗訂單保留「備貨中」${autoPrintSuffix}${reasonSuffix}`
       : `批次 ${batchId} 完成：${successCount} 筆已取得物流單號並轉為「發貨中」${autoPrintSuffix}`;
     showToast(msg, failCount > 0 ? 'error' : 'success');
     setBatchProcessing(false);
