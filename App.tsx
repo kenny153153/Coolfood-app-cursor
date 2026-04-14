@@ -2785,6 +2785,14 @@ const App: React.FC = () => {
 
   // ========== Batch Order Operations ==========
 
+  const normalizeSfDeliveryMethod = (rawMethod: string | null | undefined): 'sf_delivery' | 'sf_locker' | 'own_van' | 'unknown' => {
+    const method = String(rawMethod || '').trim().toLowerCase();
+    if (method === 'sf_delivery' || method === 'home') return 'sf_delivery';
+    if (method === 'sf_locker') return 'sf_locker';
+    if (method === 'own_van') return 'own_van';
+    return 'unknown';
+  };
+
   /** PAID tab → 打印執貨單 (unified A5 picking slip) + auto transition to PREPARING */
   const handlePrintPickingList = async () => {
     if (selectedOrderIds.size === 0) return;
@@ -3079,7 +3087,17 @@ const App: React.FC = () => {
       const dbIds = Array.from(selectedOrderIds).map(id => getOrderDbId(id)).filter((id): id is number => id !== null);
       const { data, error } = await supabase.from('orders').select('*').in('id', dbIds);
       if (error || !data) { showToast('載入訂單資料失敗', 'error'); setBatchProcessing(false); return; }
-      await printSfLabelsFromRows(data as SupabaseOrderRow[]);
+      const orderRows = data as SupabaseOrderRow[];
+      const rowsWithWaybill = orderRows.filter(r => String(r.waybill_no || '').trim());
+      if (rowsWithWaybill.length === 0) {
+        showToast('所選訂單尚未有物流單號，請先按「建立運單並打印貼紙」', 'error');
+        setBatchProcessing(false);
+        return;
+      }
+      if (rowsWithWaybill.length < orderRows.length) {
+        showToast(`僅重印已有單號的 ${rowsWithWaybill.length} 筆（其餘訂單未建立運單）`, 'error');
+      }
+      await printSfLabelsFromRows(rowsWithWaybill);
     } catch (e) {
       showToast(`列印失敗：${e instanceof Error ? e.message : String(e)}`, 'error');
     }
@@ -3109,9 +3127,9 @@ const App: React.FC = () => {
       for (const row of orderRows) {
         const orderId = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
         const reasons: string[] = [];
-        const deliveryMethod = String(row.delivery_method || '').trim();
+        const deliveryMethod = normalizeSfDeliveryMethod(row.delivery_method);
         if (deliveryMethod !== 'sf_delivery' && deliveryMethod !== 'sf_locker') {
-          reasons.push('非順豐配送方式（僅支援 sf_delivery / sf_locker）');
+          reasons.push('非順豐配送方式（僅支援上門/凍櫃）');
         }
         const receiverName = (row.contact_name || row.customer_name || '').trim();
         const receiverPhone = (row.customer_phone || '').trim();
