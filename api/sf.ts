@@ -44,7 +44,13 @@ function parseApiResultData(raw: unknown): any {
 
 function deepCollectWaybillCandidates(node: any, acc: string[], depth = 0): void {
   if (!node || depth > 6) return;
-  if (typeof node === 'string') return;
+  if (typeof node === 'string') {
+    const parsed = parseApiResultData(node);
+    if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+      deepCollectWaybillCandidates(parsed, acc, depth + 1);
+    }
+    return;
+  }
   if (Array.isArray(node)) {
     for (const item of node) deepCollectWaybillCandidates(item, acc, depth + 1);
     return;
@@ -65,24 +71,27 @@ function deepCollectWaybillCandidates(node: any, acc: string[], depth = 0): void
 }
 
 function extractWaybillNoFromSfData(innerData: any): string | null {
-  const msgData = innerData?.msgData ?? innerData;
+  const parsedRoot = parseApiResultData(innerData);
+  const parsedMsg = parseApiResultData(parsedRoot?.msgData);
+  const msgData = Object.keys(parsedMsg || {}).length > 0 ? parsedMsg : parsedRoot;
   const directCandidates = [
     msgData?.waybillNoInfoList?.[0]?.waybillNo,
     msgData?.routeLabelInfo?.[0]?.routeLabelData?.waybillNo,
     msgData?.routeLabelInfo?.[0]?.waybillNo,
     msgData?.mailNo,
     msgData?.mainMailNo,
-    innerData?.waybillNoInfoList?.[0]?.waybillNo,
-    innerData?.routeLabelInfo?.[0]?.routeLabelData?.waybillNo,
-    innerData?.mailNo,
-    innerData?.mainMailNo,
+    parsedRoot?.waybillNoInfoList?.[0]?.waybillNo,
+    parsedRoot?.routeLabelInfo?.[0]?.routeLabelData?.waybillNo,
+    parsedRoot?.mailNo,
+    parsedRoot?.mainMailNo,
   ];
   for (const item of directCandidates) {
     if (typeof item === 'string' && item.trim()) return item.trim();
   }
 
   const deepCandidates: string[] = [];
-  deepCollectWaybillCandidates(innerData, deepCandidates);
+  deepCollectWaybillCandidates(msgData, deepCandidates);
+  deepCollectWaybillCandidates(parsedRoot, deepCandidates);
   const first = deepCandidates.find(v => v && !v.startsWith('{') && !v.startsWith('['));
   return first ?? null;
 }
@@ -91,6 +100,38 @@ async function queryWaybillFromSearchOrder(orderId: string): Promise<string | nu
   const result = await callSfService('EXP_RECE_SEARCH_ORDER_RESP', { orderId, language: 'Zh-CN' });
   if (!result.ok) return null;
   return extractWaybillNoFromSfData(result.data);
+}
+
+async function queryWaybillFromSearchRoutes(orderId: string): Promise<string | null> {
+  const result = await callSfService('EXP_RECE_SEARCH_ROUTES', {
+    trackingType: 2,
+    trackingNumber: [orderId],
+    methodType: 1,
+    language: 'Zh-CN',
+  });
+  if (!result.ok) return null;
+  return extractWaybillNoFromSfData(result.data);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function resolveWaybillWithRetries(orderIdCandidates: string[]): Promise<string | null> {
+  const attempts = 4;
+  for (let i = 0; i < attempts; i++) {
+    for (const candidate of orderIdCandidates) {
+      const fromOrder = await queryWaybillFromSearchOrder(candidate);
+      if (fromOrder) return fromOrder;
+
+      const fromRoutes = await queryWaybillFromSearchRoutes(candidate);
+      if (fromRoutes) return fromRoutes;
+    }
+    if (i < attempts - 1) {
+      await sleep(900 * (i + 1));
+    }
+  }
+  return null;
 }
 
 async function callSfService(serviceCode: string, msgDataObj: object): Promise<{ ok: boolean; data?: any; error?: string }> {
@@ -521,14 +562,15 @@ async function handleOrder(req: any, res: any) {
     const innerData = parseApiResultData(sfResponseData.apiResultData);
     let waybillNoStr = extractWaybillNoFromSfData(innerData);
     if (!waybillNoStr) {
-      const searchOrderIdCandidates = [String(payload.orderId || '').trim(), String(orderId || '').trim()].filter(Boolean);
-      for (const candidate of searchOrderIdCandidates) {
-        const searchedWaybill = await queryWaybillFromSearchOrder(candidate);
-        if (searchedWaybill) {
-          waybillNoStr = searchedWaybill;
-          console.log('[SF] Waybill resolved by search-order:', candidate, waybillNoStr);
-          break;
-        }
+      const searchOrderIdCandidates = [
+        String(payload.orderId || '').trim(),
+        String(orderId || '').trim(),
+      ].filter(Boolean);
+      waybillNoStr = await resolveWaybillWithRetries(Array.from(new Set(searchOrderIdCandidates)));
+      if (waybillNoStr) {
+        console.log('[SF] Waybill resolved by retry-search:', waybillNoStr);
+      } else {
+        console.warn('[SF] Waybill unresolved after retries. orderId=', orderId, 'payloadOrderId=', payload.orderId);
       }
     }
     console.log('[SF] Waybill:', waybillNoStr);
