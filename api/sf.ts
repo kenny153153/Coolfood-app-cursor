@@ -244,7 +244,8 @@ async function handleLabel(req: any, res: any) {
       orderId: orderRow.id?.toString?.() ?? orderId,
       language: 'Zh-CN',
       monthlyCard,
-      expressType: coldExpressType,
+      expressTypeId: coldExpressType,
+      expressType: coldExpressType, // backward compatibility for some SF environments
       isGenBillNo: 1,
       isGenEletricPic: 1,
       payMethod: 1,
@@ -385,7 +386,8 @@ function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: 
     orderId: payload.orderId,
     language: 'Zh-CN',
     monthlyCard,
-    expressType: COLD_CHAIN_EXPRESS_TYPE,
+    expressTypeId: COLD_CHAIN_EXPRESS_TYPE,
+    expressType: COLD_CHAIN_EXPRESS_TYPE, // backward compatibility for some SF environments
     isGenBillNo: 1,
     isGenEletricPic: 0,
     payMethod: 1,
@@ -426,7 +428,7 @@ function validateSfRequiredFields(msgData: ReturnType<typeof buildSfMsgData>) {
   const missing: string[] = [];
   if (!msgData.orderId?.trim()) missing.push('orderId');
   if (!msgData.monthlyCard?.trim()) missing.push('monthlyCard');
-  if (!msgData.expressType) missing.push('expressType');
+  if (!(msgData as any).expressTypeId && !(msgData as any).expressType) missing.push('expressTypeId');
   if (!Array.isArray(msgData.contactInfoList) || msgData.contactInfoList.length < 2) missing.push('contactInfoList');
   if (Array.isArray(msgData.contactInfoList)) {
     msgData.contactInfoList.forEach((item, idx) => {
@@ -560,6 +562,8 @@ async function handleOrder(req: any, res: any) {
 
     const sfResponseData = json as { apiResultData?: string };
     const innerData = parseApiResultData(sfResponseData.apiResultData);
+    console.log('[SF][DEBUG] apiResultCode=', apiResultCode, '| apiResultData(raw)=', String(sfResponseData.apiResultData ?? '').slice(0, 1200));
+    console.log('[SF][DEBUG] apiResultData(parsed)=', JSON.stringify(innerData).slice(0, 1200));
     let waybillNoStr = extractWaybillNoFromSfData(innerData);
     if (!waybillNoStr) {
       const searchOrderIdCandidates = [
