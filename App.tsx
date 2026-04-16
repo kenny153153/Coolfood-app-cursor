@@ -3036,7 +3036,7 @@ const App: React.FC = () => {
     const pdfCount = labelResults.filter(r => !!r.labelPdfUrl || !!r.labelPdfBase64).length;
     const failedCount = labelResults.length - imageCount - pdfCount;
     if (showSummaryToast) {
-      if (failedCount > 0 && imageCount === 0) {
+      if (failedCount > 0 && imageCount + pdfCount === 0) {
         showToast(`順豐未回傳可列印面單（${failedCount} 筆），可能需要到順豐商戶平台打印`, 'error');
       } else if (failedCount > 0) {
         showToast(`${imageCount + pdfCount} 張面單已取得，${failedCount} 張未能取得`, 'error');
@@ -3061,7 +3061,7 @@ const App: React.FC = () => {
       }
     }
 
-    const htmlRows = labelResults.filter(r => !r.labelPdfUrl && !r.labelPdfBase64);
+    const htmlRows = labelResults.filter(r => !r.labelPdfUrl && !r.labelPdfBase64 && !r.error);
     if (htmlRows.length === 0) {
       return { total: labelResults.length, imageCount: imageCount + pdfCount, failedCount };
     }

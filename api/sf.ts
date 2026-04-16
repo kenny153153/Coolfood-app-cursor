@@ -155,6 +155,13 @@ async function cloudPrintWaybills(waybillNos: string[]): Promise<{ ok: boolean; 
   }
 
   const printable = extractCloudPrintPdf(result.data);
+  if (!printable.pdfUrl && !printable.pdfBase64) {
+    console.warn('[sf-label] Cloud print returned without printable PDF payload');
+    return {
+      ok: false,
+      error: '順豐雲打印回傳成功，但未提供可列印PDF',
+    };
+  }
   return { ok: true, data: result.data, pdfUrl: printable.pdfUrl, pdfBase64: printable.pdfBase64 };
 }
 
@@ -226,13 +233,15 @@ async function callSfService(serviceCode: string, msgDataObj: object): Promise<{
     });
 
     const resText = await sfRes.text();
-    if (!sfRes.ok) return { ok: false, error: `SF HTTP ${sfRes.status}` };
+    if (!sfRes.ok) {
+      return { ok: false, error: `SF HTTP ${sfRes.status}: ${resText.slice(0, 200)}` };
+    }
 
     let json: any;
-    try { json = JSON.parse(resText); } catch { return { ok: false, error: '順豐回傳非 JSON' }; }
+    try { json = JSON.parse(resText); } catch { return { ok: false, error: `順豐回傳非 JSON: ${resText.slice(0, 200)}` }; }
 
     if (String(json.apiResultCode) !== 'A1000') {
-      return { ok: false, error: `SF: ${json.apiErrorMsg || json.apiResultCode}` };
+      return { ok: false, error: `SF ${json.apiResultCode}: ${json.apiErrorMsg || '未知錯誤'}` };
     }
 
     const innerData = parseApiResultData(json.apiResultData);
@@ -307,7 +316,8 @@ async function handleLabel(req: any, res: any) {
     if (existingWaybill) {
       const printResult = await cloudPrintWaybills([existingWaybill]);
       if (!printResult.ok) {
-        return res.status(502).json({ error: printResult.error, code: 'SF_CLOUD_PRINT_FAILED' });
+        console.warn('[sf-label] Cloud print failed for existing waybill:', existingWaybill, '| reason:', printResult.error);
+        return res.status(200).json({ success: false, error: printResult.error, code: 'SF_CLOUD_PRINT_UNAVAILABLE' });
       }
       return res.status(200).json({
         success: true,
@@ -412,7 +422,8 @@ async function handleLabel(req: any, res: any) {
     const normalized = waybillNos.map(v => String(v || '').trim()).filter(Boolean);
     const printResult = await cloudPrintWaybills(normalized);
     if (!printResult.ok) {
-      return res.status(502).json({ error: printResult.error, code: 'SF_CLOUD_PRINT_FAILED' });
+      console.warn('[sf-label] Cloud print failed for waybills:', normalized.join(','), '| reason:', printResult.error);
+      return res.status(200).json({ success: false, error: printResult.error, code: 'SF_CLOUD_PRINT_UNAVAILABLE' });
     }
     return res.status(200).json({
       success: true,
