@@ -2991,41 +2991,86 @@ const App: React.FC = () => {
     if (orderRows.length === 0) return { total: 0, imageCount: 0, failedCount: 0 };
     const showSummaryToast = options?.showSummaryToast ?? true;
 
-    const labelResults: { orderId: string; labelImage: string | null; waybillNo: string | null; error?: string }[] = [];
+    const labelResults: {
+      orderId: string;
+      labelImage: string | null;
+      labelPdfUrl: string | null;
+      labelPdfBase64: string | null;
+      waybillNo: string | null;
+      error?: string;
+    }[] = [];
     for (const row of orderRows) {
       const oid = typeof row.id === 'number' ? `ORD-${row.id}` : String(row.id);
       try {
         const sfRes = await fetch(`${window.location.origin}/api/sf`, {
           method: 'POST', headers: buildAdminHeaders(adminUser),
-          body: JSON.stringify({ action: 'label', orderId: oid }),
+          body: JSON.stringify({
+            action: 'label',
+            orderId: oid,
+            waybillNos: row.waybill_no ? [String(row.waybill_no)] : undefined,
+          }),
         });
         const sfJson = await sfRes.json().catch(() => ({}));
+        const isSuccess = !!sfJson?.success;
         labelResults.push({
           orderId: oid,
-          labelImage: sfJson.labelImage ?? null,
+          labelImage: isSuccess ? (sfJson.labelImage ?? null) : null,
+          labelPdfUrl: isSuccess ? (sfJson.labelPdfUrl ?? null) : null,
+          labelPdfBase64: isSuccess ? (sfJson.labelPdfBase64 ?? null) : null,
           waybillNo: sfJson.waybillNo ?? row.waybill_no ?? null,
-          error: sfRes.ok ? undefined : (sfJson.error ?? '取得面單失敗'),
+          error: (sfRes.ok && isSuccess) ? undefined : (sfJson.message ?? sfJson.error ?? '取得面單失敗'),
         });
       } catch {
-        labelResults.push({ orderId: oid, labelImage: null, waybillNo: row.waybill_no ?? null, error: '網路錯誤' });
+        labelResults.push({
+          orderId: oid,
+          labelImage: null,
+          labelPdfUrl: null,
+          labelPdfBase64: null,
+          waybillNo: row.waybill_no ?? null,
+          error: '網路錯誤',
+        });
       }
     }
 
     const imageCount = labelResults.filter(r => !!r.labelImage).length;
-    const failedCount = labelResults.length - imageCount;
+    const pdfCount = labelResults.filter(r => !!r.labelPdfUrl || !!r.labelPdfBase64).length;
+    const failedCount = labelResults.length - imageCount - pdfCount;
     if (showSummaryToast) {
       if (failedCount > 0 && imageCount === 0) {
-        showToast(`順豐未回傳面單圖片（${failedCount} 筆），可能需要到順豐商戶平台打印`, 'error');
+        showToast(`順豐未回傳可列印面單（${failedCount} 筆），可能需要到順豐商戶平台打印`, 'error');
       } else if (failedCount > 0) {
-        showToast(`${imageCount} 張面單已取得，${failedCount} 張未能取得`, 'error');
+        showToast(`${imageCount + pdfCount} 張面單已取得，${failedCount} 張未能取得`, 'error');
       }
+    }
+
+    for (const r of labelResults) {
+      if (!r.labelPdfUrl && !r.labelPdfBase64) continue;
+      let printableUrl = r.labelPdfUrl;
+      if (!printableUrl && r.labelPdfBase64) {
+        try {
+          const bin = atob(r.labelPdfBase64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          printableUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+        } catch {
+          printableUrl = null;
+        }
+      }
+      if (printableUrl) {
+        window.open(printableUrl, '_blank', 'noopener,noreferrer');
+      }
+    }
+
+    const htmlRows = labelResults.filter(r => !r.labelPdfUrl && !r.labelPdfBase64);
+    if (htmlRows.length === 0) {
+      return { total: labelResults.length, imageCount: imageCount + pdfCount, failedCount };
     }
 
     const printWindow = window.open('', '_blank');
     if (!printWindow) throw new Error('無法開啟列印視窗，請允許彈出視窗');
 
-    const labelsHtml = labelResults.map((r, idx) => {
-      const pageBreak = idx < labelResults.length - 1 ? 'style="page-break-after:always"' : '';
+    const labelsHtml = htmlRows.map((r, idx) => {
+      const pageBreak = idx < htmlRows.length - 1 ? 'style="page-break-after:always"' : '';
       if (r.labelImage) {
         return `<div class="label-page" ${pageBreak}>
           <img src="data:image/png;base64,${r.labelImage}" class="label-img" />
@@ -3076,7 +3121,7 @@ const App: React.FC = () => {
     printWindow.document.close();
     printWindow.focus();
     setTimeout(() => printWindow.print(), 300);
-    return { total: labelResults.length, imageCount, failedCount };
+    return { total: labelResults.length, imageCount: imageCount + pdfCount, failedCount };
   };
 
   /** PREPARING tab → 打印順豐單 (reprint labels for selected orders) */

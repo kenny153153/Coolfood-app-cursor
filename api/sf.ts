@@ -96,6 +96,68 @@ function extractWaybillNoFromSfData(innerData: any): string | null {
   return first ?? null;
 }
 
+function deepCollectStringValues(node: any, acc: string[], depth = 0): void {
+  if (!node || depth > 6) return;
+  if (typeof node === 'string') {
+    const value = node.trim();
+    if (value) acc.push(value);
+    const parsed = parseApiResultData(node);
+    if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+      deepCollectStringValues(parsed, acc, depth + 1);
+    }
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (const item of node) deepCollectStringValues(item, acc, depth + 1);
+    return;
+  }
+  if (typeof node !== 'object') return;
+  for (const value of Object.values(node as Record<string, unknown>)) {
+    if (typeof value === 'string') {
+      const str = value.trim();
+      if (str) acc.push(str);
+    } else if (typeof value === 'object' && value !== null) {
+      deepCollectStringValues(value, acc, depth + 1);
+    }
+  }
+}
+
+function extractCloudPrintPdf(innerData: any): { pdfUrl: string | null; pdfBase64: string | null } {
+  const values: string[] = [];
+  deepCollectStringValues(innerData, values);
+
+  const pdfUrl = values.find(v =>
+    /^https?:\/\//i.test(v)
+    && !/^https?:\/\/openapi\.sf-express\.com/i.test(v)
+    && (v.toLowerCase().includes('.pdf') || v.toLowerCase().includes('download') || v.toLowerCase().includes('print'))
+  ) ?? null;
+
+  const pdfBase64 = values.find(v => /^JVBER/i.test(v) && v.length > 200) ?? null;
+  return { pdfUrl, pdfBase64 };
+}
+
+async function cloudPrintWaybills(waybillNos: string[]): Promise<{ ok: boolean; data?: any; pdfUrl?: string | null; pdfBase64?: string | null; error?: string }> {
+  const msgDataObj = {
+    documents: waybillNos.map(wn => ({ masterWaybillNo: wn })),
+    templateCode: 'fm_150_standard_HKCFEX',
+    version: '2.0',
+    fileType: 'pdf',
+  };
+
+  console.log('[sf-label] Calling COM_RECE_CLOUD_PRINT_WAYBILLS for', waybillNos.join(','));
+  const result = await callSfService('COM_RECE_CLOUD_PRINT_WAYBILLS', msgDataObj);
+  if (!result.ok) return { ok: false, error: result.error };
+  if (result.data && typeof result.data === 'object' && (result.data as any).success === false) {
+    return {
+      ok: false,
+      error: String((result.data as any).errorMsg ?? '順豐未能提供雲打印面單'),
+    };
+  }
+
+  const printable = extractCloudPrintPdf(result.data);
+  return { ok: true, data: result.data, pdfUrl: printable.pdfUrl, pdfBase64: printable.pdfBase64 };
+}
+
 async function queryWaybillFromSearchOrder(orderId: string): Promise<string | null> {
   const result = await callSfService('EXP_RECE_SEARCH_ORDER_RESP', { orderId, language: 'Zh-CN' });
   if (!result.ok) return null;
@@ -238,6 +300,26 @@ async function handleLabel(req: any, res: any) {
       orderRow.delivery_flat ? `${orderRow.delivery_flat}室` : '',
     ].filter(Boolean).join(' ');
 
+    const explicitWaybillNos = Array.isArray(waybillNos)
+      ? waybillNos.map(v => String(v || '').trim()).filter(Boolean)
+      : [];
+    const existingWaybill = explicitWaybillNos[0] || String(orderRow.waybill_no || '').trim();
+    if (existingWaybill) {
+      const printResult = await cloudPrintWaybills([existingWaybill]);
+      if (!printResult.ok) {
+        return res.status(502).json({ error: printResult.error, code: 'SF_CLOUD_PRINT_FAILED' });
+      }
+      return res.status(200).json({
+        success: true,
+        orderId,
+        waybillNo: existingWaybill,
+        labelImage: null,
+        labelPdfUrl: printResult.pdfUrl ?? null,
+        labelPdfBase64: printResult.pdfBase64 ?? null,
+        data: printResult.data,
+      });
+    }
+
     const expressTypeId = resolveExpressTypeId(orderRow.delivery_method);
     const msgDataObj = {
       orderId: orderRow.id?.toString?.() ?? orderId,
@@ -320,26 +402,25 @@ async function handleLabel(req: any, res: any) {
       orderId,
       waybillNo: waybillNo ? String(waybillNo).trim() : null,
       labelImage: labelImage ?? null,
+      labelPdfUrl: null,
+      labelPdfBase64: null,
       routeLabelData: routeLabelData ?? null,
     });
   }
 
   if (waybillNos && waybillNos.length > 0) {
-    const msgDataObj = {
-      documents: waybillNos.map(wn => ({ masterWaybillNo: wn })),
-      templateCode: 'fm_150_standard_HKCFEX',
-      version: '2.0',
-      fileType: 'pdf',
-    };
-
-    console.log('[sf-label] Calling COM_RECE_CLOUD_PRINT_WAYBILLS for', waybillNos.join(','));
-    const result = await callSfService('COM_RECE_CLOUD_PRINT_WAYBILLS', msgDataObj);
-
-    if (!result.ok) {
-      return res.status(502).json({ error: result.error, code: 'SF_CLOUD_PRINT_FAILED' });
+    const normalized = waybillNos.map(v => String(v || '').trim()).filter(Boolean);
+    const printResult = await cloudPrintWaybills(normalized);
+    if (!printResult.ok) {
+      return res.status(502).json({ error: printResult.error, code: 'SF_CLOUD_PRINT_FAILED' });
     }
-
-    return res.status(200).json({ success: true, waybillNos, data: result.data });
+    return res.status(200).json({
+      success: true,
+      waybillNos: normalized,
+      labelPdfUrl: printResult.pdfUrl ?? null,
+      labelPdfBase64: printResult.pdfBase64 ?? null,
+      data: printResult.data,
+    });
   }
 
   return res.status(400).json({ error: 'Invalid request' });
