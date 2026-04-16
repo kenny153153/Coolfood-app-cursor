@@ -8,6 +8,7 @@
  * Usage examples:
  *   npx tsx scripts/test-sf-print.ts --waybill SF1234567890123
  *   npx tsx scripts/test-sf-print.ts --waybill SF1234567890123 --times 3
+ *   npx tsx scripts/test-sf-print.ts --waybill SF1234567890123 --template fm_150_standard
  *   npx tsx scripts/test-sf-print.ts --create-order --times 3
  *
  * Required env:
@@ -18,6 +19,7 @@
  *   SF_SANDBOX_URL (default: https://sfapi-sbox.sf-express.com/std/service)
  *   SF_SANDBOX_MONTHLY_CARD (fallback: SF_MONTHLY_CARD)
  *   SF_SANDBOX_EXPRESS_TYPE_ID (default: 273)
+ *   SF_SANDBOX_PRINT_TEMPLATE (default: fm_210_standard)
  */
 
 import crypto from 'crypto';
@@ -56,6 +58,7 @@ const PARTNER_ID = (process.env.SF_PARTNER_ID ?? process.env.VITE_SF_CUSTOMER_CO
 const CHECKWORD = (process.env.SF_CHECKWORD ?? process.env.VITE_SF_CHECKWORD ?? '').trim();
 const MONTHLY_CARD = (process.env.SF_SANDBOX_MONTHLY_CARD ?? process.env.SF_MONTHLY_CARD ?? '').trim();
 const EXPRESS_TYPE_ID = Number(process.env.SF_SANDBOX_EXPRESS_TYPE_ID ?? '273') || 273;
+const DEFAULT_PRINT_TEMPLATE = (process.env.SF_SANDBOX_PRINT_TEMPLATE ?? 'fm_210_standard').trim();
 
 type JsonObject = Record<string, unknown>;
 
@@ -63,11 +66,13 @@ function usageAndExit(message?: string): never {
   if (message) console.error(`\n❌ ${message}\n`);
   console.log(`Usage:
   npx tsx scripts/test-sf-print.ts --waybill SF1234567890123 [--times 3]
+  npx tsx scripts/test-sf-print.ts --waybill SF1234567890123 [--template fm_150_standard]
   npx tsx scripts/test-sf-print.ts --create-order [--times 3]
 
 Notes:
   - --waybill: use an existing sandbox waybill number directly.
   - --create-order: create one sandbox order first, then print it.
+  - --template default is fm_210_standard (can also try fm_150_standard).
   - --times default is 3.
 `);
   process.exit(1);
@@ -82,6 +87,12 @@ function parseArg(flag: string): string | null {
   const idx = process.argv.indexOf(flag);
   if (idx < 0) return null;
   return process.argv[idx + 1] ?? null;
+}
+
+function resolvePrintTemplate(): string {
+  const argTemplate = parseArg('--template');
+  const template = String(argTemplate ?? DEFAULT_PRINT_TEMPLATE).trim();
+  return template || 'fm_210_standard';
 }
 
 function hasFlag(flag: string): boolean {
@@ -215,13 +226,15 @@ async function createSandboxOrderAndGetWaybill(): Promise<string> {
 
 async function runPrintTest(waybill: string, times: number): Promise<void> {
   let okCount = 0;
+  const templateCode = resolvePrintTemplate();
   console.log(`\n[Print] Target waybill=${waybill}, attempts=${times}`);
-  console.log('[Print] Success rule: apiResultCode === A1000');
+  console.log(`[Print] templateCode=${templateCode}`);
+  console.log('[Print] Success rule: apiResultCode === A1000 AND apiResultData.success === true');
 
   for (let i = 1; i <= times; i++) {
     const payload: JsonObject = {
       documents: [{ masterWaybillNo: waybill }],
-      templateCode: 'fm_150_standard_HKCFEX',
+      templateCode,
       version: '2.0',
       fileType: 'pdf',
     };
@@ -233,16 +246,13 @@ async function runPrintTest(waybill: string, times: number): Promise<void> {
     const innerErrCode = String((inner as any).errorCode ?? '');
     const innerErrMsg = String((inner as any).errorMsg ?? '');
 
-    const success = apiCode === 'A1000';
+    const success = apiCode === 'A1000' && innerSuccess === true;
     if (success) {
       okCount++;
-      const note = innerSuccess === false
-        ? ` | note: apiResultData.success=false (${innerErrCode} ${innerErrMsg})`
-        : '';
-      console.log(`[${i}/${times}] ✅ success | apiResultCode=${apiCode}${note}`);
+      console.log(`[${i}/${times}] ✅ success | apiResultCode=${apiCode} | apiResultData.success=true`);
     } else {
       console.log(
-        `[${i}/${times}] ❌ fail | apiResultCode=${apiCode} | innerError=${innerErrCode} ${innerErrMsg}`.trim()
+        `[${i}/${times}] ❌ fail | apiResultCode=${apiCode} | apiResultData.success=${String(innerSuccess)} | innerError=${innerErrCode} ${innerErrMsg}`.trim()
       );
     }
 
