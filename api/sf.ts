@@ -246,6 +246,7 @@ async function handleLabel(req: any, res: any) {
       expressTypeId,
       expressType: expressTypeId, // backward compatibility for some SF environments
       isGenBillNo: 1,
+      isGenWaybillNo: 1, // SF support suggested this field for immediate waybill return
       isGenEletricPic: 1,
       payMethod: 1,
       parcelQty: 1,
@@ -413,6 +414,7 @@ function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: 
     expressTypeId,
     expressType: expressTypeId, // backward compatibility for some SF environments
     isGenBillNo: 1,
+    isGenWaybillNo: 1, // SF support suggested this field for immediate waybill return
     isGenEletricPic: 0,
     payMethod: 1,
     parcelQty: 1,
