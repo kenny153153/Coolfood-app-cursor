@@ -4829,22 +4829,24 @@ const App: React.FC = () => {
                        className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-black transition-colors disabled:opacity-50">
                        <ClipboardList size={14} /> 打印大執貨表
                      </button>
-                     <button disabled={batchProcessing} onClick={handlePrintSfLabels}
-                       className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-black transition-colors disabled:opacity-50">
-                      <FileText size={14} /> 重印順豐貼紙
-                     </button>
                      <button disabled={batchProcessing} onClick={handleBatchCallCourier}
                        className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-xs font-black transition-colors disabled:opacity-50">
                       <Phone size={14} /> 建立運單並打印貼紙
                      </button>
                    </>
                  )}
+                {ordersStatusFilter === OrderStatus.SHIPPING && (
+                  <button disabled={batchProcessing} onClick={handlePrintSfLabels}
+                    className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-black transition-colors disabled:opacity-50">
+                   <FileText size={14} /> 重印順豐貼紙
+                  </button>
+                )}
                  <button disabled={batchProcessing} onClick={handlePrintInvoices}
                   className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-500 rounded-xl text-xs font-black transition-colors disabled:opacity-50">
                   <FileText size={14} /> 打印發票
                 </button>
-                {ordersStatusFilter !== OrderStatus.PAID && ordersStatusFilter !== OrderStatus.PREPARING && ordersStatusFilter !== 'all' && (
-                   <span className="text-xs text-slate-400 font-bold">請切換到「已付款」或「備貨中」Tab 執行更多操作</span>
+               {ordersStatusFilter !== OrderStatus.PAID && ordersStatusFilter !== OrderStatus.PREPARING && ordersStatusFilter !== OrderStatus.SHIPPING && ordersStatusFilter !== 'all' && (
+                  <span className="text-xs text-slate-400 font-bold">請切換到「已付款」、「備貨中」或「發貨中」Tab 執行更多操作</span>
                  )}
                  <button onClick={() => setSelectedOrderIds(new Set())} className="ml-2 p-2 hover:bg-slate-700 rounded-xl transition-colors">
                    <X size={14} />
