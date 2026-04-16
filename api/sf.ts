@@ -211,12 +211,6 @@ async function handleLabel(req: any, res: any) {
   if (!monthlyCard) {
     return res.status(500).json({ error: 'SF_MONTHLY_CARD not configured', code: 'CONFIG_MISSING' });
   }
-  const coldExpressTypeId = Number(
-    process.env.SF_COLD_EXPRESS_TYPE_ID
-    ?? process.env.SF_COLD_EXPRESS_TYPE
-    ?? '201'
-  ) || 201;
-
   if (orderId) {
     let orderRow: any = null;
     if (supabaseUrl && supabaseKey) {
@@ -244,12 +238,13 @@ async function handleLabel(req: any, res: any) {
       orderRow.delivery_flat ? `${orderRow.delivery_flat}室` : '',
     ].filter(Boolean).join(' ');
 
+    const expressTypeId = resolveExpressTypeId(orderRow.delivery_method);
     const msgDataObj = {
       orderId: orderRow.id?.toString?.() ?? orderId,
       language: 'Zh-CN',
       monthlyCard,
-      expressTypeId: coldExpressTypeId,
-      expressType: coldExpressTypeId, // backward compatibility for some SF environments
+      expressTypeId,
+      expressType: expressTypeId, // backward compatibility for some SF environments
       isGenBillNo: 1,
       isGenEletricPic: 1,
       payMethod: 1,
@@ -356,20 +351,40 @@ type SfOrderPayload = {
   locker_code?: string;
 };
 
-const COLD_CHAIN_EXPRESS_TYPE_ID = Number(
-  process.env.SF_COLD_EXPRESS_TYPE_ID
+const SF_HOME_EXPRESS_TYPE_ID = Number(
+  process.env.SF_HOME_EXPRESS_TYPE_ID
+  ?? process.env.SF_COLD_EXPRESS_TYPE_ID
   ?? process.env.SF_COLD_EXPRESS_TYPE
-  ?? '201'
-) || 201;
+  ?? '273'
+) || 273;
+
+const SF_LOCKER_EXPRESS_TYPE_ID = Number(
+  process.env.SF_LOCKER_EXPRESS_TYPE_ID
+  ?? '274'
+) || 274;
 
 type SfExtraInfoItem = { attrName: string; attrValue: string };
+
+function normalizeSfDeliveryMethod(method?: string): string {
+  const normalized = String(method ?? '').trim().toLowerCase();
+  if (!normalized) return '';
+  if (normalized === 'home') return 'sf_delivery';
+  return normalized;
+}
+
+function resolveExpressTypeId(deliveryMethod?: string): number {
+  const normalizedMethod = normalizeSfDeliveryMethod(deliveryMethod);
+  if (normalizedMethod === 'sf_locker') return SF_LOCKER_EXPRESS_TYPE_ID;
+  return SF_HOME_EXPRESS_TYPE_ID;
+}
 
 function buildSfLockerFields(deliveryMethod?: string, lockerCode?: string): {
   isOneselfPickup?: number;
   extraInfoList?: SfExtraInfoItem[];
 } {
+  const normalizedMethod = normalizeSfDeliveryMethod(deliveryMethod);
   const code = (lockerCode ?? '').trim();
-  if (deliveryMethod !== 'sf_locker' || !code) return {};
+  if (normalizedMethod !== 'sf_locker' || !code) return {};
 
   // Self-pickup orders must pass locker/network code as structured fields for SF sorting.
   return {
@@ -380,6 +395,7 @@ function buildSfLockerFields(deliveryMethod?: string, lockerCode?: string): {
 
 function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: string; address: string }) {
   const monthlyCard = (process.env.SF_MONTHLY_CARD ?? process.env.SF_PARTNER_ID ?? '').trim();
+  const expressTypeId = resolveExpressTypeId(payload.delivery_method);
   const addr = [
     payload.delivery_district,
     payload.delivery_address,
@@ -394,8 +410,8 @@ function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: 
     orderId: payload.orderId,
     language: 'Zh-CN',
     monthlyCard,
-    expressTypeId: COLD_CHAIN_EXPRESS_TYPE_ID,
-    expressType: COLD_CHAIN_EXPRESS_TYPE_ID, // backward compatibility for some SF environments
+    expressTypeId,
+    expressType: expressTypeId, // backward compatibility for some SF environments
     isGenBillNo: 1,
     isGenEletricPic: 0,
     payMethod: 1,
@@ -464,9 +480,7 @@ async function handleOrder(req: any, res: any) {
     '[SF] called | endpoint:',
     sfEndpoint,
     '| partnerID:',
-    partnerID.length > 0 ? '***' : '(empty)',
-    '| expressTypeId:',
-    COLD_CHAIN_EXPRESS_TYPE_ID
+    partnerID.length > 0 ? '***' : '(empty)'
   );
 
   if (!partnerID || !checkword) {
@@ -517,6 +531,12 @@ async function handleOrder(req: any, res: any) {
   }
 
   const msgDataObj = buildSfMsgData(payload, { name: senderName, phone: senderPhone, address: senderAddress });
+  console.log(
+    '[SF] Using expressTypeId:',
+    (msgDataObj as any).expressTypeId,
+    '| method:',
+    normalizeSfDeliveryMethod(payload.delivery_method)
+  );
   const missingFields = validateSfRequiredFields(msgDataObj);
   if (missingFields.length > 0) {
     return res.status(400).json({ error: '必传参数不可为空', code: 'SF_REQUIRED_FIELDS', missing: missingFields });
