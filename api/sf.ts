@@ -211,7 +211,11 @@ async function handleLabel(req: any, res: any) {
   if (!monthlyCard) {
     return res.status(500).json({ error: 'SF_MONTHLY_CARD not configured', code: 'CONFIG_MISSING' });
   }
-  const coldExpressType = Number(process.env.SF_COLD_EXPRESS_TYPE ?? '21') || 21;
+  const coldExpressTypeId = Number(
+    process.env.SF_COLD_EXPRESS_TYPE_ID
+    ?? process.env.SF_COLD_EXPRESS_TYPE
+    ?? '201'
+  ) || 201;
 
   if (orderId) {
     let orderRow: any = null;
@@ -244,8 +248,8 @@ async function handleLabel(req: any, res: any) {
       orderId: orderRow.id?.toString?.() ?? orderId,
       language: 'Zh-CN',
       monthlyCard,
-      expressTypeId: coldExpressType,
-      expressType: coldExpressType, // backward compatibility for some SF environments
+      expressTypeId: coldExpressTypeId,
+      expressType: coldExpressTypeId, // backward compatibility for some SF environments
       isGenBillNo: 1,
       isGenEletricPic: 1,
       payMethod: 1,
@@ -352,7 +356,11 @@ type SfOrderPayload = {
   locker_code?: string;
 };
 
-const COLD_CHAIN_EXPRESS_TYPE = Number(process.env.SF_COLD_EXPRESS_TYPE ?? '21') || 21;
+const COLD_CHAIN_EXPRESS_TYPE_ID = Number(
+  process.env.SF_COLD_EXPRESS_TYPE_ID
+  ?? process.env.SF_COLD_EXPRESS_TYPE
+  ?? '201'
+) || 201;
 
 type SfExtraInfoItem = { attrName: string; attrValue: string };
 
@@ -386,8 +394,8 @@ function buildSfMsgData(payload: SfOrderPayload, sender: { name: string; phone: 
     orderId: payload.orderId,
     language: 'Zh-CN',
     monthlyCard,
-    expressTypeId: COLD_CHAIN_EXPRESS_TYPE,
-    expressType: COLD_CHAIN_EXPRESS_TYPE, // backward compatibility for some SF environments
+    expressTypeId: COLD_CHAIN_EXPRESS_TYPE_ID,
+    expressType: COLD_CHAIN_EXPRESS_TYPE_ID, // backward compatibility for some SF environments
     isGenBillNo: 1,
     isGenEletricPic: 0,
     payMethod: 1,
@@ -452,7 +460,14 @@ async function handleOrder(req: any, res: any) {
   const senderAddress = (process.env.SF_SENDER_ADDRESS ?? '').trim();
   const sfEndpoint = getSfEndpoint();
 
-  console.log('[SF] called | endpoint:', sfEndpoint, '| partnerID:', partnerID.length > 0 ? '***' : '(empty)');
+  console.log(
+    '[SF] called | endpoint:',
+    sfEndpoint,
+    '| partnerID:',
+    partnerID.length > 0 ? '***' : '(empty)',
+    '| expressTypeId:',
+    COLD_CHAIN_EXPRESS_TYPE_ID
+  );
 
   if (!partnerID || !checkword) {
     return res.status(500).json({ error: '順豐參數未配置 (SF_PARTNER_ID / SF_CHECKWORD)', code: 'SF_CREDENTIALS_MISSING' });
