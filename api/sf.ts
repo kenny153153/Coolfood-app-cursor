@@ -288,6 +288,16 @@ async function handleLabel(req: any, res: any) {
       return res.status(502).json({ error: result.error, code: 'SF_LABEL_FAILED' });
     }
 
+    if (result.data && typeof result.data === 'object' && (result.data as any).success === false) {
+      return res.status(200).json({
+        success: false,
+        orderId,
+        code: 'SF_BUSINESS_ERROR',
+        sfErrorCode: String((result.data as any).errorCode ?? ''),
+        message: String((result.data as any).errorMsg ?? '順豐業務規則拒絕此訂單'),
+      });
+    }
+
     const msgData = result.data?.msgData ?? result.data;
     const waybillNo = extractWaybillNoFromSfData(result.data);
     const routeLabel = msgData?.routeLabelInfo?.[0] ?? null;
@@ -354,8 +364,6 @@ type SfOrderPayload = {
 
 const SF_HOME_EXPRESS_TYPE_ID = Number(
   process.env.SF_HOME_EXPRESS_TYPE_ID
-  ?? process.env.SF_COLD_EXPRESS_TYPE_ID
-  ?? process.env.SF_COLD_EXPRESS_TYPE
   ?? '273'
 ) || 273;
 
@@ -601,6 +609,16 @@ async function handleOrder(req: any, res: any) {
     const innerData = parseApiResultData(sfResponseData.apiResultData);
     console.log('[SF][DEBUG] apiResultCode=', apiResultCode, '| apiResultData(raw)=', String(sfResponseData.apiResultData ?? '').slice(0, 1200));
     console.log('[SF][DEBUG] apiResultData(parsed)=', JSON.stringify(innerData).slice(0, 1200));
+    if (innerData && typeof innerData === 'object' && (innerData as any).success === false) {
+      return res.status(200).json({
+        success: false,
+        orderId,
+        code: 'SF_BUSINESS_ERROR',
+        sfErrorCode: String((innerData as any).errorCode ?? ''),
+        message: String((innerData as any).errorMsg ?? '順豐業務規則拒絕此訂單'),
+      });
+    }
+
     let waybillNoStr = extractWaybillNoFromSfData(innerData);
     if (!waybillNoStr) {
       const searchOrderIdCandidates = [
