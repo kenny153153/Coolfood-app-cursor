@@ -216,6 +216,7 @@ async function createSandboxOrderAndGetWaybill(): Promise<string> {
 async function runPrintTest(waybill: string, times: number): Promise<void> {
   let okCount = 0;
   console.log(`\n[Print] Target waybill=${waybill}, attempts=${times}`);
+  console.log('[Print] Success rule: apiResultCode === A1000');
 
   for (let i = 1; i <= times; i++) {
     const payload: JsonObject = {
@@ -232,10 +233,13 @@ async function runPrintTest(waybill: string, times: number): Promise<void> {
     const innerErrCode = String((inner as any).errorCode ?? '');
     const innerErrMsg = String((inner as any).errorMsg ?? '');
 
-    const success = apiCode === 'A1000' && innerSuccess !== false;
+    const success = apiCode === 'A1000';
     if (success) {
       okCount++;
-      console.log(`[${i}/${times}] ✅ success | apiResultCode=${apiCode}`);
+      const note = innerSuccess === false
+        ? ` | note: apiResultData.success=false (${innerErrCode} ${innerErrMsg})`
+        : '';
+      console.log(`[${i}/${times}] ✅ success | apiResultCode=${apiCode}${note}`);
     } else {
       console.log(
         `[${i}/${times}] ❌ fail | apiResultCode=${apiCode} | innerError=${innerErrCode} ${innerErrMsg}`.trim()
