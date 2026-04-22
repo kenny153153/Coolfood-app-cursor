@@ -5,6 +5,7 @@
  * Merges the former /api/sf-order and /api/sf-label into a single serverless function.
  */
 import crypto from 'crypto';
+import { PDFDocument } from 'pdf-lib';
 import { checkRateLimit, getClientIp } from './_rateLimit.js';
 
 const SF_SANDBOX_URL = 'https://sfapi-sbox.sf-express.com/std/service';
@@ -122,19 +123,24 @@ function deepCollectStringValues(node: any, acc: string[], depth = 0): void {
   }
 }
 
-function extractCloudPrintPdf(innerData: any): { pdfUrl: string | null; pdfBase64: string | null; printBatchNo: string | null } {
-  const values: string[] = [];
-  deepCollectStringValues(innerData, values);
-
-  // SF cloud print 2.0 sync mode: obj.files[0].url
+function extractCloudPrintFiles(innerData: any): Array<{ url: string; token?: string; waybillNo?: string }> {
   const files = innerData?.obj?.files ?? innerData?.files;
   if (Array.isArray(files)) {
-    for (const f of files) {
-      if (typeof f?.url === 'string' && f.url.trim()) {
-        return { pdfUrl: f.url.trim(), pdfBase64: null, printBatchNo: null };
-      }
-    }
+    return files
+      .filter((f: any) => typeof f?.url === 'string' && f.url.trim())
+      .map((f: any) => ({ url: f.url.trim(), token: f.token, waybillNo: f.waybillNo }));
   }
+  return [];
+}
+
+function extractCloudPrintPdf(innerData: any): { pdfUrl: string | null; pdfBase64: string | null; printBatchNo: string | null } {
+  const files = extractCloudPrintFiles(innerData);
+  if (files.length > 0) {
+    return { pdfUrl: files[0].url, pdfBase64: null, printBatchNo: null };
+  }
+
+  const values: string[] = [];
+  deepCollectStringValues(innerData, values);
 
   // Extract printBatchNo from obj (SF cloud print 2.0 async mode)
   const printBatchNo = innerData?.obj?.printBatchNo
@@ -215,7 +221,8 @@ async function cloudPrintWaybills(waybillNos: string[]): Promise<{ ok: boolean; 
     }
 
     const printable = extractCloudPrintPdf(result.data);
-    console.log('[sf-label] Cloud print extract result: pdfUrl=', printable.pdfUrl ? printable.pdfUrl.slice(0, 100) : null, '| pdfBase64=', printable.pdfBase64 ? 'yes' : 'no', '| printBatchNo=', printable.printBatchNo ? printable.printBatchNo.slice(0, 20) : null, '| template:', templateCode);
+    const allFiles = extractCloudPrintFiles(result.data);
+    console.log('[sf-label] Cloud print files count:', allFiles.length, '| first pdfUrl=', printable.pdfUrl ? printable.pdfUrl.slice(0, 100) : null, '| pdfBase64=', printable.pdfBase64 ? 'yes' : 'no', '| printBatchNo=', printable.printBatchNo ? printable.printBatchNo.slice(0, 20) : null, '| template:', templateCode);
     if (!printable.pdfUrl && !printable.pdfBase64) {
       // SF cloud print 2.0 may return printBatchNo instead of direct PDF
       if (printable.printBatchNo) {
@@ -227,32 +234,34 @@ async function cloudPrintWaybills(waybillNos: string[]): Promise<{ ok: boolean; 
       continue;
     }
 
-    // If we got a URL but no base64, download the PDF server-side and convert to base64
-    // This avoids CORS issues and token auth problems on the client
-    if (printable.pdfUrl && !printable.pdfBase64) {
+    // Download all PDFs and merge into one using pdf-lib
+    if (allFiles.length > 0) {
       try {
-        console.log('[sf-label] Downloading PDF from SF:', printable.pdfUrl.slice(0, 120));
-        // Extract token from files array for auth
-        const files = result.data?.obj?.files ?? result.data?.files;
-        const token = Array.isArray(files) && files[0]?.token ? files[0].token : '';
-        const downloadHeaders: Record<string, string> = {};
-        if (token) downloadHeaders['X-Auth-token'] = token;
-
-        const pdfRes = await fetchWithTimeout(printable.pdfUrl, {
-          headers: downloadHeaders,
-        }, 30000);
-        if (pdfRes.ok) {
-          const pdfBuffer = Buffer.from(await pdfRes.arrayBuffer());
-          const pdfBase64 = pdfBuffer.toString('base64');
-          console.log('[sf-label] PDF downloaded, size:', pdfBuffer.length, 'bytes');
-          return { ok: true, data: result.data, pdfUrl: null, pdfBase64 };
-        } else {
-          console.warn('[sf-label] PDF download failed:', pdfRes.status, await pdfRes.text().catch(() => ''));
-          // Fallback: return URL anyway, client might be able to open it
-          return { ok: true, data: result.data, pdfUrl: printable.pdfUrl, pdfBase64: null };
+        const mergedPdf = await PDFDocument.create();
+        for (const file of allFiles) {
+          console.log('[sf-label] Downloading PDF:', file.waybillNo ?? 'unknown', file.url.slice(0, 120));
+          const downloadHeaders: Record<string, string> = {};
+          if (file.token) downloadHeaders['X-Auth-token'] = file.token;
+          const pdfRes = await fetchWithTimeout(file.url, { headers: downloadHeaders }, 30000);
+          if (!pdfRes.ok) {
+            console.warn('[sf-label] PDF download failed for', file.waybillNo, ':', pdfRes.status);
+            continue;
+          }
+          const pdfBytes = new Uint8Array(await pdfRes.arrayBuffer());
+          const srcDoc = await PDFDocument.load(pdfBytes);
+          const copiedPages = await mergedPdf.copyPages(srcDoc, srcDoc.getPageIndices());
+          copiedPages.forEach(page => mergedPdf.addPage(page));
         }
+        if (mergedPdf.getPageCount() === 0) {
+          throw new Error('No PDF pages downloaded');
+        }
+        const mergedBytes = await mergedPdf.save();
+        const pdfBase64 = Buffer.from(mergedBytes).toString('base64');
+        console.log('[sf-label] Merged PDF pages:', mergedPdf.getPageCount(), 'size:', pdfBase64.length, 'base64 chars');
+        return { ok: true, data: result.data, pdfUrl: null, pdfBase64 };
       } catch (e) {
-        console.warn('[sf-label] PDF download error:', e instanceof Error ? e.message : e);
+        console.warn('[sf-label] PDF merge error:', e instanceof Error ? e.message : e);
+        // Fallback to first URL
         return { ok: true, data: result.data, pdfUrl: printable.pdfUrl, pdfBase64: null };
       }
     }

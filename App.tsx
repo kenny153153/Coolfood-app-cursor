@@ -1,4 +1,4 @@
- 
+
 import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense, lazy } from 'react';
 import { 
   ShoppingBag, Package, Truck, CreditCard, Settings, CheckCircle,
@@ -3049,28 +3049,17 @@ const App: React.FC = () => {
       }
     }
 
-    // Collect all PDF base64 data and merge into a single print window
+    // Collect all PDF base64 data — backend has already merged multiple PDFs into one
     const pdfResults = labelResults.filter(r => r.labelPdfBase64);
     if (pdfResults.length > 0) {
-      const printWindow = window.open('', '_blank');
-      if (printWindow) {
-        const pdfIframes = pdfResults.map((r, idx) => {
-          try {
-            const bin = atob(r.labelPdfBase64!);
-            const bytes = new Uint8Array(bin.length);
-            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-            const blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
-            return `<div class="pdf-page" style="${idx < pdfResults.length - 1 ? 'page-break-after:always' : ''}">
-              <iframe src="${blobUrl}" style="width:100%;height:100vh;border:none;"></iframe>
-            </div>`;
-          } catch {
-            return '';
-          }
-        }).join('');
-        printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>順豐面單 (${pdfResults.length}張)</title>
-          <style>@page { margin: 0; } body { margin: 0; } .pdf-page { width: 100%; }</style>
-        </head><body>${pdfIframes}</body></html>`);
-        printWindow.document.close();
+      try {
+        const bin = atob(pdfResults[0].labelPdfBase64!);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+        window.open(blobUrl, '_blank', 'noopener,noreferrer');
+      } catch {
+        // ignore decode error
       }
     } else {
       // Fallback: open individual URLs if no base64
