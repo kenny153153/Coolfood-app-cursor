@@ -102,6 +102,9 @@ export default defineConfig(({ mode }) => {
       build: {
         sourcemap: 'hidden',
       },
+      optimizeDeps: {
+        include: ['pdf-lib'],
+      },
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
