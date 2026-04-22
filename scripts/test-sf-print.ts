@@ -58,7 +58,11 @@ const PARTNER_ID = (process.env.SF_PARTNER_ID ?? process.env.VITE_SF_CUSTOMER_CO
 const CHECKWORD = (process.env.SF_CHECKWORD ?? process.env.VITE_SF_CHECKWORD ?? '').trim();
 const MONTHLY_CARD = (process.env.SF_SANDBOX_MONTHLY_CARD ?? process.env.SF_MONTHLY_CARD ?? '').trim();
 const EXPRESS_TYPE_ID = Number(process.env.SF_SANDBOX_EXPRESS_TYPE_ID ?? '273') || 273;
-const DEFAULT_PRINT_TEMPLATE = (process.env.SF_SANDBOX_PRINT_TEMPLATE ?? 'fm_210_standard').trim();
+const DEFAULT_PRINT_TEMPLATE = (
+  process.env.SF_SANDBOX_PRINT_TEMPLATE
+  ?? process.env.SF_CLOUD_PRINT_TEMPLATE_CODE
+  ?? (PARTNER_ID ? `fm_150_standard_${PARTNER_ID}` : 'fm_150_standard')
+).trim();
 
 type JsonObject = Record<string, unknown>;
 
@@ -91,8 +95,12 @@ function parseArg(flag: string): string | null {
 
 function resolvePrintTemplate(): string {
   const argTemplate = parseArg('--template');
-  const template = String(argTemplate ?? DEFAULT_PRINT_TEMPLATE).trim();
-  return template || 'fm_210_standard';
+  const templateRaw = String(argTemplate ?? DEFAULT_PRINT_TEMPLATE).trim();
+  if (!templateRaw) return PARTNER_ID ? `fm_150_standard_${PARTNER_ID}` : 'fm_150_standard';
+  if (PARTNER_ID && !templateRaw.endsWith(`_${PARTNER_ID}`)) {
+    return `${templateRaw}_${PARTNER_ID}`;
+  }
+  return templateRaw;
 }
 
 function hasFlag(flag: string): boolean {

@@ -1,4 +1,4 @@
-
+ 
 import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense, lazy } from 'react';
 import { 
   ShoppingBag, Package, Truck, CreditCard, Settings, CheckCircle,
@@ -2996,6 +2996,7 @@ const App: React.FC = () => {
       labelImage: string | null;
       labelPdfUrl: string | null;
       labelPdfBase64: string | null;
+      printBatchNo: string | null;
       waybillNo: string | null;
       error?: string;
     }[] = [];
@@ -3017,6 +3018,7 @@ const App: React.FC = () => {
           labelImage: isSuccess ? (sfJson.labelImage ?? null) : null,
           labelPdfUrl: isSuccess ? (sfJson.labelPdfUrl ?? null) : null,
           labelPdfBase64: isSuccess ? (sfJson.labelPdfBase64 ?? null) : null,
+          printBatchNo: isSuccess ? (sfJson.printBatchNo ?? null) : null,
           waybillNo: sfJson.waybillNo ?? row.waybill_no ?? null,
           error: (sfRes.ok && isSuccess) ? undefined : (sfJson.message ?? sfJson.error ?? '取得面單失敗'),
         });
@@ -3026,6 +3028,7 @@ const App: React.FC = () => {
           labelImage: null,
           labelPdfUrl: null,
           labelPdfBase64: null,
+          printBatchNo: null,
           waybillNo: row.waybill_no ?? null,
           error: '網路錯誤',
         });
@@ -3034,43 +3037,62 @@ const App: React.FC = () => {
 
     const imageCount = labelResults.filter(r => !!r.labelImage).length;
     const pdfCount = labelResults.filter(r => !!r.labelPdfUrl || !!r.labelPdfBase64).length;
-    const failedCount = labelResults.length - imageCount - pdfCount;
+    const batchCount = labelResults.filter(r => !r.labelImage && !r.labelPdfUrl && !r.labelPdfBase64 && !!r.printBatchNo).length;
+    const failedCount = labelResults.length - imageCount - pdfCount - batchCount;
     if (showSummaryToast) {
-      if (failedCount > 0 && imageCount + pdfCount === 0) {
+      if (failedCount > 0 && imageCount + pdfCount + batchCount === 0) {
         showToast(`順豐未回傳可列印面單（${failedCount} 筆），可能需要到順豐商戶平台打印`, 'error');
       } else if (failedCount > 0) {
-        showToast(`${imageCount + pdfCount} 張面單已取得，${failedCount} 張未能取得`, 'error');
+        showToast(`${imageCount + pdfCount + batchCount} 張面單已取得，${failedCount} 張未能取得`, 'error');
+      } else if (batchCount > 0 && imageCount + pdfCount === 0) {
+        showToast(`順豐已接受 ${batchCount} 筆打印請求，面單將推送至商戶平台`, 'success');
       }
     }
 
-    for (const r of labelResults) {
-      if (!r.labelPdfUrl && !r.labelPdfBase64) continue;
-      let printableUrl = r.labelPdfUrl;
-      if (!printableUrl && r.labelPdfBase64) {
-        try {
-          const bin = atob(r.labelPdfBase64);
-          const bytes = new Uint8Array(bin.length);
-          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-          printableUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
-        } catch {
-          printableUrl = null;
+    // Collect all PDF base64 data and merge into a single print window
+    const pdfResults = labelResults.filter(r => r.labelPdfBase64);
+    if (pdfResults.length > 0) {
+      const printWindow = window.open('', '_blank');
+      if (printWindow) {
+        const pdfIframes = pdfResults.map((r, idx) => {
+          try {
+            const bin = atob(r.labelPdfBase64!);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            const blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+            return `<div class="pdf-page" style="${idx < pdfResults.length - 1 ? 'page-break-after:always' : ''}">
+              <iframe src="${blobUrl}" style="width:100%;height:100vh;border:none;"></iframe>
+            </div>`;
+          } catch {
+            return '';
+          }
+        }).join('');
+        printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>順豐面單 (${pdfResults.length}張)</title>
+          <style>@page { margin: 0; } body { margin: 0; } .pdf-page { width: 100%; }</style>
+        </head><body>${pdfIframes}</body></html>`);
+        printWindow.document.close();
+      }
+    } else {
+      // Fallback: open individual URLs if no base64
+      for (const r of labelResults) {
+        if (r.labelPdfUrl) {
+          window.open(r.labelPdfUrl, '_blank', 'noopener,noreferrer');
         }
       }
-      if (printableUrl) {
-        window.open(printableUrl, '_blank', 'noopener,noreferrer');
-      }
     }
 
-    const htmlRows = labelResults.filter(r => !r.labelPdfUrl && !r.labelPdfBase64 && !r.error);
-    if (htmlRows.length === 0) {
-      return { total: labelResults.length, imageCount: imageCount + pdfCount, failedCount };
+    const htmlRows = labelResults.filter(r => !r.labelPdfUrl && !r.labelPdfBase64 && !r.error && !r.printBatchNo);
+    const batchRows = labelResults.filter(r => !r.labelPdfUrl && !r.labelPdfBase64 && !r.error && !!r.printBatchNo);
+    if (htmlRows.length === 0 && batchRows.length === 0) {
+      return { total: labelResults.length, imageCount: imageCount + pdfCount + batchCount, failedCount };
     }
 
     const printWindow = window.open('', '_blank');
     if (!printWindow) throw new Error('無法開啟列印視窗，請允許彈出視窗');
 
-    const labelsHtml = htmlRows.map((r, idx) => {
-      const pageBreak = idx < htmlRows.length - 1 ? 'style="page-break-after:always"' : '';
+    const allHtmlRows = [...batchRows, ...htmlRows];
+    const labelsHtml = allHtmlRows.map((r, idx) => {
+      const pageBreak = idx < allHtmlRows.length - 1 ? 'style="page-break-after:always"' : '';
       if (r.labelImage) {
         return `<div class="label-page" ${pageBreak}>
           <img src="data:image/png;base64,${r.labelImage}" class="label-img" />
@@ -3085,7 +3107,7 @@ const App: React.FC = () => {
       const fullAddr = [addr, floorFlat].filter(Boolean).join(' ') || '未提供地址';
       return `<div class="label-fallback" ${pageBreak}>
         <div class="waybill">${r.waybillNo || '待取得單號'}</div>
-        <div class="note">⚠ 未能從順豐取得電子面單，請到順豐商戶平台打印</div>
+        <div class="note note-batch">順豐已接受打印請求，面單將推送至商戶平台</div>
         <div class="section"><div class="section-title">寄件人</div><div class="info">Coolfood</div></div>
         <div class="divider"></div>
         <div class="section">

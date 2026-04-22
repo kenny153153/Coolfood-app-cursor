@@ -122,47 +122,145 @@ function deepCollectStringValues(node: any, acc: string[], depth = 0): void {
   }
 }
 
-function extractCloudPrintPdf(innerData: any): { pdfUrl: string | null; pdfBase64: string | null } {
+function extractCloudPrintPdf(innerData: any): { pdfUrl: string | null; pdfBase64: string | null; printBatchNo: string | null } {
   const values: string[] = [];
   deepCollectStringValues(innerData, values);
 
+  // SF cloud print 2.0 sync mode: obj.files[0].url
+  const files = innerData?.obj?.files ?? innerData?.files;
+  if (Array.isArray(files)) {
+    for (const f of files) {
+      if (typeof f?.url === 'string' && f.url.trim()) {
+        return { pdfUrl: f.url.trim(), pdfBase64: null, printBatchNo: null };
+      }
+    }
+  }
+
+  // Extract printBatchNo from obj (SF cloud print 2.0 async mode)
+  const printBatchNo = innerData?.obj?.printBatchNo
+    ?? innerData?.printBatchNo
+    ?? values.find(v => /^AAAB/i.test(v) && v.length > 20)
+    ?? null;
+
   const pdfUrl = values.find(v =>
     /^https?:\/\//i.test(v)
-    && !/^https?:\/\/openapi\.sf-express\.com/i.test(v)
-    && (v.toLowerCase().includes('.pdf') || v.toLowerCase().includes('download') || v.toLowerCase().includes('print'))
+    && (
+      v.toLowerCase().includes('.pdf')
+      || v.toLowerCase().includes('download')
+      || v.toLowerCase().includes('print')
+      || v.toLowerCase().includes('label')
+      || v.toLowerCase().includes('waybill')
+    )
   ) ?? null;
 
   const pdfBase64 = values.find(v => /^JVBER/i.test(v) && v.length > 200) ?? null;
-  return { pdfUrl, pdfBase64 };
+  return { pdfUrl, pdfBase64, printBatchNo };
 }
 
-async function cloudPrintWaybills(waybillNos: string[]): Promise<{ ok: boolean; data?: any; pdfUrl?: string | null; pdfBase64?: string | null; error?: string }> {
-  const msgDataObj = {
-    documents: waybillNos.map(wn => ({ masterWaybillNo: wn })),
-    templateCode: 'fm_150_standard_HKCFEX',
-    version: '2.0',
-    fileType: 'pdf',
-  };
+function buildCloudPrintTemplateCandidates(): string[] {
+  const partnerID = (process.env.SF_PARTNER_ID ?? process.env.SF_CLIENT_CODE ?? '').trim();
+  const configured = (
+    process.env.SF_CLOUD_PRINT_TEMPLATE_CODE
+    ?? process.env.SF_PRINT_TEMPLATE_CODE
+    ?? process.env.SF_SANDBOX_PRINT_TEMPLATE
+    ?? 'fm_150_standard'
+  ).trim();
 
-  console.log('[sf-label] Calling COM_RECE_CLOUD_PRINT_WAYBILLS for', waybillNos.join(','));
-  const result = await callSfService('COM_RECE_CLOUD_PRINT_WAYBILLS', msgDataObj);
-  if (!result.ok) return { ok: false, error: result.error };
-  if (result.data && typeof result.data === 'object' && (result.data as any).success === false) {
-    return {
-      ok: false,
-      error: String((result.data as any).errorMsg ?? '順豐未能提供雲打印面單'),
+  const baseCodes = [configured, 'fm_150_standard', 'fm_210_standard']
+    .map(v => v.trim())
+    .filter(Boolean);
+  const out: string[] = [];
+  for (const base of baseCodes) {
+    out.push(base);
+    if (partnerID && !base.endsWith(`_${partnerID}`)) {
+      out.push(`${base}_${partnerID}`);
+    }
+  }
+  return Array.from(new Set(out));
+}
+
+async function cloudPrintWaybills(waybillNos: string[]): Promise<{ ok: boolean; data?: any; pdfUrl?: string | null; pdfBase64?: string | null; printBatchNo?: string | null; error?: string }> {
+  const templates = buildCloudPrintTemplateCandidates();
+  let lastError = '順豐未能提供雲打印面單';
+
+  for (const templateCode of templates) {
+    const msgDataObj = {
+      documents: waybillNos.map(wn => ({ masterWaybillNo: wn })),
+      templateCode,
+      version: '2.0',
+      fileType: 'pdf',
+      sync: true,
     };
+
+    console.log('[sf-label] Calling COM_RECE_CLOUD_PRINT_WAYBILLS for', waybillNos.join(','), '| template:', templateCode);
+    const result = await callSfService('COM_RECE_CLOUD_PRINT_WAYBILLS', msgDataObj);
+    if (!result.ok) {
+      lastError = result.error ?? lastError;
+      continue;
+    }
+
+    if (result.data && typeof result.data === 'object' && (result.data as any).success === false) {
+      const errorMsg = String(
+        (result.data as any).errorMsg
+        ?? (result.data as any).errorMessage
+        ?? (result.data as any).msg
+        ?? '順豐未能提供雲打印面單'
+      );
+      lastError = errorMsg;
+      // SF account-specific template mismatch: try next candidate template.
+      if (errorMsg.toLowerCase().includes('templatecode') && errorMsg.toLowerCase().includes('not matched the clientcode')) {
+        continue;
+      }
+      return { ok: false, error: errorMsg };
+    }
+
+    const printable = extractCloudPrintPdf(result.data);
+    console.log('[sf-label] Cloud print extract result: pdfUrl=', printable.pdfUrl ? printable.pdfUrl.slice(0, 100) : null, '| pdfBase64=', printable.pdfBase64 ? 'yes' : 'no', '| printBatchNo=', printable.printBatchNo ? printable.printBatchNo.slice(0, 20) : null, '| template:', templateCode);
+    if (!printable.pdfUrl && !printable.pdfBase64) {
+      // SF cloud print 2.0 may return printBatchNo instead of direct PDF
+      if (printable.printBatchNo) {
+        console.log('[sf-label] Cloud print accepted with printBatchNo:', printable.printBatchNo, '| template:', templateCode);
+        return { ok: true, data: result.data, pdfUrl: null, pdfBase64: null, printBatchNo: printable.printBatchNo };
+      }
+      console.warn('[sf-label] Cloud print returned without printable PDF payload | template:', templateCode);
+      lastError = '順豐雲打印回傳成功，但未提供可列印PDF';
+      continue;
+    }
+
+    // If we got a URL but no base64, download the PDF server-side and convert to base64
+    // This avoids CORS issues and token auth problems on the client
+    if (printable.pdfUrl && !printable.pdfBase64) {
+      try {
+        console.log('[sf-label] Downloading PDF from SF:', printable.pdfUrl.slice(0, 120));
+        // Extract token from files array for auth
+        const files = result.data?.obj?.files ?? result.data?.files;
+        const token = Array.isArray(files) && files[0]?.token ? files[0].token : '';
+        const downloadHeaders: Record<string, string> = {};
+        if (token) downloadHeaders['X-Auth-token'] = token;
+
+        const pdfRes = await fetchWithTimeout(printable.pdfUrl, {
+          headers: downloadHeaders,
+        }, 30000);
+        if (pdfRes.ok) {
+          const pdfBuffer = Buffer.from(await pdfRes.arrayBuffer());
+          const pdfBase64 = pdfBuffer.toString('base64');
+          console.log('[sf-label] PDF downloaded, size:', pdfBuffer.length, 'bytes');
+          return { ok: true, data: result.data, pdfUrl: null, pdfBase64 };
+        } else {
+          console.warn('[sf-label] PDF download failed:', pdfRes.status, await pdfRes.text().catch(() => ''));
+          // Fallback: return URL anyway, client might be able to open it
+          return { ok: true, data: result.data, pdfUrl: printable.pdfUrl, pdfBase64: null };
+        }
+      } catch (e) {
+        console.warn('[sf-label] PDF download error:', e instanceof Error ? e.message : e);
+        return { ok: true, data: result.data, pdfUrl: printable.pdfUrl, pdfBase64: null };
+      }
+    }
+
+    return { ok: true, data: result.data, pdfUrl: printable.pdfUrl, pdfBase64: printable.pdfBase64 };
   }
 
-  const printable = extractCloudPrintPdf(result.data);
-  if (!printable.pdfUrl && !printable.pdfBase64) {
-    console.warn('[sf-label] Cloud print returned without printable PDF payload');
-    return {
-      ok: false,
-      error: '順豐雲打印回傳成功，但未提供可列印PDF',
-    };
-  }
-  return { ok: true, data: result.data, pdfUrl: printable.pdfUrl, pdfBase64: printable.pdfBase64 };
+  return { ok: false, error: lastError };
 }
 
 async function queryWaybillFromSearchOrder(orderId: string): Promise<string | null> {
@@ -225,6 +323,17 @@ async function callSfService(serviceCode: string, msgDataObj: object): Promise<{
   formBody.set('msgData', msgData);
   formBody.set('msgDigest', msgDigest);
 
+  // ─── Dump full request/response for debugging ──────────────
+  console.log('\n' + '='.repeat(80));
+  console.log(`[SF REQUEST] ${serviceCode}`);
+  console.log(`  Endpoint: ${sfEndpoint}`);
+  console.log(`  partnerID: ${partnerID}`);
+  console.log(`  requestID: ${requestID}`);
+  console.log(`  timestamp: ${timestamp}`);
+  console.log(`  msgDigest: ${msgDigest}`);
+  console.log(`  msgData: ${msgData}`);
+  console.log('='.repeat(80));
+
   try {
     const sfRes = await fetchWithTimeout(sfEndpoint, {
       method: 'POST',
@@ -233,6 +342,12 @@ async function callSfService(serviceCode: string, msgDataObj: object): Promise<{
     });
 
     const resText = await sfRes.text();
+    // ─── Dump full response ──────────────────────────────────
+    console.log('\n' + '-'.repeat(80));
+    console.log(`[SF RESPONSE] ${serviceCode}`);
+    console.log(`  HTTP Status: ${sfRes.status}`);
+    console.log(`  Body: ${resText}`);
+    console.log('-'.repeat(80) + '\n');
     if (!sfRes.ok) {
       return { ok: false, error: `SF HTTP ${sfRes.status}: ${resText.slice(0, 200)}` };
     }
@@ -245,6 +360,10 @@ async function callSfService(serviceCode: string, msgDataObj: object): Promise<{
     }
 
     const innerData = parseApiResultData(json.apiResultData);
+    if (serviceCode === 'COM_RECE_CLOUD_PRINT_WAYBILLS') {
+      console.log('[sf-label] RAW apiResultData type:', typeof json.apiResultData, '| length:', typeof json.apiResultData === 'string' ? json.apiResultData.length : 'N/A');
+      console.log('[sf-label] RAW apiResultData:', String(json.apiResultData).slice(0, 4000));
+    }
     return { ok: true, data: innerData };
   } catch (e) {
     const isTimeout = e instanceof Error && e.name === 'AbortError';
@@ -326,6 +445,7 @@ async function handleLabel(req: any, res: any) {
         labelImage: null,
         labelPdfUrl: printResult.pdfUrl ?? null,
         labelPdfBase64: printResult.pdfBase64 ?? null,
+        printBatchNo: printResult.printBatchNo ?? null,
         data: printResult.data,
       });
     }
@@ -430,6 +550,7 @@ async function handleLabel(req: any, res: any) {
       waybillNos: normalized,
       labelPdfUrl: printResult.pdfUrl ?? null,
       labelPdfBase64: printResult.pdfBase64 ?? null,
+      printBatchNo: printResult.printBatchNo ?? null,
       data: printResult.data,
     });
   }
@@ -453,6 +574,16 @@ type SfOrderPayload = {
   delivery_method?: string;
   locker_code?: string;
 };
+
+const SF_EXTRA_ACTIONS = {
+  query_order: 'EXP_RECE_SEARCH_ORDER_RESP',
+  update_order: 'EXP_RECE_UPDATE_ORDER',
+  get_sub_mailno: 'EXP_RECE_GET_SUB_MAILNO',
+  pre_order: 'EXP_RECE_PRE_ORDER',
+  query_routes: 'EXP_RECE_SEARCH_ROUTES',
+} as const;
+
+type SfExtraAction = keyof typeof SF_EXTRA_ACTIONS;
 
 const SF_HOME_EXPRESS_TYPE_ID = Number(
   process.env.SF_HOME_EXPRESS_TYPE_ID
@@ -760,6 +891,64 @@ async function handleOrder(req: any, res: any) {
   }
 }
 
+function defaultMsgDataForAction(action: SfExtraAction, body: any): Record<string, unknown> | null {
+  if (body?.msgData && typeof body.msgData === 'object' && !Array.isArray(body.msgData)) {
+    return body.msgData as Record<string, unknown>;
+  }
+
+  if (action === 'query_order') {
+    const orderId = String(body?.orderId ?? '').trim();
+    if (!orderId) return null;
+    return { orderId, language: String(body?.language ?? 'Zh-CN') };
+  }
+
+  if (action === 'update_order') {
+    const orderId = String(body?.orderId ?? '').trim();
+    const dealType = Number(body?.dealType ?? body?.deal_type);
+    if (!orderId || !Number.isFinite(dealType)) return null;
+    return { orderId, dealType, language: String(body?.language ?? 'Zh-CN') };
+  }
+
+  return null;
+}
+
+async function handleExtraSfAction(req: any, res: any, action: SfExtraAction) {
+  const { verifyAdminRequest } = await import('./_adminAuth.js');
+  const access = action === 'query_order' || action === 'query_routes' ? 'read' : 'update';
+  const authResult = await verifyAdminRequest(req, 'orders', access);
+  if (!authResult.ok) return res.status(authResult.status).json({ error: authResult.error, code: 'UNAUTHORIZED' });
+
+  const serviceCode = SF_EXTRA_ACTIONS[action];
+  const msgDataObj = defaultMsgDataForAction(action, req.body);
+  if (!msgDataObj) {
+    return res.status(400).json({
+      error: 'Missing or invalid msgData',
+      code: 'BAD_REQUEST',
+      tip: action === 'query_order' || action === 'update_order'
+        ? 'Provide either `msgData` or required fields (orderId / dealType)'
+        : 'Provide `msgData` object from SF API spec',
+    });
+  }
+
+  const result = await callSfService(serviceCode, msgDataObj);
+  if (!result.ok) {
+    return res.status(502).json({ success: false, serviceCode, error: result.error, code: 'SF_API_ERROR' });
+  }
+
+  if (result.data && typeof result.data === 'object' && (result.data as any).success === false) {
+    return res.status(200).json({
+      success: false,
+      serviceCode,
+      code: 'SF_BUSINESS_ERROR',
+      sfErrorCode: String((result.data as any).errorCode ?? ''),
+      message: String((result.data as any).errorMsg ?? '順豐業務規則拒絕'),
+      data: result.data,
+    });
+  }
+
+  return res.status(200).json({ success: true, serviceCode, data: result.data });
+}
+
 // ─── Router ─────────────────────────────────────────────────────────
 
 export default async function handler(
@@ -780,5 +969,10 @@ export default async function handler(
   const action = req.body?.action;
   if (action === 'label') return handleLabel(req, res);
   if (action === 'order') return handleOrder(req, res);
-  return res.status(400).json({ error: 'Invalid action. Use: order, label' });
+  if (action in SF_EXTRA_ACTIONS) {
+    return handleExtraSfAction(req, res, action as SfExtraAction);
+  }
+  return res.status(400).json({
+    error: 'Invalid action. Use: order, label, query_order, update_order, get_sub_mailno, pre_order, query_routes',
+  });
 }

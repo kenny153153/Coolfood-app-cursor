@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "test": "npx playwright test",
     "test:ui": "npx playwright test --ui",
-    "supabase:types": "npx supabase gen types typescript --project-id \"$SUPABASE_PROJECT_ID\" > supabase-types.ts"
+    "supabase:types": "npx supabase gen types typescript --project-id \"$SUPABASE_PROJECT_ID\" > supabase-types.ts",
+    "sf:self-test": "npx tsx scripts/sf-integration-self-test.ts"
   },
   "dependencies": {
     "stripe": "^17.7.0",
