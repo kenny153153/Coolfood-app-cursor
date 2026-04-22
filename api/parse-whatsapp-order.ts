@@ -130,7 +130,7 @@ JSON array:
         topP: 0.8,
         maxOutputTokens: 2048,
       },
-      systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
+      systemInstruction: { role: 'system', parts: [{ text: SYSTEM_INSTRUCTION }] },
     });
 
     const result = await model.generateContent({
