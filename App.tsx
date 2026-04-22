@@ -3049,9 +3049,9 @@ const App: React.FC = () => {
       }
     }
 
-    // Collect all PDF base64 data — backend has already merged multiple PDFs into one
+    // Open PDF labels — single opens directly, multiple merges via pdf-lib (browser)
     const pdfResults = labelResults.filter(r => r.labelPdfBase64);
-    if (pdfResults.length > 0) {
+    if (pdfResults.length === 1) {
       try {
         const bin = atob(pdfResults[0].labelPdfBase64!);
         const bytes = new Uint8Array(bin.length);
@@ -3061,6 +3061,34 @@ const App: React.FC = () => {
       } catch {
         // ignore decode error
       }
+    } else if (pdfResults.length > 1) {
+      // Merge multiple PDFs in browser using pdf-lib
+      import('pdf-lib').then(async ({ PDFDocument }) => {
+        const mergedPdf = await PDFDocument.create();
+        for (const r of pdfResults) {
+          const bin = atob(r.labelPdfBase64!);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const srcDoc = await PDFDocument.load(bytes);
+          const copiedPages = await mergedPdf.copyPages(srcDoc, srcDoc.getPageIndices());
+          copiedPages.forEach(page => mergedPdf.addPage(page));
+        }
+        const mergedBytes = await mergedPdf.save();
+        const blobUrl = URL.createObjectURL(new Blob([mergedBytes], { type: 'application/pdf' }));
+        window.open(blobUrl, '_blank', 'noopener,noreferrer');
+      }).catch(err => {
+        console.warn('[label] pdf-lib merge failed:', err);
+        // Fallback: open individually
+        for (const r of pdfResults) {
+          try {
+            const bin = atob(r.labelPdfBase64!);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            const blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+            window.open(blobUrl, '_blank', 'noopener,noreferrer');
+          } catch { /* ignore */ }
+        }
+      });
     } else {
       // Fallback: open individual URLs if no base64
       for (const r of labelResults) {

@@ -5,7 +5,6 @@
  * Merges the former /api/sf-order and /api/sf-label into a single serverless function.
  */
 import crypto from 'crypto';
-import { PDFDocument } from 'pdf-lib';
 import { checkRateLimit, getClientIp } from './_rateLimit.js';
 
 const SF_SANDBOX_URL = 'https://sfapi-sbox.sf-express.com/std/service';
@@ -234,10 +233,9 @@ async function cloudPrintWaybills(waybillNos: string[]): Promise<{ ok: boolean; 
       continue;
     }
 
-    // Download all PDFs and merge into one using pdf-lib
+    // Download PDF(s) — return first successful one as base64 (frontend merges if multiple orders)
     if (allFiles.length > 0) {
       try {
-        const mergedPdf = await PDFDocument.create();
         for (const file of allFiles) {
           console.log('[sf-label] Downloading PDF:', file.waybillNo ?? 'unknown', file.url.slice(0, 120));
           const downloadHeaders: Record<string, string> = {};
@@ -247,22 +245,15 @@ async function cloudPrintWaybills(waybillNos: string[]): Promise<{ ok: boolean; 
             console.warn('[sf-label] PDF download failed for', file.waybillNo, ':', pdfRes.status);
             continue;
           }
-          const pdfBytes = new Uint8Array(await pdfRes.arrayBuffer());
-          const srcDoc = await PDFDocument.load(pdfBytes);
-          const copiedPages = await mergedPdf.copyPages(srcDoc, srcDoc.getPageIndices());
-          copiedPages.forEach(page => mergedPdf.addPage(page));
+          const pdfBuffer = Buffer.from(await pdfRes.arrayBuffer());
+          console.log('[sf-label] PDF downloaded for', file.waybillNo, 'size:', pdfBuffer.length, 'bytes');
+          return { ok: true, data: result.data, pdfUrl: null, pdfBase64: pdfBuffer.toString('base64') };
         }
-        if (mergedPdf.getPageCount() === 0) {
-          throw new Error('No PDF pages downloaded');
-        }
-        const mergedBytes = await mergedPdf.save();
-        const pdfBase64 = Buffer.from(mergedBytes).toString('base64');
-        console.log('[sf-label] Merged PDF pages:', mergedPdf.getPageCount(), 'size:', pdfBase64.length, 'base64 chars');
-        return { ok: true, data: result.data, pdfUrl: null, pdfBase64 };
+        throw new Error('All PDF downloads failed');
       } catch (e) {
-        console.warn('[sf-label] PDF merge error:', e instanceof Error ? e.message : e);
-        // Fallback to first URL
-        return { ok: true, data: result.data, pdfUrl: printable.pdfUrl, pdfBase64: null };
+        console.warn('[sf-label] PDF download error:', e instanceof Error ? e.message : e);
+        // Fallback: return the first PDF URL so client can at least open something
+        return { ok: true, data: result.data, pdfUrl: allFiles[0]?.url ?? printable.pdfUrl, pdfBase64: null };
       }
     }
 
