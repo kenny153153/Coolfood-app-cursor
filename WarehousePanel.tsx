@@ -1870,8 +1870,29 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                             <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">母料名稱</label>
                             <input
                               value={ing.name}
-                              onChange={e => setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, name: e.target.value } : x))}
-                              onBlur={() => { void updateIngredientInline(ing.id, { name: ing.name }); }}
+                              onChange={e => {
+                                const prevName = ing.name;
+                                const next = e.target.value;
+                                setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, name: next } : x));
+                                setProductTreeDrafts(prevDrafts => {
+                                  const cur = prevDrafts[ing.id];
+                                  if (!cur) return prevDrafts;
+                                  const pt = cur.processingTypeId ? processingTypes.find(p => p.id === cur.processingTypeId) : undefined;
+                                  if (cur.processingTypeId && pt) {
+                                    const prevAuto = `${prevName}-${pt.name}`;
+                                    const userEdited = cur.name && cur.name !== prevName && cur.name !== prevAuto;
+                                    if (userEdited) return prevDrafts;
+                                    return {
+                                      ...prevDrafts,
+                                      [ing.id]: { ...cur, name: `${next}-${pt.name}` },
+                                    };
+                                  }
+                                  const looseMatch = !cur.name || cur.name === prevName;
+                                  if (!looseMatch) return prevDrafts;
+                                  return { ...prevDrafts, [ing.id]: { ...cur, name: next } };
+                                });
+                              }}
+                              onBlur={e => { void updateIngredientInline(ing.id, { name: e.currentTarget.value }); }}
                               className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-black text-slate-900"
                             />
                             {ing.nameEn && <p className="text-[10px] text-slate-400 font-bold truncate mt-1">{ing.nameEn}</p>}
@@ -1915,7 +1936,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                               step="0.01"
                               value={ing.baseCostPerLb}
                               onChange={e => setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, baseCostPerLb: Number(e.target.value) || 0 } : x))}
-                              onBlur={() => { void updateIngredientInline(ing.id, { baseCostPerLb: ing.baseCostPerLb }); }}
+                              onBlur={e => { void updateIngredientInline(ing.id, { baseCostPerLb: Number(e.currentTarget.value) || 0 }); }}
                               className="w-full px-3 py-2 bg-amber-50 border border-amber-100 rounded-xl text-xs font-black text-right text-amber-800"
                             />
                           </div>
@@ -1924,7 +1945,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                             <input
                               value={ing.supplier || ''}
                               onChange={e => setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, supplier: e.target.value } : x))}
-                              onBlur={() => { void updateIngredientInline(ing.id, { supplier: ing.supplier }); }}
+                              onBlur={e => { void updateIngredientInline(ing.id, { supplier: e.currentTarget.value || undefined }); }}
                               placeholder="—"
                               className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold"
                             />
@@ -1936,21 +1957,30 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                           </button>
                         </div>
                         {open && (
-                          <div className="px-4 pb-4 pl-12 bg-slate-50/50 border-t border-slate-100">
+                          <div className="ml-10 mr-0 border-t border-slate-100 bg-slate-50/50 pb-4 pl-4 pr-4 pt-2">
                             {kids.length === 0 ? (
                               <p className="text-xs font-bold text-slate-400 py-3">此母料在目前通路篩選下尚無掛載產品。</p>
                             ) : (
                               <div className="overflow-x-auto rounded-xl border border-slate-100 bg-white">
-                                <table className="w-full text-xs">
+                                <table className="w-full table-fixed border-collapse text-xs">
+                                  <colgroup>
+                                    <col className="min-w-0" />
+                                    <col style={{ width: '13%' }} />
+                                    <col style={{ width: '11%' }} />
+                                    <col style={{ width: '9%' }} />
+                                    <col style={{ width: '11%' }} />
+                                    <col style={{ width: '12%' }} />
+                                    <col style={{ width: '10%' }} />
+                                  </colgroup>
                                   <thead>
                                     <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                                      <th className="text-left px-3 py-2">下料名稱</th>
-                                      <th className="text-left px-3 py-2">加工</th>
-                                      <th className="text-right px-3 py-2">出成率</th>
-                                      <th className="text-center px-2 py-2">單位</th>
-                                      <th className="text-center px-2 py-2">計價方法</th>
-                                      <th className="text-right px-3 py-2">成本</th>
-                                      <th className="text-center px-2 py-2 w-14">通路</th>
+                                      <th className="min-w-0 px-3 py-2.5 text-left align-middle">下料名稱</th>
+                                      <th className="px-3 py-2.5 text-left align-middle">加工</th>
+                                      <th className="px-3 py-2.5 text-right align-middle">出成率</th>
+                                      <th className="px-3 py-2.5 text-center align-middle">單位</th>
+                                      <th className="px-3 py-2.5 text-center align-middle">計價方法</th>
+                                      <th className="px-3 py-2.5 text-right align-middle">成本</th>
+                                      <th className="px-3 py-2.5 text-center align-middle">通路</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-slate-50">
@@ -1961,13 +1991,13 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                       const costAfterYield = ingredientCostAfterYield(ing, yr);
                                       return (
                                         <tr key={p.id} className="hover:bg-slate-50/50">
-                                          <td className="px-3 py-2 font-bold text-slate-800">{p.name}</td>
-                                          <td className="px-3 py-2 text-slate-600">{ptName(p.processingTypeId)}</td>
-                                          <td className="px-3 py-2 text-right font-bold text-slate-700">{yr.toFixed(2)}</td>
-                                          <td className="text-center px-2 py-2 font-bold text-slate-500">{ing.unit || 'lb'}</td>
-                                          <td className="text-center px-2 py-2 font-bold text-slate-500">{p.pricingMode === 'by_piece' ? '抄碼' : '定裝'}</td>
-                                          <td className="px-3 py-2 text-right font-black text-amber-700">${costAfterYield.toFixed(2)}</td>
-                                          <td className="text-center px-2 py-2 font-black text-slate-500">{chLabel}</td>
+                                          <td className="min-w-0 px-3 py-2.5 align-middle font-bold text-slate-800 break-words">{p.name}</td>
+                                          <td className="px-3 py-2.5 align-middle text-slate-600">{ptName(p.processingTypeId)}</td>
+                                          <td className="px-3 py-2.5 text-right align-middle font-bold text-slate-700">{yr.toFixed(2)}</td>
+                                          <td className="px-3 py-2.5 text-center align-middle font-bold text-slate-500">{ing.unit || 'lb'}</td>
+                                          <td className="px-3 py-2.5 text-center align-middle font-bold text-slate-500">{p.pricingMode === 'by_piece' ? '抄碼' : '定裝'}</td>
+                                          <td className="px-3 py-2.5 text-right align-middle font-black text-amber-700">${costAfterYield.toFixed(2)}</td>
+                                          <td className="px-3 py-2.5 text-center align-middle font-black text-slate-500">{chLabel}</td>
                                         </tr>
                                       );
                                     })}
