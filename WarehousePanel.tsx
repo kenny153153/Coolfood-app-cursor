@@ -636,30 +636,70 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
   const handleSaveIngredient = async () => {
     if (!editing || !editing.name?.trim()) { showToast('請輸入名稱', 'error'); return; }
     setSaving(true);
-    const payload = {
-      name: editing.name.trim(), name_en: editing.nameEn || null,
-      base_cost_per_lb: editing.baseCostPerLb || 0, supplier: editing.supplier || null,
-      market_benchmark: editing.marketBenchmark || null, unit: editing.unit || 'lb',
-      category: editing.category || null, material_type: editing.materialType || 'meat',
-      notes: editing.notes || null,
-    };
-    if (editing.isNew) {
-      const { error } = await supabase.from('ingredients').insert(payload);
-      if (error) { showToast(`失敗：${error.message}`, 'error'); setSaving(false); return; }
-      showToast('原材料已新增');
-    } else {
-      const { error } = await supabase.from('ingredients').update(payload).eq('id', editing.id);
-      if (error) { showToast(`失敗：${error.message}`, 'error'); setSaving(false); return; }
-      showToast('原材料已更新');
+    try {
+      const patch = {
+        name: editing.name.trim(),
+        nameEn: editing.nameEn || null,
+        baseCostPerLb: editing.baseCostPerLb || 0,
+        supplier: editing.supplier || null,
+        marketBenchmark: editing.marketBenchmark || null,
+        unit: editing.unit || 'lb',
+        category: editing.category || null,
+        materialType: editing.materialType || 'meat',
+        notes: editing.notes || null,
+      };
+      const res = await fetch('/api/material-products', {
+        method: 'POST',
+        headers: buildMaterialApiHeaders(editing.isNew ? 'create' : 'update'),
+        body: JSON.stringify(editing.isNew
+          ? { action: 'create_mother_material', row: patch }
+          : { action: 'update_mother_material', id: editing.id, patch }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) {
+        showToast(`失敗：${json.error || `HTTP ${res.status}`}`, 'error');
+        setSaving(false);
+        return;
+      }
+      if (json.data) {
+        const saved = mapIngredientRowToIngredient(json.data);
+        setIngredients(prev => editing.isNew
+          ? [...prev, saved].sort((a, b) => a.name.localeCompare(b.name))
+          : prev.map(i => i.id === saved.id ? saved : i));
+      } else {
+        loadIngredients();
+      }
+      showToast(editing.isNew ? '原材料已新增' : '原材料已更新');
+      setEditing(null);
+    } catch (err: any) {
+      showToast(`失敗：${err?.message || '未知錯誤'}`, 'error');
+    } finally {
+      setSaving(false);
     }
-    setEditing(null); setSaving(false); loadIngredients();
   };
 
-  const handleDeleteIngredient = async (id: string) => {
-    if (!confirm('確定刪除此原材料？')) return;
-    const { error } = await supabase.from('ingredients').delete().eq('id', id);
-    if (error) showToast(`失敗：${error.message}`, 'error');
-    else { showToast('已刪除'); loadIngredients(); }
+  const handleDeleteIngredient = async (ingredient: Ingredient) => {
+    const linkedCount = products.filter(p => p.ingredientId === ingredient.id).length;
+    const detail = linkedCount > 0 ? `\n\n此母料有 ${linkedCount} 個掛載產品，刪除母料後會先解除掛載。` : '';
+    if (!confirm(`確定刪除原材料「${ingredient.name}」？此操作無法復原。${detail}`)) return;
+    const res = await fetch('/api/material-products', {
+      method: 'POST',
+      headers: buildMaterialApiHeaders('delete'),
+      body: JSON.stringify({ action: 'delete_mother_materials', ids: [ingredient.id] }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) {
+      showToast(`刪除失敗：${json.error || `HTTP ${res.status}`}`, 'error');
+      return;
+    }
+    setIngredients(prev => prev.filter(i => i.id !== ingredient.id));
+    setProducts(prev => prev.map(p => (p.ingredientId === ingredient.id || p.parentIngredientId === ingredient.id) ? { ...p, ingredientId: undefined, parentIngredientId: undefined } : p));
+    setSelectedIngredientIds(prev => {
+      const next = new Set(prev);
+      next.delete(ingredient.id);
+      return next;
+    });
+    showToast('已刪除原材料');
   };
 
   // ── Selection helpers ──
@@ -681,40 +721,69 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     if (selectedIngredientIds.size === 0) return;
     if (!confirm(`確定刪除已選的 ${selectedIngredientIds.size} 項原材料？此操作無法復原。`)) return;
     const ids = Array.from(selectedIngredientIds);
-    const { error } = await supabase.from('ingredients').delete().in('id', ids);
-    if (error) showToast(`批量刪除失敗：${error.message}`, 'error');
-    else { showToast(`已刪除 ${ids.length} 項原材料`); setSelectedIngredientIds(new Set()); loadIngredients(); }
+    const res = await fetch('/api/material-products', {
+      method: 'POST',
+      headers: buildMaterialApiHeaders('delete'),
+      body: JSON.stringify({ action: 'delete_mother_materials', ids }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) {
+      showToast(`批量刪除失敗：${json.error || `HTTP ${res.status}`}`, 'error');
+      return;
+    }
+    setIngredients(prev => prev.filter(i => !selectedIngredientIds.has(i.id)));
+    setProducts(prev => prev.map(p => (selectedIngredientIds.has(p.ingredientId || '') || selectedIngredientIds.has(p.parentIngredientId || '')) ? { ...p, ingredientId: undefined, parentIngredientId: undefined } : p));
+    showToast(`已刪除 ${ids.length} 項原材料`);
+    setSelectedIngredientIds(new Set());
   };
   const handleBulkCategoryChange = async (category: string) => {
     if (selectedIngredientIds.size === 0) return;
     const ids = Array.from(selectedIngredientIds);
-    const { error } = await supabase.from('ingredients').update({ category: category || null }).in('id', ids);
-    if (error) showToast(`批量更新失敗：${error.message}`, 'error');
-    else { showToast(`已更新 ${ids.length} 項原材料類別`); setSelectedIngredientIds(new Set()); loadIngredients(); }
+    const res = await fetch('/api/material-products', {
+      method: 'POST',
+      headers: buildMaterialApiHeaders('update'),
+      body: JSON.stringify({ action: 'bulk_update_mother_materials', ids, patch: { category } }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) {
+      showToast(`批量更新失敗：${json.error || `HTTP ${res.status}`}`, 'error');
+      return;
+    }
+    if (Array.isArray(json.data)) {
+      const saved: Ingredient[] = (json.data as any[]).map(mapIngredientRowToIngredient);
+      const savedMap = new Map<string, Ingredient>(saved.map(i => [i.id, i]));
+      setIngredients(prev => prev.map(i => savedMap.get(i.id) || i));
+    } else {
+      setIngredients(prev => prev.map(i => selectedIngredientIds.has(i.id) ? { ...i, category: category || undefined } : i));
+    }
+    showToast(`已更新 ${ids.length} 項原材料類別`);
+    setSelectedIngredientIds(new Set());
   };
 
   // ── Inline cost editing ──
   const handleInlineCostSave = async (ingredientId: string) => {
     const val = parseFloat(editingCostValue);
     if (isNaN(val) || val < 0) { showToast('請輸入有效的成本', 'error'); setEditingCostId(null); return; }
-    const { error } = await supabase.from('ingredients').update({ base_cost_per_lb: val }).eq('id', ingredientId);
-    if (error) { showToast(`成本更新失敗：${error.message}`, 'error'); }
-    else {
-      setIngredients(prev => prev.map(i => i.id === ingredientId ? { ...i, baseCostPerLb: val } : i));
-      showToast('成本已更新');
-    }
+    const ok = await updateIngredientInline(ingredientId, { baseCostPerLb: val });
+    if (ok) showToast('成本已更新');
     setEditingCostId(null);
   };
 
-  /** 商品樹：將產品掛到母料（僅寫 ingredient_id） */
+  /** 商品樹：將產品掛到母料 */
   const assignProductToIngredient = useCallback(async (productId: string, ingredientId: string) => {
     if (!ingredientId) { showToast('請選擇母料', 'error'); return; }
-    const { error } = await supabase.from('products').update({ ingredient_id: ingredientId }).eq('id', productId);
-    if (error) { showToast(`儲存失敗：${error.message}`, 'error'); return; }
-    setProducts(prev => prev.map(x => x.id === productId ? { ...x, ingredientId } : x));
+    const res = await fetch('/api/material-products', {
+      method: 'POST',
+      headers: buildMaterialApiHeaders('update'),
+      body: JSON.stringify({ action: 'assign_product_to_mother', productId, ingredientId }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) { showToast(`儲存失敗：${json.error || `HTTP ${res.status}`}`, 'error'); return; }
+    const saved = json.data ? mapProductRowToProduct(json.data) : null;
+    setProducts(prev => prev.map(x => x.id === productId ? (saved || { ...x, ingredientId, parentIngredientId: ingredientId }) : x));
     setProductTreeExpandedIds(prev => new Set(prev).add(ingredientId));
     showToast('已掛到母料下');
-  }, [showToast, setProducts]);
+  }, [buildMaterialApiHeaders, showToast, setProducts]);
 
   /** 商品樹：原地更新母料基本資料 */
   const updateIngredientInline = useCallback(async (
@@ -727,29 +796,36 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       if (!name) {
         showToast('請輸入母料名稱', 'error');
         loadIngredients();
-        return;
+        return false;
       }
       nextPatch.name = name;
     }
     if ('supplier' in nextPatch) nextPatch.supplier = nextPatch.supplier?.trim() || undefined;
 
     setIngredients(prev => prev.map(i => i.id === ingredientId ? { ...i, ...nextPatch } : i));
-    const res = await fetch('/api/material-products', {
-      method: 'POST',
-      headers: buildMaterialApiHeaders('update'),
-      body: JSON.stringify({ action: 'update_mother_material', id: ingredientId, patch: nextPatch }),
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok || !json.ok) {
-      showToast(`母料更新失敗：${json.error || `HTTP ${res.status}`}`, 'error');
+    try {
+      const res = await fetch('/api/material-products', {
+        method: 'POST',
+        headers: buildMaterialApiHeaders('update'),
+        body: JSON.stringify({ action: 'update_mother_material', id: ingredientId, patch: nextPatch }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) {
+        showToast(`母料更新失敗：${json.error || `HTTP ${res.status}`}`, 'error');
+        loadIngredients();
+        return false;
+      }
+      if (json.data) {
+        const saved = mapIngredientRowToIngredient(json.data);
+        setIngredients(prev => prev.map(i => i.id === ingredientId ? saved : i));
+      }
+      if ('name' in nextPatch) showToast('母料名稱已儲存');
+      return true;
+    } catch (err: any) {
+      showToast(`母料更新失敗：${err?.message || '未知錯誤'}`, 'error');
       loadIngredients();
-      return;
+      return false;
     }
-    if (json.data) {
-      const saved = mapIngredientRowToIngredient(json.data);
-      setIngredients(prev => prev.map(i => i.id === ingredientId ? saved : i));
-    }
-    if ('name' in nextPatch) showToast('母料名稱已儲存');
   }, [buildMaterialApiHeaders, loadIngredients, showToast]);
 
   const getProductTreeDraft = useCallback((ingredient: Ingredient): ProductTreeChildDraft => {
@@ -935,9 +1011,22 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       }
       if (errors.length > 0) { showToast(errors.slice(0, 3).join('\n'), 'error'); }
       if (payloads.length > 0) {
-        const { error } = await supabase.from('ingredients').insert(payloads);
-        if (error) showToast(`匯入失敗：${error.message}`, 'error');
-        else { showToast(`成功匯入 ${payloads.length} 項原材料`); loadIngredients(); }
+        const res = await fetch('/api/material-products', {
+          method: 'POST',
+          headers: buildMaterialApiHeaders('create'),
+          body: JSON.stringify({ action: 'import_mother_materials', rows: payloads }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || !json.ok) {
+          showToast(`匯入失敗：${json.error || `HTTP ${res.status}`}`, 'error');
+        } else if (Array.isArray(json.data)) {
+          const saved = json.data.map(mapIngredientRowToIngredient);
+          setIngredients(prev => [...prev, ...saved].sort((a, b) => a.name.localeCompare(b.name)));
+          showToast(`成功匯入 ${saved.length} 項原材料`);
+        } else {
+          showToast(`成功匯入 ${payloads.length} 項原材料`);
+          loadIngredients();
+        }
       }
     } catch (err: any) {
       showToast(`CSV 解析失敗：${err.message}`, 'error');
@@ -2009,6 +2098,10 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                             onClick={() => setEditing({ ...ing, isNew: false })}>
                             <Edit size={16} />
                           </button>
+                          <button type="button" className="shrink-0 p-2 rounded-xl border border-slate-200 text-slate-400 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50" title="刪除母料"
+                            onClick={() => { void handleDeleteIngredient(ing); }}>
+                            <Trash2 size={16} />
+                          </button>
                         </div>
                         {open && (
                           <div className="ml-10 mr-0 border-t border-slate-100 bg-slate-50/50 pb-4 pl-4 pr-4 pt-2">
@@ -2237,12 +2330,17 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
               <span className="text-xs font-black text-blue-700">已選 {selectedIngredientIds.size} 項</span>
               <div className="h-4 w-px bg-blue-200" />
               <select
-                defaultValue=""
-                onChange={e => { if (e.target.value) handleBulkCategoryChange(e.target.value); e.target.value = ''; }}
+                defaultValue="__placeholder"
+                onChange={e => {
+                  if (e.target.value !== '__placeholder') {
+                    handleBulkCategoryChange(e.target.value === '__clear__' ? '' : e.target.value);
+                  }
+                  e.target.value = '__placeholder';
+                }}
                 className="px-2 py-1.5 bg-white border border-blue-200 rounded-lg text-xs font-bold text-blue-700"
               >
-                <option value="" disabled>批量改類別...</option>
-                <option value="">清除類別</option>
+                <option value="__placeholder" disabled>批量改類別...</option>
+                <option value="__clear__">清除類別</option>
                 {categories.map(c => <option key={c.id} value={c.name}>{c.emoji} {c.name}</option>)}
               </select>
               <button onClick={handleBulkDeleteIngredients} className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-100 text-rose-700 rounded-lg text-xs font-black hover:bg-rose-200">
@@ -2372,7 +2470,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                               title="進出記錄"
                             ><History size={13} /></button>
                             <button onClick={() => setEditing({ ...ing, isNew: false })} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400"><Edit size={13} /></button>
-                            <button onClick={() => handleDeleteIngredient(ing.id)} className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-500"><Trash2 size={13} /></button>
+                            <button onClick={() => handleDeleteIngredient(ing)} className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-500"><Trash2 size={13} /></button>
                           </div>
                         </td>
                       </tr>

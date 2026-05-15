@@ -18,9 +18,9 @@ export default async function handler(req: Req, res: Res) {
 
   const action = req.body?.action;
   const requiredOp =
-    action === 'create_child_product' ? 'create'
-      : action === 'update_mother_material' ? 'update'
-        : action === 'delete_child_product' ? 'delete'
+    action === 'create_child_product' || action === 'create_mother_material' || action === 'import_mother_materials' ? 'create'
+      : action === 'update_mother_material' || action === 'bulk_update_mother_materials' || action === 'assign_product_to_mother' ? 'update'
+        : action === 'delete_child_product' || action === 'delete_mother_materials' ? 'delete'
           : undefined;
   const auth = await verifyAdminRequest(req, 'warehouse_ops', requiredOp);
   if (!auth.ok) return res.status(auth.status || 401).json({ ok: false, error: auth.error || 'Unauthorized' });
@@ -33,7 +33,43 @@ export default async function handler(req: Req, res: Res) {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
+  const normalizeMotherMaterialInput = (input: any) => ({
+    name: safeTrim(input.name),
+    name_en: safeTrim(input.name_en ?? input.nameEn) || null,
+    base_cost_per_lb: Number(input.base_cost_per_lb ?? input.baseCostPerLb) || 0,
+    supplier: safeTrim(input.supplier) || null,
+    market_benchmark: safeTrim(input.market_benchmark ?? input.marketBenchmark) || null,
+    unit: safeTrim(input.unit) || 'lb',
+    category: safeTrim(input.category) || null,
+    material_type: safeTrim(input.material_type ?? input.materialType) || 'meat',
+    notes: safeTrim(input.notes) || null,
+  });
+
   try {
+    if (action === 'create_mother_material') {
+      const row = normalizeMotherMaterialInput(req.body?.row || {});
+      if (!row.name) return res.status(400).json({ ok: false, error: '請輸入母料名稱' });
+      if (!['meat', 'third_party'].includes(row.material_type)) row.material_type = 'meat';
+
+      const { data, error } = await supabase.from('ingredients').insert(row).select('*').single();
+      if (error) return res.status(400).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, data });
+    }
+
+    if (action === 'import_mother_materials') {
+      const rows = Array.isArray(req.body?.rows)
+        ? req.body.rows.map(normalizeMotherMaterialInput).filter((row: any) => row.name)
+        : [];
+      if (rows.length === 0) return res.status(400).json({ ok: false, error: '沒有可匯入的母料資料' });
+      rows.forEach((row: any) => {
+        if (!['meat', 'third_party'].includes(row.material_type)) row.material_type = 'meat';
+      });
+
+      const { data, error } = await supabase.from('ingredients').insert(rows).select('*');
+      if (error) return res.status(400).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, data });
+    }
+
     if (action === 'update_mother_material') {
       const id = safeTrim(req.body?.id);
       const patch = req.body?.patch || {};
@@ -45,17 +81,77 @@ export default async function handler(req: Req, res: Res) {
         if (!name) return res.status(400).json({ ok: false, error: '請輸入母料名稱' });
         payload.name = name;
       }
+      if ('nameEn' in patch || 'name_en' in patch) payload.name_en = safeTrim(patch.nameEn ?? patch.name_en) || null;
       if ('category' in patch) payload.category = safeTrim(patch.category) || null;
       if ('unit' in patch) payload.unit = safeTrim(patch.unit) || 'lb';
       if ('materialType' in patch) payload.material_type = safeTrim(patch.materialType) || 'meat';
+      if ('material_type' in patch) payload.material_type = safeTrim(patch.material_type) || 'meat';
       if ('baseCostPerLb' in patch) payload.base_cost_per_lb = Number(patch.baseCostPerLb) || 0;
+      if ('base_cost_per_lb' in patch) payload.base_cost_per_lb = Number(patch.base_cost_per_lb) || 0;
       if ('supplier' in patch) payload.supplier = safeTrim(patch.supplier) || null;
+      if ('marketBenchmark' in patch || 'market_benchmark' in patch) payload.market_benchmark = safeTrim(patch.marketBenchmark ?? patch.market_benchmark) || null;
+      if ('notes' in patch) payload.notes = safeTrim(patch.notes) || null;
 
       if (Object.keys(payload).length === 0) {
         return res.status(400).json({ ok: false, error: '沒有可更新的母料資料' });
       }
 
       const { data, error } = await supabase.from('ingredients').update(payload).eq('id', id).select('*').single();
+      if (error) return res.status(400).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, data });
+    }
+
+    if (action === 'bulk_update_mother_materials') {
+      const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(safeTrim).filter(Boolean) : [];
+      const patch = req.body?.patch || {};
+      if (ids.length === 0) return res.status(400).json({ ok: false, error: '缺少母料 ID' });
+
+      const payload: Record<string, any> = {};
+      if ('category' in patch) payload.category = safeTrim(patch.category) || null;
+      if ('unit' in patch) payload.unit = safeTrim(patch.unit) || 'lb';
+      if ('materialType' in patch) payload.material_type = safeTrim(patch.materialType) || 'meat';
+      if ('baseCostPerLb' in patch) payload.base_cost_per_lb = Number(patch.baseCostPerLb) || 0;
+      if ('supplier' in patch) payload.supplier = safeTrim(patch.supplier) || null;
+      if (Object.keys(payload).length === 0) return res.status(400).json({ ok: false, error: '沒有可更新的母料資料' });
+
+      const { data, error } = await supabase.from('ingredients').update(payload).in('id', ids).select('*');
+      if (error) return res.status(400).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, data });
+    }
+
+    if (action === 'delete_mother_materials') {
+      const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(safeTrim).filter(Boolean) : [];
+      if (ids.length === 0) return res.status(400).json({ ok: false, error: '缺少母料 ID' });
+
+      const { error: unlinkByIngredientError } = await supabase
+        .from('products')
+        .update({ ingredient_id: null, parent_ingredient_id: null })
+        .in('ingredient_id', ids);
+      if (unlinkByIngredientError) return res.status(400).json({ ok: false, error: unlinkByIngredientError.message });
+
+      const { error: unlinkByParentError } = await supabase
+        .from('products')
+        .update({ ingredient_id: null, parent_ingredient_id: null })
+        .in('parent_ingredient_id', ids);
+      if (unlinkByParentError) return res.status(400).json({ ok: false, error: unlinkByParentError.message });
+
+      const { data, error } = await supabase.from('ingredients').delete().in('id', ids).select('*');
+      if (error) return res.status(400).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, data });
+    }
+
+    if (action === 'assign_product_to_mother') {
+      const productId = safeTrim(req.body?.productId);
+      const ingredientId = safeTrim(req.body?.ingredientId);
+      if (!productId) return res.status(400).json({ ok: false, error: '缺少產品 ID' });
+      if (!ingredientId) return res.status(400).json({ ok: false, error: '請選擇母料' });
+
+      const { data, error } = await supabase
+        .from('products')
+        .update({ ingredient_id: ingredientId, parent_ingredient_id: ingredientId })
+        .eq('id', productId)
+        .select('*')
+        .single();
       if (error) return res.status(400).json({ ok: false, error: error.message });
       return res.status(200).json({ ok: true, data });
     }
