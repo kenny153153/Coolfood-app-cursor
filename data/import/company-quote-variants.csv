@@ -1,0 +1,46 @@
+parent_ingredient_id,pdf_variant_name,suggested_processing_type_codes,pdf_processing_surcharge,yield_rate_override,margin_factor_pdf,cash_p0,cash_p3,review_flag
+巴西豬扒,巴西豬扒片 / 條,slice|strip|steak,1.5,0.85,0.87,13.6,14.0,
+巴西肉眼,巴西肉眼粒 / 絲(5磅 / 包),dice|shred,1.5,0.85,0.87,16.0,16.5,
+巴西肉眼,巴西肉眼片 / 扒(5磅 / 包),slice|steak,1.5,0.85,0.87,15.9,16.4,inferred_parent_single_row
+巴西肉眼,[PDF 母列保留] 巴西肉眼,,,0.85,,,,merged_parent_trace canonical_cost=12.6 this_pdf_cost=12.5 pre_merge_stem=巴西肉眼
+巴西腩排,巴西腩排粒(5磅 / 包),dice,1.5,0.85,0.87,13.3,13.8,
+巴西肋排,巴西肋排粒(5磅 / 包),dice,1.5,0.85,0.87,17.8,18.4,
+a級有皮挑骨豬腩,A級有皮挑骨豬腩片 / 粒,dice|slice,1.5,0.85,0.87,18.5,19.1,
+a級去皮挑骨豬腩,A級去皮挑骨豬腩片 / 粒,dice|slice,1.5,0.85,0.87,22.0,22.6,
+豬軟骨,切豬軟骨,slice,1.5,0.85,0.87,17.4,17.9,inferred_parent_single_row
+巴西梅肉,巴西梅肉片 / 扒(5磅 / 包),slice|steak,1.5,0.85,0.87,16.4,17.0,
+巴西梅肉,巴西梅肉粒 / 絲(5磅 / 包),dice|shred,1.5,0.85,0.87,16.4,17.0,
+巴西赤肉,巴西赤肉片(5磅 / 包),slice,1.5,0.85,0.87,14.7,15.2,
+巴西赤肉,巴西赤肉粒 / 絲(5磅 / 包),dice|shred,1.5,0.85,0.85,15.0,15.5,
+豬面肉,豬面肉片(豬頸肉片),slice,1.5,0.85,0.87,20.5,21.1,inferred_parent_single_row
+豬面肉,[PDF 母列保留] 豬面肉,,,0.85,,,,merged_parent_trace canonical_cost=16.5 this_pdf_cost=16.5 pre_merge_stem=豬面肉
+巴西豬手,巴西豬手粒(5磅 / 包),dice,1.5,0.85,0.87,7.8,8.1,
+日本豬手,日本豬手粒(5磅 / 包),dice,1.5,0.85,0.87,9.5,9.8,
+巴西牛腩,巴西牛腩粒,dice,2,0.85,0.87,19.0,19.6,
+牛肋,牛肋條 (抄碼),strip,,0.85,0.87,36.8,37.9,inferred_parent_single_row
+阿根廷牛根,阿根廷牛根粒,dice,2,0.85,0.87,16.7,17.2,
+巴西-牛根,巴西(粗)牛根切粒,dice,2,0.85,0.87,20.2,20.8,
+巴西西冷,巴西西冷扒,steak,2,0.85,0.86,32.8,33.8,
+美國斧頭扒0-87-0-0-磅-0-0-磅金錢展,美國斧頭扒0.87 $0.0 / 磅$0.0 / 磅金錢展 (抄碼),steak,,0.85,0.87,26.4,27.3,inferred_parent_single_row
+美國prime牛小排,美國Prime牛小排(原舊代切),slice,4,0.85,0.87,151.1,155.8,
+美國安格斯牛小排,美國安格斯牛小排(原舊代切),slice,2,0.85,0.87,137.6,141.9,inferred_parent_single_row
+美國安格斯牛小排,[PDF 母列保留] 美國安格斯牛小排,,,0.85,,,,merged_parent_trace canonical_cost=118 this_pdf_cost=118 pre_merge_stem=美國安格斯牛小排
+巴西牛冧,巴西牛冧片(牛肉片),slice,2,0.85,0.85,33.8,34.8,
+巴西牛冧,巴西牛冧粒 / 絲,dice|shred,3,0.85,0.85,34.8,35.8,
+美國cab三支牛仔骨,美國CAB三支牛仔骨片,slice,4,0.85,0.87,68.7,70.8,inferred_parent_single_row
+墨西哥sukarne雙片肥牛,020600-33墨西哥Sukarne雙片肥牛,slice,,0.85,0.85,27.1,27.9,inferred_parent_single_row
+墨西哥雙片肥牛,020601-33墨西哥雙片肥牛片(5磅裝),slice,3,0.85,0.87,29.4,30.3,inferred_parent_single_row
+美國s-p肥牛,[PDF 母列保留] 美國S.P肥牛片(5磅裝) (1磅裝+$3),,,0.85,,,,merged_parent_trace canonical_cost=30.2 this_pdf_cost=30.2 pre_merge_stem=美國S.P肥牛片(5磅裝) (1磅裝+$3)
+美國肩胛三角肥牛,[PDF 母列保留] 美國肩胛三角肥牛,,,0.85,,,,merged_parent_trace canonical_cost=57 this_pdf_cost=57 pre_merge_stem=美國肩胛三角肥牛
+美國牛板健,[PDF 母列保留] 美國牛板健(肩胛牛柳) (代切) (1磅裝 +$3),,,0.85,,,,merged_parent_trace canonical_cost=41 this_pdf_cost=41 pre_merge_stem=美國牛板健(肩胛牛柳) (代切) (1磅裝 +$3)
+美國下肩胛肉眼,[PDF 母列保留] 美國下肩胛肉眼 (切),,,0.85,,,,merged_parent_trace canonical_cost=48 this_pdf_cost=48 pre_merge_stem=美國下肩胛肉眼 (切)
+美國下肩胛板翼,[PDF 母列保留] 美國下肩胛板翼 (切) (1磅裝 +$3),,,0.85,,,,merged_parent_trace canonical_cost=68.5 this_pdf_cost=68.5 pre_merge_stem=美國下肩胛板翼 (切) (1磅裝 +$3)
+巴西牛尾,[PDF 母列保留] 巴西牛尾 (切),,,0.85,,,,merged_parent_trace canonical_cost=14.5 this_pdf_cost=14.5 pre_merge_stem=巴西牛尾 (切)
+有皮雞脾肉,有皮雞粒(5磅 / 包),dice,1.5,0.85,0.87,10.0,10.3,
+有皮雞脾肉,[PDF 母列保留] 有皮雞脾肉(2KG X 6餅),,,0.85,,,,merged_parent_trace canonical_cost=7.4 this_pdf_cost=7.4 pre_merge_stem=有皮雞脾肉(2KG X 6餅)
+去皮上脾肉,去皮雞絲 / 粒 / 球(5磅 / 包),dice|shred,2,0.85,0.87,11.1,11.4,inferred_parent_single_row
+去皮上脾肉,[PDF 母列保留] 去皮上脾肉,,,0.85,,,,merged_parent_trace canonical_cost=7.9 this_pdf_cost=7.9 pre_merge_stem=去皮上脾肉
+雞脾,切雞脾(5磅 / 包),slice,1.5,0.85,0.87,8.9,9.1,inferred_parent_single_row
+紐西蘭7支骨羊骨扒,紐西蘭7支骨羊骨扒(原舊代切),steak,3,0.85,0.87,73.1,75.4,inferred_parent_single_row
+紐西蘭7支骨羊骨扒,[PDF 母列保留] 紐西蘭7支骨羊骨扒,,,0.85,,,,merged_parent_trace canonical_cost=61 this_pdf_cost=61 pre_merge_stem=紐西蘭7支骨羊骨扒
+120-170越南魚柳m,[PDF 母列保留] 120 / 170越南魚柳M,,,0.85,,,,merged_parent_trace canonical_cost=7.5 this_pdf_cost=7.2 pre_merge_stem=120 / 170越南魚柳M

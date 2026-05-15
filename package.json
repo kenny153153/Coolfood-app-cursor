@@ -1,5 +1,5 @@
 {
-  "name": "fridge-link-grocer",
+  "name": "coolfood-app",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -13,7 +13,8 @@
     "test": "npx playwright test",
     "test:ui": "npx playwright test --ui",
     "supabase:types": "npx supabase gen types typescript --project-id \"$SUPABASE_PROJECT_ID\" > supabase-types.ts",
-    "sf:self-test": "npx tsx scripts/sf-integration-self-test.ts"
+    "sf:self-test": "npx tsx scripts/sf-integration-self-test.ts",
+    "import:company-quote": "node scripts/parse-company-quote-cost-sheet.mjs"
   },
   "dependencies": {
     "@google-cloud/vertexai": "^1.10.0",
@@ -34,6 +35,7 @@
     "@types/bcryptjs": "^3.0.0",
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "pdf-parse": "^1.1.1",
     "playwright": "^1.58.2",
     "tailwindcss": "^4.1.18",
     "typescript": "~5.8.2",

@@ -29,6 +29,34 @@ function getStripe(): Stripe {
   return new Stripe(secretKey);
 }
 
+/** Allowed origins for Stripe Checkout success/cancel URLs (open-redirect hardening). */
+const ALLOWED_SUCCESS_ORIGINS = new Set([
+  'https://coolfood.com.hk',
+  'https://www.coolfood.com.hk',
+  'https://coolfood-app-cursor.vercel.app',
+]);
+
+const DEFAULT_SUCCESS_ORIGIN = 'https://coolfood.com.hk';
+
+function normalizeOrigin(url: string): string {
+  return url.trim().replace(/\/+$/, '');
+}
+
+function resolveSuccessOrigin(raw: string | undefined): { origin: string } | { error: string } {
+  const trimmed = typeof raw === 'string' ? raw.trim() : '';
+  if (!trimmed) {
+    return { origin: DEFAULT_SUCCESS_ORIGIN };
+  }
+  const normalized = normalizeOrigin(trimmed);
+  if (!normalized.startsWith('https://')) {
+    return { error: 'success_origin must use https' };
+  }
+  if (!ALLOWED_SUCCESS_ORIGINS.has(normalized)) {
+    return { error: 'success_origin is not in the allowed list' };
+  }
+  return { origin: normalized };
+}
+
 // ─── create-checkout-session ────────────────────────────────────
 
 async function handleCreateCheckoutSession(req: any, res: any) {
@@ -48,9 +76,11 @@ async function handleCreateCheckoutSession(req: any, res: any) {
 
   const body = req.body as { merchant_order_id?: string; success_origin?: string };
   const merchantOrderId = typeof body?.merchant_order_id === 'string' ? body.merchant_order_id : undefined;
-  const successOrigin = typeof body?.success_origin === 'string' && body.success_origin
-    ? body.success_origin
-    : (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://coolfood-app-cursor.vercel.app');
+  const originRes = resolveSuccessOrigin(body?.success_origin);
+  if ('error' in originRes) {
+    return res.status(400).json({ error: originRes.error, code: 'INVALID_SUCCESS_ORIGIN' });
+  }
+  const successOrigin = originRes.origin;
 
   if (!merchantOrderId) {
     return res.status(400).json({ error: 'Invalid merchant_order_id', code: 'BAD_REQUEST' });

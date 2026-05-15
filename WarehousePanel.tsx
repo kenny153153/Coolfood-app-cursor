@@ -9,7 +9,7 @@ import {
   Coins, ClipboardList, Download, CheckSquare, Square, Minus,
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
-import { computeProductCost, computePackCost, mapMaterialProcessingRow } from './supabaseMappers';
+import { computeProductCost, computePackCost, mapMaterialProcessingRow, mapProductToRow } from './supabaseMappers';
 import type {
   Ingredient, IngredientCategory, SaleChannel, MaterialType, Supplier,
   RawMaterialCatalog, SupplierQuote, QuoteLineItem,
@@ -29,7 +29,17 @@ interface Props {
   isMediaUrl: (url: string) => boolean;
 }
 
-type SubTab = 'ingredients' | 'suppliers' | 'quote_compare' | 'purchase_orders' | 'goods_receiving' | 'units' | 'processing_types' | 'product_costs' | 'reorder_alerts';
+type SubTab =
+  | 'material_line'
+  | 'ingredients'
+  | 'suppliers'
+  | 'quote_compare'
+  | 'purchase_orders'
+  | 'goods_receiving'
+  | 'units'
+  | 'processing_types'
+  | 'product_costs'
+  | 'reorder_alerts';
 
 const MATERIAL_TYPES: { value: MaterialType; label: string }[] = [
   { value: 'meat', label: '🥩 肉類原材料' },
@@ -125,7 +135,14 @@ const EMPTY_PO_LINE: POLineItem = {
 };
 
 const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, costItems, setCostItems, siteConfig, isMediaUrl }) => {
-  const [subTab, setSubTab] = useState<SubTab>('ingredients');
+  const [subTab, setSubTab] = useState<SubTab>('material_line');
+
+  /** 母料→規格 中心：展開哪些原材料列 */
+  const [hubExpandedIds, setHubExpandedIds] = useState<Set<string>>(new Set());
+  /** 只顯示已掛產品的母料（預設開，避免空白佔版面） */
+  const [hubOnlyWithProducts, setHubOnlyWithProducts] = useState(true);
+  /** 母料中心：產品列勾選（批次寫入 DB） */
+  const [hubSelectedProductIds, setHubSelectedProductIds] = useState<Set<string>>(new Set());
 
   // ── Ingredients state ──
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
@@ -535,8 +552,12 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     if (subTab === 'quote_compare') { loadSuppliers(); loadQuotesAndCatalog(); }
     if (subTab === 'processing_types') loadProcessingTypes();
     if (subTab === 'goods_receiving') { loadGoodsReceipts(); loadPurchaseOrders(); }
-    if (subTab === 'product_costs') { loadMatProcEntries(); loadProcessingTypes(); }
+    if (subTab === 'product_costs' || subTab === 'material_line') { loadMatProcEntries(); loadProcessingTypes(); }
   }, [subTab, loadPurchaseOrders, loadSuppliers, loadQuotesAndCatalog, loadProcessingTypes, loadGoodsReceipts, loadMatProcEntries]);
+
+  useEffect(() => {
+    if (subTab !== 'material_line') setHubSelectedProductIds(new Set());
+  }, [subTab]);
 
   // ── Ingredients CRUD ──
   const filtered = ingredients.filter(i => {
@@ -618,6 +639,33 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     }
     setEditingCostId(null);
   };
+
+  /** 母料中心／內聯：寫回買入成本（失敗才 toast） */
+  const flushIngredientBaseCost = useCallback(async (ingredientId: string) => {
+    const cur = ingredients.find(i => i.id === ingredientId);
+    if (!cur) return;
+    const { error } = await supabase.from('ingredients').update({ base_cost_per_lb: cur.baseCostPerLb }).eq('id', ingredientId);
+    if (error) showToast(`母料成本儲存失敗：${error.message}`, 'error');
+  }, [ingredients, showToast]);
+
+  /** 母料中心／內聯：寫回單一產品成本與售價欄位 */
+  const flushProductCostRow = useCallback(async (productId: string) => {
+    const cur = products.find(p => p.id === productId);
+    if (!cur) return;
+    const row = mapProductToRow(cur);
+    const { error } = await supabase.from('products').update({
+      cost_price: row.cost_price,
+      cost_item_ids: row.cost_item_ids,
+      ingredient_id: row.ingredient_id,
+      yield_rate: row.yield_rate,
+      processing_cost: row.processing_cost,
+      packaging_cost: row.packaging_cost,
+      misc_cost: row.misc_cost,
+      price: row.price,
+      member_price: row.member_price,
+    }).eq('id', productId);
+    if (error) showToast(`產品儲存失敗：${error.message}`, 'error');
+  }, [products, showToast]);
 
   // ── CSV helpers ──
   const downloadCsvTemplate = () => {
@@ -1530,6 +1578,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       {/* Sub-tab navigation */}
       <div className="flex items-center gap-2 flex-wrap">
         {([
+          { id: 'material_line' as SubTab, label: '母料→規格→計價', icon: <ClipboardList size={16} /> },
           { id: 'ingredients' as SubTab, label: '原材料', icon: <Layers size={16} /> },
           { id: 'suppliers' as SubTab, label: '供應商', icon: <Building2 size={16} /> },
           { id: 'quote_compare' as SubTab, label: '報價比較', icon: <BarChart3 size={16} /> },
@@ -1545,7 +1594,8 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
             onClick={() => setSubTab(tab.id)}
             className={`px-5 py-2.5 rounded-xl text-sm font-black transition-all flex items-center gap-2 ${
               subTab === tab.id
-                ? tab.id === 'quote_compare' ? 'bg-indigo-600 text-white shadow-lg'
+                ? tab.id === 'material_line' ? 'bg-teal-600 text-white shadow-lg'
+                  : tab.id === 'quote_compare' ? 'bg-indigo-600 text-white shadow-lg'
                   : tab.id === 'goods_receiving' ? 'bg-emerald-600 text-white shadow-lg'
                   : 'bg-blue-600 text-white shadow-lg'
                 : 'bg-white text-slate-500 border border-slate-200 hover:border-blue-300'
@@ -1558,6 +1608,452 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
           </button>
         ))}
       </div>
+
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {/* ── TAB: 母料→規格→計價（整合中心） ── */}
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {subTab === 'material_line' && (() => {
+        const costsWsRules: WholesalePricingRules = siteConfig.wholesalePricingRules || { targetMarginFactor: 0.88, priceTiers: [] };
+        if (!costsWsRules.priceTiers) costsWsRules.priceTiers = [];
+        const costsFilteredProducts = products.filter(p => {
+          const ch = p.saleChannel || 'retail';
+          if (costsChannelFilter === 'retail') return ch === 'retail' || ch === 'both';
+          if (costsChannelFilter === 'wholesale') return ch === 'wholesale' || ch === 'both';
+          return true;
+        });
+        const hubIngs = filtered.filter(ing =>
+          !hubOnlyWithProducts || costsFilteredProducts.some(p => p.ingredientId === ing.id)
+        );
+        const sortIngProducts = (list: Product[]) =>
+          [...list].sort((a, b) => {
+            const aw = a.processingTypeId ? 1 : 0;
+            const bw = b.processingTypeId ? 1 : 0;
+            if (aw !== bw) return aw - bw;
+            return (a.variantLabel || a.name).localeCompare(b.variantLabel || b.name);
+          });
+        const getMatEntry = (ingredientId: string, processingTypeId: string) =>
+          matProcEntries.find(e => e.ingredientId === ingredientId && e.processingTypeId === processingTypeId);
+        const updateMatEntry = async (ingredientId: string, processingTypeId: string, field: 'yieldRateOverride' | 'surchargeOverride', value: number | undefined) => {
+          const existing = getMatEntry(ingredientId, processingTypeId);
+          if (existing) {
+            const updates: Record<string, number | null> = {};
+            if (field === 'yieldRateOverride') updates.yield_rate_override = value ?? null;
+            if (field === 'surchargeOverride') updates.surcharge_override = value ?? null;
+            await supabase.from('material_processing_matrix').update(updates).eq('id', existing.id);
+            setMatProcEntries(prev => prev.map(e => e.id === existing.id ? { ...e, [field]: value } : e));
+          } else {
+            const newEntry = {
+              ingredient_id: ingredientId,
+              processing_type_id: processingTypeId,
+              yield_rate_override: field === 'yieldRateOverride' ? value : null,
+              surcharge_override: field === 'surchargeOverride' ? value : null,
+              is_available: true,
+            };
+            const { data } = await supabase.from('material_processing_matrix').insert(newEntry).select('*').single();
+            if (data) setMatProcEntries(prev => [...prev, mapMaterialProcessingRow(data)]);
+          }
+        };
+        const saveCostItemsToDb = async () => {
+          try {
+            await supabase.from('site_config').upsert({ id: 'cost_items', value: costItems });
+            showToast('成本項目已儲存');
+          } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
+        };
+        const saveSelectedHubProducts = async () => {
+          if (hubSelectedProductIds.size === 0) { showToast('請勾選產品列', 'error'); return; }
+          try {
+            for (const pid of hubSelectedProductIds) {
+              const p = products.find(x => x.id === pid);
+              if (!p) continue;
+              const row = mapProductToRow(p);
+              await supabase.from('products').update({
+                cost_price: row.cost_price,
+                cost_item_ids: row.cost_item_ids,
+                ingredient_id: row.ingredient_id,
+                yield_rate: row.yield_rate,
+                processing_cost: row.processing_cost,
+                packaging_cost: row.packaging_cost,
+                misc_cost: row.misc_cost,
+                price: row.price,
+                member_price: row.member_price,
+              }).eq('id', pid);
+            }
+            showToast(`已儲存 ${hubSelectedProductIds.size} 個產品`);
+            setHubSelectedProductIds(new Set());
+          } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
+        };
+        const ptListAll = processingTypes.filter(pt => pt.isActive).sort((a, b) => a.sortOrder - b.sortOrder);
+        const hubIngIds = hubIngs.map(i => i.id);
+        const allHubIngsSelected = hubIngIds.length > 0 && hubIngIds.every(id => selectedIngredientIds.has(id));
+
+        return (
+          <div className="space-y-6">
+            <div className="bg-teal-50 border border-teal-100 rounded-[2rem] p-5 flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h3 className="font-black text-slate-900 text-sm">母料 → 加工矩陣 → 規格／前台售價</h3>
+                <p className="text-[10px] text-teal-800/90 font-bold mt-1 max-w-xl leading-relaxed">
+                  與「產品成本一覽」同一套資料。搜尋／類別／材料類型與「原材料」分頁同步。母料買入價、產品包裝／雜費／標價等欄位可在欄內修改；離開欄位即寫入資料庫（失敗才會提示）。
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={() => setSubTab('ingredients')} className="px-3 py-1.5 bg-white border border-teal-200 rounded-xl text-[10px] font-black text-teal-800 hover:bg-teal-100/50">原材料</button>
+                <button type="button" onClick={() => setSubTab('product_costs')} className="px-3 py-1.5 bg-white border border-teal-200 rounded-xl text-[10px] font-black text-teal-800 hover:bg-teal-100/50">產品成本一覽</button>
+                <button type="button" onClick={() => setSubTab('processing_types')} className="px-3 py-1.5 bg-white border border-teal-200 rounded-xl text-[10px] font-black text-teal-800 hover:bg-teal-100/50">加工方式</button>
+              </div>
+            </div>
+
+            {hubSelectedProductIds.size > 0 && (
+              <div className="flex flex-wrap items-center gap-3 px-4 py-3 bg-amber-50 border border-amber-200 rounded-2xl">
+                <span className="text-xs font-black text-amber-900">已選 {hubSelectedProductIds.size} 個產品</span>
+                <button type="button" onClick={saveSelectedHubProducts} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black flex items-center gap-1"><Save size={12} /> 批量儲存勾選</button>
+                <button type="button" onClick={() => setHubSelectedProductIds(new Set())} className="text-[10px] font-bold text-amber-800 underline">清除勾選</button>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input value={search} onChange={e => setSearch(e.target.value)} placeholder="搜尋母料…" className="pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-teal-300 w-52" />
+              </div>
+              <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} className="px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold">
+                <option value="all">所有類別</option>
+                {categories.map(c => <option key={c.id} value={c.name}>{c.emoji} {c.name}</option>)}
+              </select>
+              <select value={filterMaterialType} onChange={e => setFilterMaterialType(e.target.value as MaterialType | 'all')} className="px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold">
+                <option value="all">所有類型</option>
+                {MATERIAL_TYPES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+              </select>
+              {(['all', 'retail', 'wholesale'] as const).map(ch => (
+                <button key={ch} type="button" onClick={() => setCostsChannelFilter(ch)}
+                  className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${costsChannelFilter === ch ? 'bg-slate-900 text-white shadow-lg' : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-50'}`}>
+                  {ch === 'all' ? '通路·全部' : ch === 'retail' ? '零售' : '批發'}
+                </button>
+              ))}
+              <label className="flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 cursor-pointer">
+                <input type="checkbox" checked={hubOnlyWithProducts} onChange={e => setHubOnlyWithProducts(e.target.checked)} className="w-4 h-4 rounded" />
+                只顯示已掛產品母料
+              </label>
+              <button type="button" onClick={() => {
+                if (allHubIngsSelected) {
+                  setSelectedIngredientIds(prev => {
+                    const n = new Set(prev);
+                    hubIngIds.forEach(id => n.delete(id));
+                    return n;
+                  });
+                } else {
+                  setSelectedIngredientIds(prev => new Set([...prev, ...hubIngIds]));
+                }
+              }} className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-600 hover:border-teal-300">
+                {allHubIngsSelected ? '取消本頁母料全選' : '本頁母料全選'}
+              </button>
+              <button type="button" onClick={() => setHubExpandedIds(new Set(hubIngs.map(i => i.id)))} className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-600">全部展開</button>
+              <button type="button" onClick={() => setHubExpandedIds(new Set())} className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-600">全部收合</button>
+            </div>
+
+            <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm space-y-4">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-amber-50 text-amber-600 rounded-xl"><Coins size={16} /></div>
+                  <div>
+                    <h4 className="font-black text-sm">附加成本項目</h4>
+                    <p className="text-[10px] text-slate-400 font-bold">與下方產品列勾選欄連動；改完請按儲存</p>
+                  </div>
+                </div>
+                <button type="button" onClick={saveCostItemsToDb} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black flex items-center gap-1"><Save size={12} /> 儲存項目</button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {costItems.map(ci => (
+                  <div key={ci.id} className="flex items-center gap-1.5 bg-slate-50 rounded-lg px-2.5 py-1.5 border border-slate-100">
+                    <input value={ci.name} onChange={e => setCostItems(prev => prev.map(x => x.id === ci.id ? { ...x, name: e.target.value } : x))} className="w-20 bg-transparent font-bold text-xs outline-none" placeholder="名稱" />
+                    <span className="text-slate-300">$</span>
+                    <input type="number" min="0" step="0.1" value={ci.defaultPrice} onChange={e => setCostItems(prev => prev.map(x => x.id === ci.id ? { ...x, defaultPrice: Number(e.target.value) || 0 } : x))} className="w-12 bg-transparent font-bold text-xs text-right outline-none" />
+                    <button type="button" onClick={() => setCostItems(prev => prev.filter(x => x.id !== ci.id))} className="p-0.5 text-rose-400 hover:text-rose-600"><X size={10} /></button>
+                  </div>
+                ))}
+                <button type="button" onClick={() => setCostItems(prev => [...prev, { id: `ci-${Date.now()}`, name: '', defaultPrice: 0 }])} className="px-2.5 py-1.5 border-2 border-dashed border-slate-200 rounded-lg text-[10px] font-black text-slate-400 hover:border-amber-400 hover:text-amber-600 flex items-center gap-1"><Plus size={10} /> 新增</button>
+              </div>
+            </div>
+
+            {matProcLoading ? (
+              <div className="flex items-center justify-center py-20"><RefreshCw size={24} className="animate-spin text-slate-300" /></div>
+            ) : hubIngs.length === 0 ? (
+              <div className="bg-white p-12 rounded-[2rem] border border-slate-100 shadow-sm text-center">
+                <ClipboardList size={32} className="text-slate-200 mx-auto mb-3" />
+                <p className="text-slate-400 font-bold">沒有符合篩選的母料</p>
+                <p className="text-[10px] text-slate-400 mt-2">試關閉「只顯示已掛產品母料」或調整搜尋條件</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {hubIngs.map(ing => {
+                  const ingProducts = sortIngProducts(costsFilteredProducts.filter(p => p.ingredientId === ing.id));
+                  const expanded = hubExpandedIds.has(ing.id);
+                  const ingProdIds = ingProducts.map(p => p.id);
+                  const allProdsPicked = ingProdIds.length > 0 && ingProdIds.every(id => hubSelectedProductIds.has(id));
+                  return (
+                    <div key={ing.id} className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+                      <div className={`flex flex-wrap items-center gap-2 p-4 ${expanded ? 'border-b border-slate-100 bg-gradient-to-r from-teal-50/60 to-slate-50/40' : 'bg-slate-50/40'}`}>
+                        <button type="button" onClick={() => toggleIngredientSelection(ing.id)} className="p-1 rounded-lg hover:bg-white/80 shrink-0">
+                          {selectedIngredientIds.has(ing.id) ? <CheckSquare size={18} className="text-teal-600" /> : <Square size={18} className="text-slate-300" />}
+                        </button>
+                        <button type="button" onClick={() => setHubExpandedIds(prev => {
+                          const n = new Set(prev);
+                          if (n.has(ing.id)) n.delete(ing.id); else n.add(ing.id);
+                          return n;
+                        })} className="p-1 rounded-lg hover:bg-white/80 shrink-0 text-slate-500">
+                          {expanded ? <ChevronDown size={20} /> : <ChevronRight size={20} />}
+                        </button>
+                        <div className="flex-1 min-w-[140px]">
+                          <p className="font-black text-slate-900 text-sm leading-tight">{ing.name}</p>
+                          {ing.nameEn && <p className="text-[10px] text-slate-400 font-bold">{ing.nameEn}</p>}
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="text-[10px] font-bold text-slate-400">買入</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={ing.baseCostPerLb}
+                            onChange={e => setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, baseCostPerLb: Number(e.target.value) || 0 } : x))}
+                            onBlur={() => { void flushIngredientBaseCost(ing.id); }}
+                            className="w-20 p-2 bg-white rounded-xl font-black text-sm text-right border border-slate-200 text-teal-800"
+                          />
+                          <span className="text-[10px] font-black text-slate-500">/{ing.unit}</span>
+                        </div>
+                        <span className="text-[10px] font-bold text-slate-400 shrink-0">{ingProducts.length} 款</span>
+                        <button type="button" title="在「原材料」分頁開啟完整編輯"
+                          onClick={() => { setEditing({ ...ing, isNew: false }); setSubTab('ingredients'); }}
+                          className="p-2 rounded-xl border border-slate-200 bg-white text-slate-500 hover:text-teal-600 hover:border-teal-200 shrink-0">
+                          <Edit size={16} />
+                        </button>
+                      </div>
+
+                      {expanded && (
+                        <div className="space-y-0">
+                          {ptListAll.length > 0 && (
+                            <div className="px-4 py-3 border-b border-slate-50 bg-white">
+                              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2">加工方式 × 母料（出成／加工費）</p>
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-xs min-w-[520px]">
+                                  <thead>
+                                    <tr className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                                      <th className="text-left px-2 py-1.5">加工方式</th>
+                                      <th className="text-right px-2 py-1.5 w-20">出成率</th>
+                                      <th className="text-right px-2 py-1.5 w-24">材料$/lb</th>
+                                      <th className="text-right px-2 py-1.5 w-20">加工$/lb</th>
+                                      <th className="text-right px-2 py-1.5 w-24">小計/lb</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    <tr className="border-t border-slate-50 bg-emerald-50/30">
+                                      <td className="px-2 py-2 font-bold text-emerald-700">原件（不加工）</td>
+                                      <td className="px-2 py-2 text-right text-emerald-600 font-bold">100%</td>
+                                      <td className="px-2 py-2 text-right font-bold">${ing.baseCostPerLb.toFixed(2)}</td>
+                                      <td className="px-2 py-2 text-right text-slate-400">—</td>
+                                      <td className="px-2 py-2 text-right font-black text-slate-800">${ing.baseCostPerLb.toFixed(2)}</td>
+                                    </tr>
+                                    {ptListAll.map(pt => {
+                                      const entry = getMatEntry(ing.id, pt.id);
+                                      const yr = entry?.yieldRateOverride || 1;
+                                      const proc = entry?.surchargeOverride || 0;
+                                      const matCost = yr > 0 ? ing.baseCostPerLb / yr : ing.baseCostPerLb;
+                                      const subtotal = matCost + proc;
+                                      return (
+                                        <tr key={pt.id} className="border-t border-slate-50 hover:bg-slate-50/50">
+                                          <td className="px-2 py-2 font-bold text-slate-700">{pt.name}{pt.spec ? ` (${pt.spec})` : ''}</td>
+                                          <td className="px-2 py-2 text-right">
+                                            <input type="number" min="0" max="1" step="0.01"
+                                              value={entry?.yieldRateOverride ?? ''}
+                                              onChange={e => { void updateMatEntry(ing.id, pt.id, 'yieldRateOverride', e.target.value ? Number(e.target.value) : undefined); }}
+                                              placeholder="—" className="w-14 p-1 bg-slate-50 rounded-md font-bold text-right border border-slate-100 text-xs" />
+                                          </td>
+                                          <td className="px-2 py-2 text-right font-bold text-blue-600">${matCost.toFixed(2)}</td>
+                                          <td className="px-2 py-2 text-right">
+                                            <input type="number" min="0" step="0.1"
+                                              value={entry?.surchargeOverride ?? ''}
+                                              onChange={e => { void updateMatEntry(ing.id, pt.id, 'surchargeOverride', e.target.value ? Number(e.target.value) : undefined); }}
+                                              placeholder="0" className="w-14 p-1 bg-slate-50 rounded-md font-bold text-right border border-slate-100 text-xs" />
+                                          </td>
+                                          <td className="px-2 py-2 text-right font-black text-amber-700">${subtotal.toFixed(2)}</td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          )}
+
+                          {ingProducts.length === 0 ? (
+                            <div className="p-6 text-center text-xs font-bold text-slate-400">此母料在目前通路篩選下沒有產品</div>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <div className="flex items-center justify-between px-4 py-2 bg-slate-50/80 border-b border-slate-100">
+                                <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">產品規格與前台價格</span>
+                                <button type="button" onClick={() => {
+                                  if (allProdsPicked) {
+                                    setHubSelectedProductIds(prev => {
+                                      const n = new Set(prev);
+                                      ingProdIds.forEach(id => n.delete(id));
+                                      return n;
+                                    });
+                                  } else {
+                                    setHubSelectedProductIds(prev => new Set([...prev, ...ingProdIds]));
+                                  }
+                                }} className="text-[10px] font-black text-teal-700 hover:underline">
+                                  {allProdsPicked ? '取消本子項全選' : '本子項產品全選'}
+                                </button>
+                              </div>
+                              <table className="w-full text-xs min-w-[720px]">
+                                <thead>
+                                  <tr className="bg-slate-50 text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                                    <th className="w-8 px-1 py-2 text-center">
+                                      <button type="button" onClick={() => {
+                                        if (allProdsPicked) {
+                                          setHubSelectedProductIds(prev => {
+                                            const n = new Set(prev);
+                                            ingProdIds.forEach(id => n.delete(id));
+                                            return n;
+                                          });
+                                        } else {
+                                          setHubSelectedProductIds(prev => new Set([...prev, ...ingProdIds]));
+                                        }
+                                      }} className="p-0.5 rounded">
+                                        {allProdsPicked ? <CheckSquare size={14} className="text-teal-600 mx-auto" /> : ingProdIds.some(id => hubSelectedProductIds.has(id)) ? <Minus size={14} className="text-teal-400 mx-auto" /> : <Square size={14} className="text-slate-300 mx-auto" />}
+                                      </button>
+                                    </th>
+                                    <th className="text-left px-2 py-2">規格</th>
+                                    <th className="text-center px-1 py-2 w-14">通路</th>
+                                    <th className="text-right px-1 py-2 w-16">品項出成</th>
+                                    <th className="text-right px-1 py-2 w-16">加工$/lb</th>
+                                    <th className="text-right px-1 py-2">成本/lb</th>
+                                    <th className="text-right px-1 py-2">包裝</th>
+                                    <th className="text-right px-1 py-2">雜費</th>
+                                    {costItems.map(ci => <th key={ci.id} className="text-center px-0.5 py-2 max-w-[52px] truncate" title={ci.name}>{ci.name || '—'}</th>)}
+                                    <th className="text-right px-1 py-2">總/lb</th>
+                                    <th className="text-right px-1 py-2">包裝規格</th>
+                                    <th className="text-right px-1 py-2">每包</th>
+                                    <th className="text-right px-1 py-2">標價</th>
+                                    <th className="text-right px-1 py-2">會員</th>
+                                    {costsChannelFilter !== 'retail' && <th className="text-right px-1 py-2 text-orange-500">P0</th>}
+                                    {costsChannelFilter !== 'retail' && costsWsRules.priceTiers.map(tier => (
+                                      <th key={tier.name} className="text-right px-1 py-2 text-teal-500 whitespace-nowrap">{tier.name}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-50">
+                                  {ingProducts.map(p => {
+                                    const perLbCost = computeProductCost(p, ing, costItems, matProcEntries);
+                                    const packCost = computePackCost(perLbCost, p.packWeightLb, p.pricingMode);
+                                    const p0 = packCost > 0 ? packCost / costsWsRules.targetMarginFactor : 0;
+                                    const ch = p.saleChannel || 'retail';
+                                    const chLabel = ch === 'both' ? '雙' : ch === 'wholesale' ? '批' : '零';
+                                    return (
+                                      <tr key={p.id} className="hover:bg-slate-50/50">
+                                        <td className="text-center px-1 py-1.5">
+                                          <button type="button" onClick={() => setHubSelectedProductIds(prev => {
+                                            const n = new Set(prev);
+                                            if (n.has(p.id)) n.delete(p.id); else n.add(p.id);
+                                            return n;
+                                          })} className="p-0.5 rounded">
+                                            {hubSelectedProductIds.has(p.id) ? <CheckSquare size={14} className="text-teal-600" /> : <Square size={14} className="text-slate-300" />}
+                                          </button>
+                                        </td>
+                                        <td className="px-2 py-1.5">
+                                          <span className="font-bold text-slate-700 text-[11px] leading-tight block">{p.variantLabel || p.name}</span>
+                                        </td>
+                                        <td className="text-center px-1 py-1.5 text-[10px] font-black text-slate-500">{chLabel}</td>
+                                        <td className="text-right px-1 py-1.5">
+                                          <input type="number" min="0" max="1" step="0.01" value={p.yieldRate ?? ''} placeholder="—"
+                                            onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, yieldRate: e.target.value ? Number(e.target.value) : undefined } : x))}
+                                            onBlur={() => { void flushProductCostRow(p.id); }}
+                                            className="w-full min-w-0 p-1 bg-slate-50 rounded font-bold text-right border border-slate-100 text-[10px]" />
+                                        </td>
+                                        <td className="text-right px-1 py-1.5">
+                                          <input type="number" min="0" step="0.1" value={p.processingCost ?? ''} placeholder="—"
+                                            onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, processingCost: e.target.value === '' ? undefined : Number(e.target.value) } : x))}
+                                            onBlur={() => { void flushProductCostRow(p.id); }}
+                                            className="w-full min-w-0 p-1 bg-slate-50 rounded font-bold text-right border border-slate-100 text-[10px]" />
+                                        </td>
+                                        <td className="text-right px-1 py-1.5 font-bold text-slate-600">${perLbCost.toFixed(2)}</td>
+                                        <td className="text-right px-1 py-1.5">
+                                          <input type="number" min="0" step="0.1" value={p.packagingCost ?? ''} placeholder="0"
+                                            onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, packagingCost: Number(e.target.value) || 0 } : x))}
+                                            onBlur={() => { void flushProductCostRow(p.id); }}
+                                            className="w-12 p-1 bg-slate-50 rounded font-bold text-right border border-slate-100 text-[10px]" />
+                                        </td>
+                                        <td className="text-right px-1 py-1.5">
+                                          <input type="number" min="0" step="0.1" value={p.miscCost ?? ''} placeholder="0"
+                                            onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, miscCost: Number(e.target.value) || 0 } : x))}
+                                            onBlur={() => { void flushProductCostRow(p.id); }}
+                                            className="w-12 p-1 bg-slate-50 rounded font-bold text-right border border-slate-100 text-[10px]" />
+                                        </td>
+                                        {costItems.map(ci => {
+                                          const checked = (p.costItemIds || []).includes(ci.id);
+                                          return (
+                                            <td key={ci.id} className="text-center px-0.5 py-1.5">
+                                              <button type="button" onClick={() => {
+                                                setProducts(prev => {
+                                                  const cur = prev.find(x => x.id === p.id);
+                                                  if (!cur) return prev;
+                                                  const ids = cur.costItemIds || [];
+                                                  const isOn = ids.includes(ci.id);
+                                                  const nextIds = isOn ? ids.filter(x => x !== ci.id) : [...ids, ci.id];
+                                                  const merged: Product = { ...cur, costItemIds: nextIds };
+                                                  const row = mapProductToRow(merged);
+                                                  void supabase.from('products').update({ cost_item_ids: row.cost_item_ids }).eq('id', cur.id).then(({ error }) => {
+                                                    if (error) showToast(`附加成本儲存失敗：${error.message}`, 'error');
+                                                  });
+                                                  return prev.map(x => x.id === p.id ? merged : x);
+                                                });
+                                              }}
+                                                className={`w-4 h-4 rounded border-2 flex items-center justify-center mx-auto ${checked ? 'border-amber-500 bg-amber-500 text-white' : 'border-slate-200'}`}>
+                                                {checked && <Check size={9} strokeWidth={3} />}
+                                              </button>
+                                            </td>
+                                          );
+                                        })}
+                                        <td className="text-right px-1 py-1.5 font-black text-slate-900">${perLbCost.toFixed(2)}</td>
+                                        <td className="text-right px-1 py-1.5 text-[10px] font-bold text-slate-500">
+                                          {p.pricingMode === 'by_piece' ? <span className="text-pink-500">抄碼</span> : p.packSize || (p.packWeightLb ? `${p.packWeightLb}磅` : '—')}
+                                        </td>
+                                        <td className="text-right px-1 py-1.5 font-black text-amber-700 text-[10px]">
+                                          {p.pricingMode === 'by_piece' ? `$${perLbCost.toFixed(1)}/lb` : p.packWeightLb ? `$${packCost.toFixed(1)}` : `$${perLbCost.toFixed(1)}/lb`}
+                                        </td>
+                                        <td className="text-right px-1 py-1.5">
+                                          <input type="number" min="0" step="0.5" value={p.price ?? ''}
+                                            onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, price: Number(e.target.value) || 0 } : x))}
+                                            onBlur={() => { void flushProductCostRow(p.id); }}
+                                            className="w-14 p-1 bg-teal-50/80 rounded font-black text-right border border-teal-100 text-[10px] text-teal-900" />
+                                        </td>
+                                        <td className="text-right px-1 py-1.5">
+                                          <input type="number" min="0" step="0.5" value={p.memberPrice ?? ''} placeholder="—"
+                                            onChange={e => setProducts(prev => prev.map(x => x.id === p.id ? { ...x, memberPrice: e.target.value === '' ? undefined : Number(e.target.value) } : x))}
+                                            onBlur={() => { void flushProductCostRow(p.id); }}
+                                            className="w-14 p-1 bg-slate-50 rounded font-bold text-right border border-slate-100 text-[10px]" />
+                                        </td>
+                                        {costsChannelFilter !== 'retail' && (
+                                          <td className="text-right px-1 py-1.5 font-black text-orange-600 text-[10px]">{p0 > 0 ? `$${p0.toFixed(1)}` : '—'}</td>
+                                        )}
+                                        {costsChannelFilter !== 'retail' && costsWsRules.priceTiers.map(tier => (
+                                          <td key={tier.name} className="text-right px-1 py-1.5 font-bold text-teal-600 text-[10px]">{p0 > 0 ? `$${(p0 / tier.factor).toFixed(1)}` : '—'}</td>
+                                        ))}
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ══════════════════════════════════════════════════════════════ */}
       {/* ── TAB: 原材料 ── */}

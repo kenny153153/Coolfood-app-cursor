@@ -628,7 +628,7 @@ const App: React.FC = () => {
   // --- Data State ---
   const [user, setUser] = useState<UserType | null>(null);
   const [siteConfig, setSiteConfig] = useState<SiteConfig>({ 
-    logoText: 'Fridge-Link', 
+    logoText: 'Cool Food', 
     logoIcon: '❄️',
     accentColor: 'blue',
     pricingRules: {
@@ -969,7 +969,7 @@ const App: React.FC = () => {
   // Update browser tab title when route changes
   useEffect(() => {
     if (isAdminRoute) {
-      document.title = `Fridge-Link | 管理後台 (${window.location.href})`;
+      document.title = `Cool Food | 管理後台 (${window.location.href})`;
       return;
     }
     document.title = `${siteConfig.logoText} | 香港冷凍肉專門店`;

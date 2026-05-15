@@ -1,0 +1,37 @@
+---
+description: Freeze SF printing flow files unless explicitly approved
+alwaysApply: true
+---
+
+# SF Printing Freeze Zone
+
+The SF waybill printing stream is considered production-critical and frozen.
+
+## Protected Files
+
+- `api/sf.ts`
+- `App.tsx`
+- `vite.config.ts`
+
+## Protected Areas
+
+- `cloudPrintWaybills()`
+- `extractCloudPrintFiles()`
+- `extractCloudPrintPdf()`
+- Any `COM_RECE_CLOUD_PRINT_WAYBILLS` request payload fields
+- Any `templateCode` selection/fallback logic
+- Frontend reprint flow around `printSfLabelsFromRows()`
+- `pdf-lib` dynamic import / merge block
+- `optimizeDeps.include` entry for `pdf-lib`
+
+## Rule
+
+Do not modify protected files/areas unless the user explicitly asks to override this freeze in the current chat.
+
+When asked to change anything potentially related to SF printing:
+
+1. Stop and explain this area is frozen.
+2. Ask for explicit confirmation to override freeze.
+3. If user confirms override, keep changes minimal and scoped.
+
+If a requested change is unrelated to SF printing, avoid touching protected files.
