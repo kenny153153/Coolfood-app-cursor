@@ -140,7 +140,7 @@ interface ProductTreeChildDraft {
   name: string;
   saleChannel: SaleChannel;
   pricingMode: 'fixed_pack' | 'by_piece';
-  packSize: string;
+  yieldRate: string;
 }
 
 const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, costItems, setCostItems, siteConfig, isMediaUrl, mode = 'all' }) => {
@@ -686,7 +686,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       name: '',
       saleChannel: 'both',
       pricingMode: 'fixed_pack',
-      packSize: '',
+      yieldRate: '1',
     };
   }, [productTreeDrafts]);
 
@@ -698,7 +698,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
         name: '',
         saleChannel: 'both',
         pricingMode: 'fixed_pack',
-        packSize: '',
+        yieldRate: '1',
         ...(prev[ingredientId] || {}),
         ...patch,
       },
@@ -711,18 +711,12 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     if (!draft.processingTypeId) { showToast('請先選擇切割／包裝方法', 'error'); return; }
     const pt = processingTypes.find(p => p.id === draft.processingTypeId);
     if (!pt) { showToast('找不到加工方式', 'error'); return; }
-    const autoName = `${ingredient.name}(${pt.name})`;
-    const packWeightMap: Record<string, number> = {
-      '1磅/包': 1,
-      '2磅/包': 2,
-      '5磅/包': 5,
-      '10磅/箱': 10,
-      '300g/包': 0.66,
-      '500g/包': 1.1,
-      '1kg/包': 2.2,
-      '5kg/包': 11,
-    };
-    const isBeefLambSeafood = /牛|羊|海鮮|海产|海產|魚|虾|蝦|蟹/.test(ingredient.category || ingredient.name);
+    const yieldRate = Number(draft.yieldRate);
+    if (Number.isNaN(yieldRate) || yieldRate < 0.5 || yieldRate > 1) {
+      showToast('出成率必須介乎 0.5 至 1', 'error');
+      return;
+    }
+    const autoName = `${ingredient.name}-${pt.name}`;
     const row = {
       id: `P-${Date.now()}`,
       name: (draft.name || autoName).trim(),
@@ -737,13 +731,14 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       ingredient_id: ingredient.id,
       parent_ingredient_id: ingredient.id,
       processing_type_id: draft.processingTypeId,
-      processing_cost: isBeefLambSeafood ? pt.surchargeBeefLambSeafood : pt.surchargePorkChicken,
+      yield_rate: yieldRate,
+      processing_cost: 0,
       packaging_cost: 0,
       misc_cost: 0,
       sale_channel: draft.saleChannel,
       product_type: 'processed',
-      pack_size: draft.packSize || null,
-      pack_weight_lb: draft.packSize ? (packWeightMap[draft.packSize] ?? null) : null,
+      pack_size: null,
+      pack_weight_lb: null,
       variant_label: pt.name,
       pricing_mode: draft.pricingMode,
     };
@@ -1190,21 +1185,38 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     }
     setPtSaving(true);
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      try {
+        const session = JSON.parse(localStorage.getItem('coolfood_admin_session') || '{}');
+        const token = localStorage.getItem('coolfood_admin_session_token') || '';
+        if (session?.id) {
+          headers['x-admin-id'] = session.id;
+          headers['x-admin-role'] = session.role || '';
+          headers['x-session-token'] = token;
+          headers['x-admin-module'] = 'warehouse_ops';
+          headers['x-admin-op'] = editingPT.isNew ? 'create' : 'update';
+        }
+      } catch { /* ignore */ }
       const row = {
         ...(editingPT.isNew ? {} : { id: editingPT.id }),
         code: editingPT.code!.trim(),
         name: editingPT.name!.trim(),
         name_en: editingPT.nameEn || null,
         spec: editingPT.spec || null,
-        surcharge_pork_chicken: editingPT.surchargePorkChicken ?? 0,
-        surcharge_beef_lamb_seafood: editingPT.surchargeBeefLambSeafood ?? 0,
-        requires_repackaging: editingPT.requiresRepackaging ?? true,
-        default_pack_weight_lb: editingPT.defaultPackWeightLb ?? null,
+        surcharge_pork_chicken: 0,
+        surcharge_beef_lamb_seafood: 0,
+        requires_repackaging: false,
+        default_pack_weight_lb: null,
         sort_order: editingPT.sortOrder ?? processingTypes.length,
         is_active: editingPT.isActive ?? true,
       };
-      const { error } = await supabase.from('processing_types').upsert(row);
-      if (error) throw error;
+      const res = await fetch('/api/processing-types', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ action: 'upsert', row }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) throw new Error(json.error || `HTTP ${res.status}`);
       showToast(editingPT.isNew ? '已新增加工方式' : '已更新');
       setEditingPT(null);
       loadProcessingTypes();
@@ -1219,8 +1231,25 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       return;
     }
     if (!confirm(`確定刪除「${pt.name}」？`)) return;
-    const { error } = await supabase.from('processing_types').delete().eq('id', pt.id);
-    if (error) { showToast(`刪除失敗：${error.message}`, 'error'); return; }
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    try {
+      const session = JSON.parse(localStorage.getItem('coolfood_admin_session') || '{}');
+      const token = localStorage.getItem('coolfood_admin_session_token') || '';
+      if (session?.id) {
+        headers['x-admin-id'] = session.id;
+        headers['x-admin-role'] = session.role || '';
+        headers['x-session-token'] = token;
+        headers['x-admin-module'] = 'warehouse_ops';
+        headers['x-admin-op'] = 'delete';
+      }
+    } catch { /* ignore */ }
+    const res = await fetch('/api/processing-types', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ action: 'delete', id: pt.id }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) { showToast(`刪除失敗：${json.error || `HTTP ${res.status}`}`, 'error'); return; }
     showToast('已刪除');
     loadProcessingTypes();
   };
@@ -1717,6 +1746,8 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
         const sortUnderMother = (list: Product[]) =>
           [...list].sort((a, b) => (a.variantLabel || a.name).localeCompare(b.variantLabel || b.name));
         const ptName = (id?: string) => (id ? processingTypes.find(pt => pt.id === id)?.name : undefined) || '—';
+        const ingredientCostAfterYield = (ingredient: Ingredient, yieldRate: number) =>
+          yieldRate > 0 ? ingredient.baseCostPerLb / yieldRate : ingredient.baseCostPerLb;
         const orphans = treeProductsFiltered.filter(p => !p.ingredientId).sort((a, b) => a.name.localeCompare(b.name));
         const treeRows = filtered;
 
@@ -1764,7 +1795,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                     const open = productTreeExpandedIds.has(ing.id);
                     const draft = getProductTreeDraft(ing);
                     const draftPt = processingTypes.find(pt => pt.id === draft.processingTypeId);
-                    const autoDraftName = draftPt ? `${ing.name}(${draftPt.name})` : `${ing.name}(下料)`;
+                    const autoDraftName = draftPt ? `${ing.name}-${draftPt.name}` : ing.name;
                     return (
                       <div key={ing.id} className="bg-white">
                         <div className="flex flex-wrap items-end gap-3 px-4 py-3.5 hover:bg-slate-50/80 transition-colors">
@@ -1853,22 +1884,30 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                 <table className="w-full text-xs">
                                   <thead>
                                     <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                                      <th className="text-left px-3 py-2">規格／品名</th>
+                                      <th className="text-left px-3 py-2">下料名稱</th>
                                       <th className="text-left px-3 py-2">加工</th>
+                                      <th className="text-right px-3 py-2">出成率</th>
+                                      <th className="text-center px-2 py-2">單位</th>
+                                      <th className="text-center px-2 py-2">計價方法</th>
+                                      <th className="text-right px-3 py-2">成本</th>
                                       <th className="text-center px-2 py-2 w-14">通路</th>
-                                      <th className="text-right px-3 py-2">標價</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-slate-50">
                                     {kids.map(p => {
                                       const ch = p.saleChannel || 'retail';
                                       const chLabel = ch === 'both' ? '雙' : ch === 'wholesale' ? '批' : '零';
+                                      const yr = p.yieldRate && p.yieldRate > 0 ? p.yieldRate : 1;
+                                      const costAfterYield = ingredientCostAfterYield(ing, yr);
                                       return (
                                         <tr key={p.id} className="hover:bg-slate-50/50">
-                                          <td className="px-3 py-2 font-bold text-slate-800">{p.variantLabel || p.name}</td>
+                                          <td className="px-3 py-2 font-bold text-slate-800">{p.name}</td>
                                           <td className="px-3 py-2 text-slate-600">{ptName(p.processingTypeId)}</td>
+                                          <td className="px-3 py-2 text-right font-bold text-slate-700">{yr.toFixed(2)}</td>
+                                          <td className="text-center px-2 py-2 font-bold text-slate-500">{ing.unit || 'lb'}</td>
+                                          <td className="text-center px-2 py-2 font-bold text-slate-500">{p.pricingMode === 'by_piece' ? '抄碼' : '定裝'}</td>
+                                          <td className="px-3 py-2 text-right font-black text-amber-700">${costAfterYield.toFixed(2)}</td>
                                           <td className="text-center px-2 py-2 font-black text-slate-500">{chLabel}</td>
-                                          <td className="px-3 py-2 text-right font-black text-teal-700">${p.price}</td>
                                         </tr>
                                       );
                                     })}
@@ -1886,8 +1925,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                       const pt = processingTypes.find(x => x.id === e.target.value);
                                       updateProductTreeDraft(ing.id, {
                                         processingTypeId: e.target.value,
-                                        name: pt ? `${ing.name}(${pt.name})` : '',
-                                        packSize: pt?.defaultPackWeightLb ? `${pt.defaultPackWeightLb}磅/包` : draft.packSize,
+                                        name: pt ? `${ing.name}-${pt.name}` : '',
                                       });
                                     }}
                                     className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold"
@@ -1907,6 +1945,22 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                     className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold"
                                   />
                                 </div>
+                                <div className="w-24">
+                                  <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">出成率</label>
+                                  <input
+                                    type="number"
+                                    min="0.5"
+                                    max="1"
+                                    step="0.01"
+                                    value={draft.yieldRate}
+                                    onChange={e => updateProductTreeDraft(ing.id, { yieldRate: e.target.value })}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-right"
+                                  />
+                                </div>
+                                <div className="w-20">
+                                  <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">單位</label>
+                                  <div className="px-3 py-2 rounded-xl border border-slate-100 bg-slate-50 text-xs font-bold text-slate-600 text-center">{ing.unit || 'lb'}</div>
+                                </div>
                                 <div className="w-28">
                                   <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">通路</label>
                                   <select
@@ -1918,7 +1972,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                   </select>
                                 </div>
                                 <div className="w-28">
-                                  <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">計價</label>
+                                  <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">計價方法</label>
                                   <select
                                     value={draft.pricingMode}
                                     onChange={e => updateProductTreeDraft(ing.id, { pricingMode: e.target.value as 'fixed_pack' | 'by_piece' })}
@@ -1928,18 +1982,11 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                     <option value="by_piece">抄碼</option>
                                   </select>
                                 </div>
-                                <div className="w-32">
-                                  <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">包裝規格</label>
-                                  <select
-                                    value={draft.packSize}
-                                    onChange={e => updateProductTreeDraft(ing.id, { packSize: e.target.value })}
-                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold"
-                                  >
-                                    <option value="">— 不設定 —</option>
-                                    {['1磅/包', '2磅/包', '5磅/包', '10磅/箱', '300g/包', '500g/包', '1kg/包', '5kg/包'].map(size => (
-                                      <option key={size} value={size}>{size}</option>
-                                    ))}
-                                  </select>
+                                <div className="w-28">
+                                  <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">成本</label>
+                                  <div className="px-3 py-2 rounded-xl border border-amber-100 bg-amber-50 text-xs font-black text-amber-700 text-right">
+                                    ${ingredientCostAfterYield(ing, Number(draft.yieldRate) || 1).toFixed(2)}
+                                  </div>
                                 </div>
                                 <button
                                   type="button"
@@ -2872,10 +2919,10 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
               <div className="p-2.5 bg-violet-50 text-violet-600 rounded-xl"><Scissors size={18} /></div>
               <div>
                 <h4 className="font-black text-lg">加工方式管理</h4>
-                <p className="text-[10px] text-slate-400 font-bold">定義切片、切粒、切絲等加工方式及收費標準</p>
+                <p className="text-[10px] text-slate-400 font-bold">定義切片、切粒、切絲等下料方式；費用、包裝和出成率在下一層處理</p>
               </div>
             </div>
-            <button onClick={() => setEditingPT({ isNew: true, code: '', name: '', surchargePorkChicken: 1.5, surchargeBeefLambSeafood: 2.0, requiresRepackaging: true, defaultPackWeightLb: 5, sortOrder: processingTypes.length, isActive: true })} className="flex items-center gap-1.5 px-5 py-2.5 bg-violet-600 text-white rounded-xl text-sm font-black shadow-lg active:scale-95 transition-all">
+            <button onClick={() => setEditingPT({ isNew: true, code: '', name: '', surchargePorkChicken: 0, surchargeBeefLambSeafood: 0, requiresRepackaging: false, sortOrder: processingTypes.length, isActive: true })} className="flex items-center gap-1.5 px-5 py-2.5 bg-violet-600 text-white rounded-xl text-sm font-black shadow-lg active:scale-95 transition-all">
               <Plus size={16} /> 新增加工方式
             </button>
           </div>
@@ -2893,10 +2940,6 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                     <th className="text-left px-4 py-3">名稱</th>
                     <th className="text-left px-4 py-3">英文</th>
                     <th className="text-left px-4 py-3">規格</th>
-                    <th className="text-right px-4 py-3">豬雞費/磅</th>
-                    <th className="text-right px-4 py-3">牛羊海鮮費/磅</th>
-                    <th className="text-center px-4 py-3">重包裝</th>
-                    <th className="text-right px-4 py-3">預設包裝規格</th>
                     <th className="text-center px-4 py-3">狀態</th>
                     <th className="text-right px-4 py-3 w-24">操作</th>
                   </tr>
@@ -2908,14 +2951,6 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                       <td className="px-4 py-3 font-black text-slate-800">{pt.name}</td>
                       <td className="px-4 py-3 text-slate-500 text-xs">{pt.nameEn || '—'}</td>
                       <td className="px-4 py-3 text-slate-500 text-xs">{pt.spec || '—'}</td>
-                      <td className="px-4 py-3 text-right font-bold text-amber-600">${pt.surchargePorkChicken.toFixed(1)}</td>
-                      <td className="px-4 py-3 text-right font-bold text-rose-600">${pt.surchargeBeefLambSeafood.toFixed(1)}</td>
-                      <td className="px-4 py-3 text-center">{pt.requiresRepackaging ? <Check size={14} className="text-emerald-500 mx-auto" /> : <span className="text-slate-300">—</span>}</td>
-                      <td className="px-4 py-3 text-right text-xs">{(() => {
-                        const wt = pt.defaultPackWeightLb;
-                        const reverseMap: Record<number, string> = { 1: '1磅/包', 2: '2磅/包', 5: '5磅/包', 10: '10磅/箱', 0.66: '300g/包', 1.1: '500g/包', 2.2: '1kg/包', 11: '5kg/包' };
-                        return wt ? (reverseMap[wt] || `${wt}磅`) : '—';
-                      })()}</td>
                       <td className="px-4 py-3 text-center">
                         <span className={`px-2 py-0.5 rounded-md text-[10px] font-black ${pt.isActive ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>{pt.isActive ? '啟用' : '停用'}</span>
                       </td>
@@ -2934,10 +2969,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
 
           <div className="bg-violet-50/50 border border-violet-100 rounded-2xl p-4">
             <p className="text-[10px] font-bold text-violet-500">
-              標準規格參考：扒 3分/4分厚 | 絲 6MM | 片 2MM / 4MM | 丁 6分×6分 | 粒 1吋×1吋
-            </p>
-            <p className="text-[10px] font-bold text-violet-400 mt-1">
-              加工費標準：豬雞 +$1.5/磅 | 牛羊海鮮 +$2.0/磅（可按需自訂）
+              這裡只維護系統化的下料方式，例如：切片、切絲、切粒、切扒。出成率、成本與包裝會在母料下建立子材料時處理。
             </p>
           </div>
         </div>
@@ -2972,44 +3004,8 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                   <input value={editingPT.spec || ''} onChange={e => setEditingPT({ ...editingPT, spec: e.target.value })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm" placeholder="例: 2MM / 4MM" />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">豬雞 加工費/磅</label>
-                  <input type="number" step="0.1" min="0" value={editingPT.surchargePorkChicken ?? ''} onChange={e => setEditingPT({ ...editingPT, surchargePorkChicken: parseFloat(e.target.value) || 0 })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm" />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">牛羊海鮮 加工費/磅</label>
-                  <input type="number" step="0.1" min="0" value={editingPT.surchargeBeefLambSeafood ?? ''} onChange={e => setEditingPT({ ...editingPT, surchargeBeefLambSeafood: parseFloat(e.target.value) || 0 })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm" />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">預設包裝規格</label>
-                  <select value={(() => {
-                    const wt = editingPT.defaultPackWeightLb;
-                    const reverseMap: Record<number, string> = { 1: '1磅/包', 2: '2磅/包', 5: '5磅/包', 10: '10磅/箱', 0.66: '300g/包', 1.1: '500g/包', 2.2: '1kg/包', 11: '5kg/包' };
-                    return wt ? (reverseMap[wt] || '') : '';
-                  })()} onChange={e => {
-                    const val = e.target.value;
-                    const weightMap: Record<string, number> = { '1磅/包': 1, '2磅/包': 2, '5磅/包': 5, '10磅/箱': 10, '300g/包': 0.66, '500g/包': 1.1, '1kg/包': 2.2, '5kg/包': 11 };
-                    setEditingPT({ ...editingPT, defaultPackWeightLb: weightMap[val] || undefined });
-                  }} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm">
-                    <option value="">— 不設定 —</option>
-                    <option value="1磅/包">1磅/包</option>
-                    <option value="2磅/包">2磅/包</option>
-                    <option value="5磅/包">5磅/包</option>
-                    <option value="10磅/箱">10磅/箱</option>
-                    <option value="300g/包">300g/包</option>
-                    <option value="500g/包">500g/包</option>
-                    <option value="1kg/包">1kg/包</option>
-                    <option value="5kg/包">5kg/包</option>
-                  </select>
-                </div>
-                <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">排序</label>
                   <input type="number" min="0" value={editingPT.sortOrder ?? 0} onChange={e => setEditingPT({ ...editingPT, sortOrder: parseInt(e.target.value) || 0 })} className="w-full p-3 bg-slate-50 rounded-xl font-bold border border-slate-100 text-sm" />
-                </div>
-                <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={editingPT.requiresRepackaging ?? true} onChange={e => setEditingPT({ ...editingPT, requiresRepackaging: e.target.checked })} className="w-4 h-4 rounded" />
-                    <span className="text-xs font-bold text-slate-600">需要重新包裝</span>
-                  </label>
                 </div>
                 <div className="flex items-center gap-3">
                   <label className="flex items-center gap-2 cursor-pointer">
