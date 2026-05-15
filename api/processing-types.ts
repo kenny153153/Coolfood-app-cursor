@@ -13,6 +13,15 @@ type Res = {
 
 const safeTrim = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 
+const STANDARD_PROCESSING_TYPES = [
+  { code: 'shred', name: '切絲', name_en: 'Shredded', spec: null, sort_order: 1 },
+  { code: 'dice', name: '切粒', name_en: 'Diced', spec: null, sort_order: 2 },
+  { code: 'slice2mm', name: '切片2mm', name_en: 'Sliced 2mm', spec: '2mm', sort_order: 3 },
+  { code: 'slice4mm', name: '切片4mm', name_en: 'Sliced 4mm', spec: '4mm', sort_order: 4 },
+  { code: 'steak', name: '切扒', name_en: 'Steak-cut', spec: null, sort_order: 5 },
+  { code: 'strip', name: '切條', name_en: 'Strips', spec: null, sort_order: 6 },
+];
+
 export default async function handler(req: Req, res: Res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method not allowed' });
 
@@ -21,7 +30,7 @@ export default async function handler(req: Req, res: Res) {
   const auth = await verifyAdminRequest(
     req,
     'warehouse_ops',
-    action === 'delete' ? 'delete' : action === 'upsert' ? (input.id ? 'update' : 'create') : undefined
+    action === 'delete' ? 'delete' : action === 'seed_standard' ? 'create' : action === 'upsert' ? (input.id ? 'update' : 'create') : undefined
   );
   if (!auth.ok) return res.status(auth.status || 401).json({ ok: false, error: auth.error || 'Unauthorized' });
 
@@ -34,6 +43,23 @@ export default async function handler(req: Req, res: Res) {
   });
 
   try {
+    if (action === 'seed_standard') {
+      const rows = STANDARD_PROCESSING_TYPES.map(row => ({
+        ...row,
+        surcharge_pork_chicken: 0,
+        surcharge_beef_lamb_seafood: 0,
+        requires_repackaging: false,
+        default_pack_weight_lb: null,
+        is_active: true,
+      }));
+      const { data, error } = await supabase
+        .from('processing_types')
+        .upsert(rows, { onConflict: 'code' })
+        .select('*');
+      if (error) return res.status(400).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, data });
+    }
+
     if (action === 'upsert') {
       const row = {
         ...(input.id ? { id: input.id } : {}),

@@ -61,6 +61,8 @@ const DEFAULT_UNITS = [
   { value: 'pack', label: '包 (pack)' },
 ];
 
+const STANDARD_PROCESSING_CODES = ['shred', 'dice', 'slice2mm', 'slice4mm', 'steak', 'strip'];
+
 const PO_STATUS_MAP: Record<string, { label: string; color: string }> = {
   draft: { label: '草稿', color: 'bg-slate-100 text-slate-600' },
   submitted: { label: '已提交', color: 'bg-blue-50 text-blue-600' },
@@ -199,6 +201,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
   const [ptLoading, setPtLoading] = useState(false);
   const [editingPT, setEditingPT] = useState<(Partial<ProcessingType> & { isNew?: boolean }) | null>(null);
   const [ptSaving, setPtSaving] = useState(false);
+  const [ptSeeding, setPtSeeding] = useState(false);
 
   // ── Goods Receiving state ──
   const [goodsReceipts, setGoodsReceipts] = useState<GoodsReceipt[]>([]);
@@ -1222,6 +1225,40 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       loadProcessingTypes();
     } catch (err: any) { showToast(`儲存失敗：${err.message}`, 'error'); }
     setPtSaving(false);
+  };
+
+  const getAdminApiHeaders = (op: 'create' | 'update' | 'delete'): Record<string, string> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    try {
+      const session = JSON.parse(localStorage.getItem('coolfood_admin_session') || '{}');
+      const token = localStorage.getItem('coolfood_admin_session_token') || '';
+      if (session?.id) {
+        headers['x-admin-id'] = session.id;
+        headers['x-admin-role'] = session.role || '';
+        headers['x-session-token'] = token;
+        headers['x-admin-module'] = 'warehouse_ops';
+        headers['x-admin-op'] = op;
+      }
+    } catch { /* ignore */ }
+    return headers;
+  };
+
+  const seedStandardProcessingTypes = async () => {
+    setPtSeeding(true);
+    try {
+      const res = await fetch('/api/processing-types', {
+        method: 'POST',
+        headers: getAdminApiHeaders('create'),
+        body: JSON.stringify({ action: 'seed_standard' }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      showToast('已建立標準加工方式');
+      await loadProcessingTypes();
+    } catch (err: any) {
+      showToast(`建立失敗：${err.message}`, 'error');
+    }
+    setPtSeeding(false);
   };
 
   const handleDeleteProcessingType = async (pt: ProcessingType) => {
@@ -2914,6 +2951,25 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       {/* ══════════════════════════════════════════════════════════════ */}
       {subTab === 'processing_types' && (
         <div className="space-y-4">
+          {(() => {
+            const missingStandardCount = STANDARD_PROCESSING_CODES.filter(code => !processingTypes.some(pt => pt.code === code)).length;
+            return missingStandardCount > 0 ? (
+              <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="font-black text-sm text-amber-900">尚欠 {missingStandardCount} 個標準加工方式</p>
+                  <p className="text-[10px] text-amber-700 font-bold">會建立：切絲、切粒、切片2mm、切片4mm、切扒、切條。</p>
+                </div>
+                <button
+                  onClick={seedStandardProcessingTypes}
+                  disabled={ptSeeding}
+                  className="px-4 py-2 bg-amber-600 text-white rounded-xl text-xs font-black flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  {ptSeeding ? <RefreshCw size={13} className="animate-spin" /> : <Plus size={13} />}
+                  建立標準方式
+                </button>
+              </div>
+            ) : null;
+          })()}
           <div className="flex items-center justify-between flex-wrap gap-3">
             <div className="flex items-center gap-3">
               <div className="p-2.5 bg-violet-50 text-violet-600 rounded-xl"><Scissors size={18} /></div>
@@ -2922,9 +2978,14 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                 <p className="text-[10px] text-slate-400 font-bold">定義切片、切粒、切絲等下料方式；費用、包裝和出成率在下一層處理</p>
               </div>
             </div>
-            <button onClick={() => setEditingPT({ isNew: true, code: '', name: '', surchargePorkChicken: 0, surchargeBeefLambSeafood: 0, requiresRepackaging: false, sortOrder: processingTypes.length, isActive: true })} className="flex items-center gap-1.5 px-5 py-2.5 bg-violet-600 text-white rounded-xl text-sm font-black shadow-lg active:scale-95 transition-all">
-              <Plus size={16} /> 新增加工方式
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button onClick={seedStandardProcessingTypes} disabled={ptSeeding} className="flex items-center gap-1.5 px-4 py-2.5 bg-amber-600 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition-all disabled:opacity-50">
+                {ptSeeding ? <RefreshCw size={14} className="animate-spin" /> : <Plus size={14} />} 建立標準方式
+              </button>
+              <button onClick={() => setEditingPT({ isNew: true, code: '', name: '', surchargePorkChicken: 0, surchargeBeefLambSeafood: 0, requiresRepackaging: false, sortOrder: processingTypes.length, isActive: true })} className="flex items-center gap-1.5 px-5 py-2.5 bg-violet-600 text-white rounded-xl text-sm font-black shadow-lg active:scale-95 transition-all">
+                <Plus size={16} /> 新增加工方式
+              </button>
+            </div>
           </div>
 
           <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
