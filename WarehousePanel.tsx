@@ -784,8 +784,26 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       variant_label: pt.name,
       pricing_mode: draft.pricingMode,
     };
-    const { data, error } = await supabase.from('products').insert(row).select('*').single();
-    if (error) { showToast(`新增下料失敗：${error.message}`, 'error'); return; }
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    try {
+      const session = JSON.parse(localStorage.getItem('coolfood_admin_session') || '{}');
+      const token = localStorage.getItem('coolfood_admin_session_token') || '';
+      if (session?.id) {
+        headers['x-admin-id'] = session.id;
+        headers['x-admin-role'] = session.role || '';
+        headers['x-session-token'] = token;
+        headers['x-admin-module'] = 'warehouse_ops';
+        headers['x-admin-op'] = 'create';
+      }
+    } catch { /* ignore */ }
+    const res = await fetch('/api/material-products', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ action: 'create_child_product', row }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) { showToast(`新增下料失敗：${json.error || `HTTP ${res.status}`}`, 'error'); return; }
+    const data = json.data;
     if (data) setProducts(prev => [...prev, mapProductRowToProduct(data)]);
     setProductTreeDrafts(prev => {
       const next = { ...prev };
