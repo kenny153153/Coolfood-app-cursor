@@ -46,7 +46,8 @@ const WORKSPACE_SECTIONS: { workspace: Workspace; items: SidebarItem[] }[] = [
 
 const SHARED_ITEMS: SidebarItem[] = [
   { id: 'dispatch', label: '派車表', icon: <Truck size={18}/> },
-  { id: 'warehouse_ops', label: '材料與倉務', icon: <Package size={18}/> },
+  { id: 'material_ops', label: '材料', icon: <Package size={18}/> },
+  { id: 'warehouse_ops', label: '倉務', icon: <ClipboardList size={18}/> },
   { id: 'production', label: '工場', icon: <Factory size={18}/> },
   { id: 'accounting', label: '會計', icon: <Wallet size={18}/> },
   { id: 'legacy_features', label: '進階功能', icon: <Layers size={18}/> },
@@ -56,6 +57,7 @@ const SHARED_ITEMS: SidebarItem[] = [
 
 const SHARED_PERMISSION_MAP: Partial<Record<AdminModuleId, keyof AdminPermissions>> = {
   dispatch: 'dispatch',
+  material_ops: 'warehouse_ops',
   warehouse_ops: 'warehouse_ops',
   production: 'production',
   accounting: 'accounting',

@@ -513,6 +513,7 @@ const ADMIN_MODULE_PERMISSION_MAP: Record<string, keyof AdminPermissions> = {
   new_order: 'new_order',
   orders: 'orders',
   dispatch: 'dispatch',
+  material_ops: 'warehouse_ops',
   warehouse_ops: 'warehouse_ops',
   production: 'production',
   accounting: 'accounting',
@@ -537,7 +538,7 @@ const ADMIN_PERMISSION_LABELS: Record<keyof AdminPermissions, string> = {
   new_order: '新訂單',
   orders: '訂單管理',
   dispatch: '派車表',
-  warehouse_ops: '材料與倉務',
+  warehouse_ops: '倉務',
   production: '工場',
   accounting: '會計',
   wholesale_clients: '批發客資料庫',
@@ -4704,7 +4705,8 @@ const App: React.FC = () => {
     if (adminModule === 'new_order') return <SectionErrorBoundary section="新增訂單"><Suspense fallback={lazyFallback}><NewOrderPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
     if (adminModule === 'accounting') return <SectionErrorBoundary section="會計"><Suspense fallback={lazyFallback}><AccountingPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
     if (adminModule === 'legacy_features') return <SectionErrorBoundary section="進階功能"><Suspense fallback={lazyFallback}><LegacyFeaturesPanel showToast={showToast} /></Suspense></SectionErrorBoundary>;
-    if (adminModule === 'warehouse_ops') return <SectionErrorBoundary section="倉務"><Suspense fallback={lazyFallback}><WarehousePanel showToast={showToast} products={products} setProducts={setProducts} costItems={costItems} setCostItems={setCostItems} siteConfig={siteConfig} isMediaUrl={isMediaUrl} /></Suspense></SectionErrorBoundary>;
+    if (adminModule === 'material_ops') return <SectionErrorBoundary section="材料"><Suspense fallback={lazyFallback}><WarehousePanel mode="materials" showToast={showToast} products={products} setProducts={setProducts} costItems={costItems} setCostItems={setCostItems} siteConfig={siteConfig} isMediaUrl={isMediaUrl} /></Suspense></SectionErrorBoundary>;
+    if (adminModule === 'warehouse_ops') return <SectionErrorBoundary section="倉務"><Suspense fallback={lazyFallback}><WarehousePanel mode="warehouse" showToast={showToast} products={products} setProducts={setProducts} costItems={costItems} setCostItems={setCostItems} siteConfig={siteConfig} isMediaUrl={isMediaUrl} /></Suspense></SectionErrorBoundary>;
     if (adminModule === 'production') return <SectionErrorBoundary section="生產"><Suspense fallback={lazyFallback}><ProductionPanel showToast={showToast} products={products} ingredients={ingredients} /></Suspense></SectionErrorBoundary>;
 
     // Functional panels — wholesale
@@ -6462,8 +6464,8 @@ const App: React.FC = () => {
           </div>
         );
       case 'costs':
-        // Costs module moved to WarehousePanel → 產品成本一覽
-        return <WarehousePanel showToast={showToast} products={products} setProducts={setProducts} costItems={costItems} setCostItems={setCostItems} siteConfig={siteConfig} isMediaUrl={isMediaUrl} />;
+        // Costs module moved to 材料 → 產品成本一覽
+        return <WarehousePanel mode="materials" showToast={showToast} products={products} setProducts={setProducts} costItems={costItems} setCostItems={setCostItems} siteConfig={siteConfig} isMediaUrl={isMediaUrl} />;
       case 'language':
         return (
           <div className="space-y-8 animate-fade-in pb-20">
@@ -8059,10 +8061,10 @@ const App: React.FC = () => {
                   );
                 })()}
 
-                {/* Cost note — editing moved to 材料與倉務 → 產品成本一覽 */}
+                {/* Cost note — editing moved to 材料 → 產品成本一覽 */}
                 <div className="md:col-span-2 p-3 bg-amber-50/60 rounded-xl border border-amber-100/60 flex items-center gap-2">
                   <Coins size={14} className="text-amber-500 flex-shrink-0" />
-                  <p className="text-[10px] text-amber-700 font-bold">成本設定已移至「材料與倉務 → 產品成本一覽」，在該處統一管理原材料成本、出成率、加工費等。</p>
+                  <p className="text-[10px] text-amber-700 font-bold">成本設定已移至「材料 → 產品成本一覽」，在該處統一管理原材料成本、出成率、加工費等。</p>
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">庫存</label>

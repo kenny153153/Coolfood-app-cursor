@@ -158,7 +158,7 @@ export type AdminModuleId =
   | 'pricing' | 'costs' | 'ingredients' | 'language' | 'recipes'
   | 'settings' | 'admin_management'
   | 'global_dashboard' | 'new_order'
-  | 'dispatch' | 'warehouse_ops' | 'accounting' | 'production'
+  | 'dispatch' | 'material_ops' | 'warehouse_ops' | 'accounting' | 'production'
   | 'whatsapp_orders' | 'tricolor_print' | 'wholesale_clients'
   | 'sales_reps' | 'quotations' | 'legacy_features'
   | 'coupons';

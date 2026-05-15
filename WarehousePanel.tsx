@@ -9,7 +9,7 @@ import {
   Coins, Download, CheckSquare, Square, Minus,
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
-import { computeProductCost, computePackCost, mapMaterialProcessingRow } from './supabaseMappers';
+import { computeProductCost, computePackCost, mapMaterialProcessingRow, mapProductRowToProduct } from './supabaseMappers';
 import type {
   Ingredient, IngredientCategory, SaleChannel, MaterialType, Supplier,
   RawMaterialCatalog, SupplierQuote, QuoteLineItem,
@@ -27,6 +27,7 @@ interface Props {
   setCostItems: React.Dispatch<React.SetStateAction<CostItem[]>>;
   siteConfig: SiteConfig;
   isMediaUrl: (url: string) => boolean;
+  mode?: 'materials' | 'warehouse' | 'all';
 }
 
 type SubTab =
@@ -134,11 +135,22 @@ const EMPTY_PO_LINE: POLineItem = {
   productName: '', qty: 0, unit: 'lb', unitCost: 0, lineTotal: 0, receivedQty: 0, notes: '',
 };
 
-const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, costItems, setCostItems, siteConfig, isMediaUrl }) => {
-  const [subTab, setSubTab] = useState<SubTab>('product_tree');
+interface ProductTreeChildDraft {
+  processingTypeId: string;
+  name: string;
+  saleChannel: SaleChannel;
+  pricingMode: 'fixed_pack' | 'by_piece';
+  packSize: string;
+}
+
+const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, costItems, setCostItems, siteConfig, isMediaUrl, mode = 'all' }) => {
+  const defaultSubTab: SubTab = mode === 'warehouse' ? 'purchase_orders' : 'product_tree';
+  const [subTab, setSubTab] = useState<SubTab>(defaultSubTab);
 
   /** 商品樹：展開的母料（ingredient id） */
   const [productTreeExpandedIds, setProductTreeExpandedIds] = useState<Set<string>>(new Set());
+  /** 商品樹：每個母料正在新增的下料草稿 */
+  const [productTreeDrafts, setProductTreeDrafts] = useState<Record<string, ProductTreeChildDraft>>({});
 
   // ── Ingredients state ──
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
@@ -543,6 +555,9 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
 
   useEffect(() => { loadIngredients(); loadUnits(); loadWholesaleClientsForReservation(); }, [loadIngredients, loadUnits, loadWholesaleClientsForReservation]);
   useEffect(() => {
+    setSubTab(mode === 'warehouse' ? 'purchase_orders' : 'product_tree');
+  }, [mode]);
+  useEffect(() => {
     if (subTab === 'purchase_orders') loadPurchaseOrders();
     if (subTab === 'suppliers') loadSuppliers();
     if (subTab === 'quote_compare') { loadSuppliers(); loadQuotesAndCatalog(); }
@@ -642,6 +657,107 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     setProductTreeExpandedIds(prev => new Set(prev).add(ingredientId));
     showToast('已掛到母料下');
   }, [showToast, setProducts]);
+
+  /** 商品樹：原地更新母料基本資料 */
+  const updateIngredientInline = useCallback(async (
+    ingredientId: string,
+    patch: Partial<Pick<Ingredient, 'name' | 'category' | 'unit' | 'materialType' | 'baseCostPerLb' | 'supplier'>>
+  ) => {
+    setIngredients(prev => prev.map(i => i.id === ingredientId ? { ...i, ...patch } : i));
+    const payload: Record<string, any> = {};
+    if ('name' in patch) payload.name = patch.name || '';
+    if ('category' in patch) payload.category = patch.category || null;
+    if ('unit' in patch) payload.unit = patch.unit || 'lb';
+    if ('materialType' in patch) payload.material_type = patch.materialType || 'meat';
+    if ('baseCostPerLb' in patch) payload.base_cost_per_lb = patch.baseCostPerLb ?? 0;
+    if ('supplier' in patch) payload.supplier = patch.supplier || null;
+    const { error } = await supabase.from('ingredients').update(payload).eq('id', ingredientId);
+    if (error) {
+      showToast(`母料更新失敗：${error.message}`, 'error');
+      loadIngredients();
+    }
+  }, [loadIngredients, showToast]);
+
+  const getProductTreeDraft = useCallback((ingredient: Ingredient): ProductTreeChildDraft => {
+    const existing = productTreeDrafts[ingredient.id];
+    if (existing) return existing;
+    return {
+      processingTypeId: '',
+      name: '',
+      saleChannel: 'both',
+      pricingMode: 'fixed_pack',
+      packSize: '',
+    };
+  }, [productTreeDrafts]);
+
+  const updateProductTreeDraft = useCallback((ingredientId: string, patch: Partial<ProductTreeChildDraft>) => {
+    setProductTreeDrafts(prev => ({
+      ...prev,
+      [ingredientId]: {
+        processingTypeId: '',
+        name: '',
+        saleChannel: 'both',
+        pricingMode: 'fixed_pack',
+        packSize: '',
+        ...(prev[ingredientId] || {}),
+        ...patch,
+      },
+    }));
+  }, []);
+
+  /** 商品樹：在指定母料下建立一筆下料產品 */
+  const createChildProductForIngredient = useCallback(async (ingredient: Ingredient) => {
+    const draft = getProductTreeDraft(ingredient);
+    if (!draft.processingTypeId) { showToast('請先選擇切割／包裝方法', 'error'); return; }
+    const pt = processingTypes.find(p => p.id === draft.processingTypeId);
+    if (!pt) { showToast('找不到加工方式', 'error'); return; }
+    const autoName = `${ingredient.name}(${pt.name})`;
+    const packWeightMap: Record<string, number> = {
+      '1磅/包': 1,
+      '2磅/包': 2,
+      '5磅/包': 5,
+      '10磅/箱': 10,
+      '300g/包': 0.66,
+      '500g/包': 1.1,
+      '1kg/包': 2.2,
+      '5kg/包': 11,
+    };
+    const isBeefLambSeafood = /牛|羊|海鮮|海产|海產|魚|虾|蝦|蟹/.test(ingredient.category || ingredient.name);
+    const row = {
+      id: `P-${Date.now()}`,
+      name: (draft.name || autoName).trim(),
+      categories: [],
+      price: 0,
+      member_price: 0,
+      stock: 0,
+      track_inventory: true,
+      tags: [],
+      image: '🥩',
+      description: null,
+      ingredient_id: ingredient.id,
+      parent_ingredient_id: ingredient.id,
+      processing_type_id: draft.processingTypeId,
+      processing_cost: isBeefLambSeafood ? pt.surchargeBeefLambSeafood : pt.surchargePorkChicken,
+      packaging_cost: 0,
+      misc_cost: 0,
+      sale_channel: draft.saleChannel,
+      product_type: 'processed',
+      pack_size: draft.packSize || null,
+      pack_weight_lb: draft.packSize ? (packWeightMap[draft.packSize] ?? null) : null,
+      variant_label: pt.name,
+      pricing_mode: draft.pricingMode,
+    };
+    const { data, error } = await supabase.from('products').insert(row).select('*').single();
+    if (error) { showToast(`新增下料失敗：${error.message}`, 'error'); return; }
+    if (data) setProducts(prev => [...prev, mapProductRowToProduct(data)]);
+    setProductTreeDrafts(prev => {
+      const next = { ...prev };
+      delete next[ingredient.id];
+      return next;
+    });
+    setProductTreeExpandedIds(prev => new Set(prev).add(ingredient.id));
+    showToast(`已新增下料：${row.name}`);
+  }, [getProductTreeDraft, processingTypes, setProducts, showToast]);
 
   // ── CSV helpers ──
   const downloadCsvTemplate = () => {
@@ -1554,8 +1670,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       {/* Sub-tab navigation */}
       <div className="flex items-center gap-2 flex-wrap">
         {([
-          { id: 'product_tree' as SubTab, label: '商品樹', icon: <Layers size={16} /> },
-          { id: 'ingredients' as SubTab, label: '原材料', icon: <Layers size={16} /> },
+          { id: 'product_tree' as SubTab, label: '原材料', icon: <Layers size={16} /> },
           { id: 'suppliers' as SubTab, label: '供應商', icon: <Building2 size={16} /> },
           { id: 'quote_compare' as SubTab, label: '報價比較', icon: <BarChart3 size={16} /> },
           { id: 'purchase_orders' as SubTab, label: '購買訂單', icon: <ShoppingCart size={16} /> },
@@ -1564,7 +1679,11 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
           { id: 'product_costs' as SubTab, label: '產品成本一覽', icon: <Coins size={16} /> },
           { id: 'reorder_alerts' as SubTab, label: '補貨預警', icon: <AlertTriangle size={16} /> },
           { id: 'units' as SubTab, label: '單位管理', icon: <Filter size={16} /> },
-        ]).map(tab => (
+        ].filter(tab => {
+          if (mode === 'materials') return ['product_tree', 'suppliers', 'quote_compare', 'processing_types', 'product_costs', 'units'].includes(tab.id);
+          if (mode === 'warehouse') return ['purchase_orders', 'goods_receiving', 'reorder_alerts'].includes(tab.id);
+          return true;
+        })).map(tab => (
           <button
             key={tab.id}
             onClick={() => setSubTab(tab.id)}
@@ -1586,7 +1705,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       </div>
 
       {/* ══════════════════════════════════════════════════════════════ */}
-      {/* ── TAB: 商品樹（母料 ▼ 產品） ── */}
+      {/* ── TAB: 原材料（母料 ▼ 下料） ── */}
       {/* ══════════════════════════════════════════════════════════════ */}
       {subTab === 'product_tree' && (() => {
         const treeProductsFiltered = products.filter(p => {
@@ -1604,9 +1723,9 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
         return (
           <div className="space-y-5">
             <div className="bg-teal-50 border border-teal-100 rounded-2xl p-4">
-              <h3 className="font-black text-slate-900 text-sm">商品樹</h3>
+              <h3 className="font-black text-slate-900 text-sm">原材料</h3>
               <p className="text-[10px] text-teal-900/80 font-bold mt-1 leading-relaxed">
-                每一列是一筆母料（與「原材料」相同資料）。點箭頭展開底下掛的產品 SKU。新增母料請用「原材料」；新增／編輯商品請用零售或批發商品管理。
+                每一列是一筆母料。可在列上直接改名稱、類型、肉類、單位、供應商和買入成本；點箭頭展開後可用系統化的加工／包裝方式新增下料。
               </p>
             </div>
 
@@ -1631,6 +1750,9 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
               ))}
               <button type="button" onClick={() => setProductTreeExpandedIds(new Set(treeRows.map(i => i.id)))} className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-600">全部展開</button>
               <button type="button" onClick={() => setProductTreeExpandedIds(new Set())} className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-600">全部收合</button>
+              <button type="button" onClick={() => setEditing({ isNew: true, unit: 'lb', baseCostPerLb: 0, materialType: 'meat' })} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-black hover:bg-slate-800 flex items-center gap-1.5">
+                <Plus size={13} /> 新增母料
+              </button>
             </div>
 
             <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden divide-y divide-slate-100">
@@ -1640,23 +1762,85 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                   treeRows.map(ing => {
                     const kids = sortUnderMother(treeProductsFiltered.filter(p => p.ingredientId === ing.id));
                     const open = productTreeExpandedIds.has(ing.id);
+                    const draft = getProductTreeDraft(ing);
+                    const draftPt = processingTypes.find(pt => pt.id === draft.processingTypeId);
+                    const autoDraftName = draftPt ? `${ing.name}(${draftPt.name})` : `${ing.name}(下料)`;
                     return (
                       <div key={ing.id} className="bg-white">
-                        <div
-                          role="button"
-                          tabIndex={0}
-                          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setProductTreeExpandedIds(prev => { const n = new Set(prev); if (n.has(ing.id)) n.delete(ing.id); else n.add(ing.id); return n; }); } }}
-                          className="flex items-center gap-3 px-4 py-3.5 cursor-pointer hover:bg-slate-50/80 transition-colors"
-                          onClick={() => setProductTreeExpandedIds(prev => { const n = new Set(prev); if (n.has(ing.id)) n.delete(ing.id); else n.add(ing.id); return n; })}
-                        >
-                          <span className="text-slate-400 shrink-0">{open ? <ChevronDown size={22} /> : <ChevronRight size={22} />}</span>
-                          <div className="flex-1 min-w-0">
-                            <p className="font-black text-slate-900 text-sm truncate">{ing.name}</p>
-                            {ing.nameEn && <p className="text-[10px] text-slate-400 font-bold truncate">{ing.nameEn}</p>}
+                        <div className="flex flex-wrap items-end gap-3 px-4 py-3.5 hover:bg-slate-50/80 transition-colors">
+                          <button
+                            type="button"
+                            className="self-center text-slate-400 shrink-0 p-1 rounded-lg hover:bg-white"
+                            onClick={() => setProductTreeExpandedIds(prev => { const n = new Set(prev); if (n.has(ing.id)) n.delete(ing.id); else n.add(ing.id); return n; })}
+                          >
+                            {open ? <ChevronDown size={22} /> : <ChevronRight size={22} />}
+                          </button>
+                          <div className="min-w-[180px] flex-[1.4]">
+                            <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">母料名稱</label>
+                            <input
+                              value={ing.name}
+                              onChange={e => setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, name: e.target.value } : x))}
+                              onBlur={() => { void updateIngredientInline(ing.id, { name: ing.name }); }}
+                              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-black text-slate-900"
+                            />
+                            {ing.nameEn && <p className="text-[10px] text-slate-400 font-bold truncate mt-1">{ing.nameEn}</p>}
+                          </div>
+                          <div className="min-w-[130px]">
+                            <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">類型</label>
+                            <select
+                              value={ing.materialType || 'meat'}
+                              onChange={e => { void updateIngredientInline(ing.id, { materialType: e.target.value as MaterialType }); }}
+                              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold"
+                            >
+                              {MATERIAL_TYPES.map(mt => <option key={mt.value} value={mt.value}>{mt.label}</option>)}
+                            </select>
+                          </div>
+                          <div className="min-w-[130px]">
+                            <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">肉類／分類</label>
+                            <select
+                              value={ing.category || ''}
+                              onChange={e => { void updateIngredientInline(ing.id, { category: e.target.value || undefined }); }}
+                              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold"
+                            >
+                              <option value="">— 未分類 —</option>
+                              {categories.map(c => <option key={c.id} value={c.name}>{c.emoji} {c.name}</option>)}
+                            </select>
+                          </div>
+                          <div className="w-24">
+                            <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">單位</label>
+                            <select
+                              value={ing.unit || 'lb'}
+                              onChange={e => { void updateIngredientInline(ing.id, { unit: e.target.value }); }}
+                              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold"
+                            >
+                              {allUnits.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                            </select>
+                          </div>
+                          <div className="w-28">
+                            <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">買入成本</label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={ing.baseCostPerLb}
+                              onChange={e => setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, baseCostPerLb: Number(e.target.value) || 0 } : x))}
+                              onBlur={() => { void updateIngredientInline(ing.id, { baseCostPerLb: ing.baseCostPerLb }); }}
+                              className="w-full px-3 py-2 bg-amber-50 border border-amber-100 rounded-xl text-xs font-black text-right text-amber-800"
+                            />
+                          </div>
+                          <div className="min-w-[130px] flex-1">
+                            <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">供應商</label>
+                            <input
+                              value={ing.supplier || ''}
+                              onChange={e => setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, supplier: e.target.value } : x))}
+                              onBlur={() => { void updateIngredientInline(ing.id, { supplier: ing.supplier }); }}
+                              placeholder="—"
+                              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold"
+                            />
                           </div>
                           <span className="text-[10px] font-bold text-slate-400 shrink-0">{kids.length} 項子商品</span>
-                          <button type="button" className="shrink-0 p-2 rounded-xl border border-slate-200 text-slate-500 hover:text-teal-600 hover:border-teal-200" title="編輯母料"
-                            onClick={e => { e.stopPropagation(); setEditing({ ...ing, isNew: false }); setSubTab('ingredients'); }}>
+                          <button type="button" className="shrink-0 p-2 rounded-xl border border-slate-200 text-slate-500 hover:text-teal-600 hover:border-teal-200" title="完整編輯母料"
+                            onClick={() => setEditing({ ...ing, isNew: false })}>
                             <Edit size={16} />
                           </button>
                         </div>
@@ -1692,6 +1876,80 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                 </table>
                               </div>
                             )}
+                            <div className="mt-3 rounded-xl border border-dashed border-teal-200 bg-white p-3">
+                              <div className="flex flex-wrap items-end gap-2">
+                                <div className="min-w-[160px] flex-1">
+                                  <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">切割／包裝方法（系統表）</label>
+                                  <select
+                                    value={draft.processingTypeId}
+                                    onChange={e => {
+                                      const pt = processingTypes.find(x => x.id === e.target.value);
+                                      updateProductTreeDraft(ing.id, {
+                                        processingTypeId: e.target.value,
+                                        name: pt ? `${ing.name}(${pt.name})` : '',
+                                        packSize: pt?.defaultPackWeightLb ? `${pt.defaultPackWeightLb}磅/包` : draft.packSize,
+                                      });
+                                    }}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold"
+                                  >
+                                    <option value="">— 選擇方法 —</option>
+                                    {processingTypes.filter(pt => pt.isActive).sort((a, b) => a.sortOrder - b.sortOrder).map(pt => (
+                                      <option key={pt.id} value={pt.id}>{pt.name}{pt.spec ? ` (${pt.spec})` : ''}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div className="min-w-[180px] flex-[1.2]">
+                                  <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">下料名稱（可改）</label>
+                                  <input
+                                    value={draft.name}
+                                    onChange={e => updateProductTreeDraft(ing.id, { name: e.target.value })}
+                                    placeholder={autoDraftName}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold"
+                                  />
+                                </div>
+                                <div className="w-28">
+                                  <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">通路</label>
+                                  <select
+                                    value={draft.saleChannel}
+                                    onChange={e => updateProductTreeDraft(ing.id, { saleChannel: e.target.value as SaleChannel })}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold"
+                                  >
+                                    {SALE_CHANNELS.map(ch => <option key={ch.value} value={ch.value}>{ch.label}</option>)}
+                                  </select>
+                                </div>
+                                <div className="w-28">
+                                  <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">計價</label>
+                                  <select
+                                    value={draft.pricingMode}
+                                    onChange={e => updateProductTreeDraft(ing.id, { pricingMode: e.target.value as 'fixed_pack' | 'by_piece' })}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold"
+                                  >
+                                    <option value="fixed_pack">定裝</option>
+                                    <option value="by_piece">抄碼</option>
+                                  </select>
+                                </div>
+                                <div className="w-32">
+                                  <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">包裝規格</label>
+                                  <select
+                                    value={draft.packSize}
+                                    onChange={e => updateProductTreeDraft(ing.id, { packSize: e.target.value })}
+                                    className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold"
+                                  >
+                                    <option value="">— 不設定 —</option>
+                                    {['1磅/包', '2磅/包', '5磅/包', '10磅/箱', '300g/包', '500g/包', '1kg/包', '5kg/包'].map(size => (
+                                      <option key={size} value={size}>{size}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => { void createChildProductForIngredient(ing); }}
+                                  className="px-4 py-2 bg-teal-600 text-white rounded-xl text-xs font-black flex items-center gap-1.5"
+                                >
+                                  <Plus size={13} /> 新增下料
+                                </button>
+                              </div>
+                            </div>
                           </div>
                         )}
                       </div>
