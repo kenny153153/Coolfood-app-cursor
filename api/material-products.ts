@@ -17,7 +17,12 @@ export default async function handler(req: Req, res: Res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method not allowed' });
 
   const action = req.body?.action;
-  const auth = await verifyAdminRequest(req, 'warehouse_ops', action === 'create_child_product' ? 'create' : undefined);
+  const requiredOp =
+    action === 'create_child_product' ? 'create'
+      : action === 'update_mother_material' ? 'update'
+        : action === 'delete_child_product' ? 'delete'
+          : undefined;
+  const auth = await verifyAdminRequest(req, 'warehouse_ops', requiredOp);
   if (!auth.ok) return res.status(auth.status || 401).json({ ok: false, error: auth.error || 'Unauthorized' });
 
   const supabaseUrl = safeTrim(process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? '');
@@ -29,6 +34,51 @@ export default async function handler(req: Req, res: Res) {
   });
 
   try {
+    if (action === 'update_mother_material') {
+      const id = safeTrim(req.body?.id);
+      const patch = req.body?.patch || {};
+      if (!id) return res.status(400).json({ ok: false, error: '缺少母料 ID' });
+
+      const payload: Record<string, any> = {};
+      if ('name' in patch) {
+        const name = safeTrim(patch.name);
+        if (!name) return res.status(400).json({ ok: false, error: '請輸入母料名稱' });
+        payload.name = name;
+      }
+      if ('category' in patch) payload.category = safeTrim(patch.category) || null;
+      if ('unit' in patch) payload.unit = safeTrim(patch.unit) || 'lb';
+      if ('materialType' in patch) payload.material_type = safeTrim(patch.materialType) || 'meat';
+      if ('baseCostPerLb' in patch) payload.base_cost_per_lb = Number(patch.baseCostPerLb) || 0;
+      if ('supplier' in patch) payload.supplier = safeTrim(patch.supplier) || null;
+
+      if (Object.keys(payload).length === 0) {
+        return res.status(400).json({ ok: false, error: '沒有可更新的母料資料' });
+      }
+
+      const { data, error } = await supabase.from('ingredients').update(payload).eq('id', id).select('*').single();
+      if (error) return res.status(400).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, data });
+    }
+
+    if (action === 'delete_child_product') {
+      const productId = safeTrim(req.body?.productId);
+      if (!productId) return res.status(400).json({ ok: false, error: '缺少下料 ID' });
+
+      const { data: product, error: lookupError } = await supabase
+        .from('products')
+        .select('id,name,ingredient_id,parent_ingredient_id,processing_type_id,product_type')
+        .eq('id', productId)
+        .single();
+      if (lookupError || !product) return res.status(404).json({ ok: false, error: lookupError?.message || '找不到下料' });
+      if (!product.ingredient_id || !product.processing_type_id || product.product_type !== 'processed') {
+        return res.status(400).json({ ok: false, error: '這不是商品樹下的下料，不能在此刪除' });
+      }
+
+      const { error } = await supabase.from('products').delete().eq('id', productId);
+      if (error) return res.status(400).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, data: product });
+    }
+
     if (action !== 'create_child_product') {
       return res.status(400).json({ ok: false, error: 'Unknown action' });
     }

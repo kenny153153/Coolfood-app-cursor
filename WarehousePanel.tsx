@@ -9,7 +9,7 @@ import {
   Coins, Download, CheckSquare, Square, Minus,
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
-import { computeProductCost, computePackCost, mapMaterialProcessingRow, mapProductRowToProduct } from './supabaseMappers';
+import { computeProductCost, computePackCost, mapIngredientRowToIngredient, mapMaterialProcessingRow, mapProductRowToProduct } from './supabaseMappers';
 import type {
   Ingredient, IngredientCategory, SaleChannel, MaterialType, Supplier,
   RawMaterialCatalog, SupplierQuote, QuoteLineItem,
@@ -617,6 +617,22 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     return true;
   });
 
+  const buildMaterialApiHeaders = useCallback((op: 'create' | 'update' | 'delete') => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    try {
+      const session = JSON.parse(localStorage.getItem('coolfood_admin_session') || '{}');
+      const token = localStorage.getItem('coolfood_admin_session_token') || '';
+      if (session?.id) {
+        headers['x-admin-id'] = session.id;
+        headers['x-admin-role'] = session.role || '';
+        headers['x-session-token'] = token;
+        headers['x-admin-module'] = 'warehouse_ops';
+        headers['x-admin-op'] = op;
+      }
+    } catch { /* ignore */ }
+    return headers;
+  }, []);
+
   const handleSaveIngredient = async () => {
     if (!editing || !editing.name?.trim()) { showToast('請輸入名稱', 'error'); return; }
     setSaving(true);
@@ -705,20 +721,36 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     ingredientId: string,
     patch: Partial<Pick<Ingredient, 'name' | 'category' | 'unit' | 'materialType' | 'baseCostPerLb' | 'supplier'>>
   ) => {
-    setIngredients(prev => prev.map(i => i.id === ingredientId ? { ...i, ...patch } : i));
-    const payload: Record<string, any> = {};
-    if ('name' in patch) payload.name = patch.name || '';
-    if ('category' in patch) payload.category = patch.category || null;
-    if ('unit' in patch) payload.unit = patch.unit || 'lb';
-    if ('materialType' in patch) payload.material_type = patch.materialType || 'meat';
-    if ('baseCostPerLb' in patch) payload.base_cost_per_lb = patch.baseCostPerLb ?? 0;
-    if ('supplier' in patch) payload.supplier = patch.supplier || null;
-    const { error } = await supabase.from('ingredients').update(payload).eq('id', ingredientId);
-    if (error) {
-      showToast(`母料更新失敗：${error.message}`, 'error');
-      loadIngredients();
+    const nextPatch = { ...patch };
+    if ('name' in nextPatch) {
+      const name = (nextPatch.name || '').trim();
+      if (!name) {
+        showToast('請輸入母料名稱', 'error');
+        loadIngredients();
+        return;
+      }
+      nextPatch.name = name;
     }
-  }, [loadIngredients, showToast]);
+    if ('supplier' in nextPatch) nextPatch.supplier = nextPatch.supplier?.trim() || undefined;
+
+    setIngredients(prev => prev.map(i => i.id === ingredientId ? { ...i, ...nextPatch } : i));
+    const res = await fetch('/api/material-products', {
+      method: 'POST',
+      headers: buildMaterialApiHeaders('update'),
+      body: JSON.stringify({ action: 'update_mother_material', id: ingredientId, patch: nextPatch }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) {
+      showToast(`母料更新失敗：${json.error || `HTTP ${res.status}`}`, 'error');
+      loadIngredients();
+      return;
+    }
+    if (json.data) {
+      const saved = mapIngredientRowToIngredient(json.data);
+      setIngredients(prev => prev.map(i => i.id === ingredientId ? saved : i));
+    }
+    if ('name' in nextPatch) showToast('母料名稱已儲存');
+  }, [buildMaterialApiHeaders, loadIngredients, showToast]);
 
   const getProductTreeDraft = useCallback((ingredient: Ingredient): ProductTreeChildDraft => {
     const existing = productTreeDrafts[ingredient.id];
@@ -784,21 +816,9 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       variant_label: pt.name,
       pricing_mode: draft.pricingMode,
     };
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    try {
-      const session = JSON.parse(localStorage.getItem('coolfood_admin_session') || '{}');
-      const token = localStorage.getItem('coolfood_admin_session_token') || '';
-      if (session?.id) {
-        headers['x-admin-id'] = session.id;
-        headers['x-admin-role'] = session.role || '';
-        headers['x-session-token'] = token;
-        headers['x-admin-module'] = 'warehouse_ops';
-        headers['x-admin-op'] = 'create';
-      }
-    } catch { /* ignore */ }
     const res = await fetch('/api/material-products', {
       method: 'POST',
-      headers,
+      headers: buildMaterialApiHeaders('create'),
       body: JSON.stringify({ action: 'create_child_product', row }),
     });
     const json = await res.json().catch(() => ({}));
@@ -812,7 +832,24 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     });
     setProductTreeExpandedIds(prev => new Set(prev).add(ingredient.id));
     showToast(`已新增下料：${row.name}`);
-  }, [getProductTreeDraft, processingTypes, setProducts, showToast]);
+  }, [buildMaterialApiHeaders, getProductTreeDraft, processingTypes, setProducts, showToast]);
+
+  /** 商品樹：刪除指定母料下的一筆下料產品 */
+  const deleteChildProduct = useCallback(async (product: Product) => {
+    if (!confirm(`確定刪除下料「${product.name}」？此操作無法復原。`)) return;
+    const res = await fetch('/api/material-products', {
+      method: 'POST',
+      headers: buildMaterialApiHeaders('delete'),
+      body: JSON.stringify({ action: 'delete_child_product', productId: product.id }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) {
+      showToast(`刪除下料失敗：${json.error || `HTTP ${res.status}`}`, 'error');
+      return;
+    }
+    setProducts(prev => prev.filter(p => p.id !== product.id));
+    showToast(`已刪除下料：${product.name}`);
+  }, [buildMaterialApiHeaders, setProducts, showToast]);
 
   // ── CSV helpers ──
   const downloadCsvTemplate = () => {
@@ -1868,33 +1905,50 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                           </button>
                           <div className="min-w-[180px] flex-[1.4]">
                             <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">母料名稱</label>
-                            <input
-                              value={ing.name}
-                              onChange={e => {
-                                const prevName = ing.name;
-                                const next = e.target.value;
-                                setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, name: next } : x));
-                                setProductTreeDrafts(prevDrafts => {
-                                  const cur = prevDrafts[ing.id];
-                                  if (!cur) return prevDrafts;
-                                  const pt = cur.processingTypeId ? processingTypes.find(p => p.id === cur.processingTypeId) : undefined;
-                                  if (cur.processingTypeId && pt) {
-                                    const prevAuto = `${prevName}-${pt.name}`;
-                                    const userEdited = cur.name && cur.name !== prevName && cur.name !== prevAuto;
-                                    if (userEdited) return prevDrafts;
-                                    return {
-                                      ...prevDrafts,
-                                      [ing.id]: { ...cur, name: `${next}-${pt.name}` },
-                                    };
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                value={ing.name}
+                                onChange={e => {
+                                  const prevName = ing.name;
+                                  const next = e.target.value;
+                                  setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, name: next } : x));
+                                  setProductTreeDrafts(prevDrafts => {
+                                    const cur = prevDrafts[ing.id];
+                                    if (!cur) return prevDrafts;
+                                    const pt = cur.processingTypeId ? processingTypes.find(p => p.id === cur.processingTypeId) : undefined;
+                                    if (cur.processingTypeId && pt) {
+                                      const prevAuto = `${prevName}-${pt.name}`;
+                                      const userEdited = cur.name && cur.name !== prevName && cur.name !== prevAuto;
+                                      if (userEdited) return prevDrafts;
+                                      return {
+                                        ...prevDrafts,
+                                        [ing.id]: { ...cur, name: `${next}-${pt.name}` },
+                                      };
+                                    }
+                                    const looseMatch = !cur.name || cur.name === prevName;
+                                    if (!looseMatch) return prevDrafts;
+                                    return { ...prevDrafts, [ing.id]: { ...cur, name: next } };
+                                  });
+                                }}
+                                onBlur={e => { void updateIngredientInline(ing.id, { name: e.currentTarget.value }); }}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    void updateIngredientInline(ing.id, { name: e.currentTarget.value });
                                   }
-                                  const looseMatch = !cur.name || cur.name === prevName;
-                                  if (!looseMatch) return prevDrafts;
-                                  return { ...prevDrafts, [ing.id]: { ...cur, name: next } };
-                                });
-                              }}
-                              onBlur={e => { void updateIngredientInline(ing.id, { name: e.currentTarget.value }); }}
-                              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-black text-slate-900"
-                            />
+                                }}
+                                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-black text-slate-900"
+                              />
+                              <button
+                                type="button"
+                                onMouseDown={e => e.preventDefault()}
+                                onClick={() => { void updateIngredientInline(ing.id, { name: ing.name }); }}
+                                className="shrink-0 p-2 rounded-xl bg-teal-50 text-teal-700 border border-teal-100 hover:bg-teal-100"
+                                title="儲存母料名稱"
+                              >
+                                <Save size={14} />
+                              </button>
+                            </div>
                             {ing.nameEn && <p className="text-[10px] text-slate-400 font-bold truncate mt-1">{ing.nameEn}</p>}
                           </div>
                           <div className="min-w-[130px]">
@@ -1971,6 +2025,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                     <col style={{ width: '11%' }} />
                                     <col style={{ width: '12%' }} />
                                     <col style={{ width: '10%' }} />
+                                    <col style={{ width: '7%' }} />
                                   </colgroup>
                                   <thead>
                                     <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
@@ -1981,6 +2036,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                       <th className="px-3 py-2.5 text-center align-middle">計價方法</th>
                                       <th className="px-3 py-2.5 text-right align-middle">成本</th>
                                       <th className="px-3 py-2.5 text-center align-middle">通路</th>
+                                      <th className="px-3 py-2.5 text-center align-middle">刪除</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-slate-50">
@@ -1998,6 +2054,16 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                           <td className="px-3 py-2.5 text-center align-middle font-bold text-slate-500">{p.pricingMode === 'by_piece' ? '抄碼' : '定裝'}</td>
                                           <td className="px-3 py-2.5 text-right align-middle font-black text-amber-700">${costAfterYield.toFixed(2)}</td>
                                           <td className="px-3 py-2.5 text-center align-middle font-black text-slate-500">{chLabel}</td>
+                                          <td className="px-3 py-2.5 text-center align-middle">
+                                            <button
+                                              type="button"
+                                              onClick={() => { void deleteChildProduct(p); }}
+                                              className="inline-flex items-center justify-center rounded-lg p-1.5 text-slate-300 hover:bg-rose-50 hover:text-rose-500"
+                                              title="刪除此下料"
+                                            >
+                                              <Trash2 size={13} />
+                                            </button>
+                                          </td>
                                         </tr>
                                       );
                                     })}
