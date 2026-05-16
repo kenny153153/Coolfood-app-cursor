@@ -153,6 +153,8 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
   const [productTreeExpandedIds, setProductTreeExpandedIds] = useState<Set<string>>(new Set());
   /** 商品樹：每個母料正在新增的下料草稿 */
   const [productTreeDrafts, setProductTreeDrafts] = useState<Record<string, ProductTreeChildDraft>>({});
+  /** 商品樹：每個母料下料排序（key=ingredientId） */
+  const [childOrderMap, setChildOrderMap] = useState<Record<string, string[]>>({});
 
   // ── Ingredients state ──
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
@@ -617,6 +619,12 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     return true;
   });
 
+  const categoryOrderMap = useMemo(() => {
+    const map = new Map<string, number>();
+    categories.forEach((c, idx) => map.set(c.name, idx));
+    return map;
+  }, [categories]);
+
   const buildMaterialApiHeaders = useCallback((op: 'create' | 'update' | 'delete') => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     try {
@@ -632,6 +640,41 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     } catch { /* ignore */ }
     return headers;
   }, []);
+
+  const loadChildOrderMap = useCallback(async () => {
+    const res = await fetch('/api/material-products', {
+      method: 'POST',
+      headers: buildMaterialApiHeaders('update'),
+      body: JSON.stringify({ action: 'get_child_order_map' }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) return;
+    if (json.data && typeof json.data === 'object') {
+      setChildOrderMap(json.data as Record<string, string[]>);
+    }
+  }, [buildMaterialApiHeaders]);
+
+  const saveChildOrder = useCallback(async (ingredientId: string, orderedProductIds: string[]) => {
+    if (!ingredientId || orderedProductIds.length === 0) return;
+    setChildOrderMap(prev => ({ ...prev, [ingredientId]: orderedProductIds }));
+    const res = await fetch('/api/material-products', {
+      method: 'POST',
+      headers: buildMaterialApiHeaders('update'),
+      body: JSON.stringify({ action: 'save_child_order_map', ingredientId, orderedProductIds }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) {
+      showToast(`下料排序儲存失敗：${json.error || `HTTP ${res.status}`}`, 'error');
+      return;
+    }
+    if (json.data && typeof json.data === 'object') setChildOrderMap(json.data as Record<string, string[]>);
+  }, [buildMaterialApiHeaders, showToast]);
+
+  useEffect(() => {
+    if (subTab === 'product_tree' || subTab === 'product_costs') {
+      void loadChildOrderMap();
+    }
+  }, [subTab, loadChildOrderMap]);
 
   const handleSaveIngredient = async () => {
     if (!editing || !editing.name?.trim()) { showToast('請輸入名稱', 'error'); return; }
@@ -653,7 +696,13 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
         headers: buildMaterialApiHeaders(editing.isNew ? 'create' : 'update'),
         body: JSON.stringify(editing.isNew
           ? { action: 'create_mother_material', row: patch }
-          : { action: 'update_mother_material', id: editing.id, patch }),
+          : {
+              action: 'update_mother_material',
+              id: editing.id,
+              patch,
+              syncChildNames: true,
+              oldName: ingredients.find(i => i.id === editing.id)?.name || '',
+            }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.ok) {
@@ -679,13 +728,20 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
   };
 
   const handleDeleteIngredient = async (ingredient: Ingredient) => {
-    const linkedCount = products.filter(p => p.ingredientId === ingredient.id).length;
-    const detail = linkedCount > 0 ? `\n\n此母料有 ${linkedCount} 個掛載產品，刪除母料後會先解除掛載。` : '';
-    if (!confirm(`確定刪除原材料「${ingredient.name}」？此操作無法復原。${detail}`)) return;
+    const childCount = products.filter(p => p.ingredientId === ingredient.id && p.productType === 'processed').length;
+    if (!confirm(`確定刪除原材料「${ingredient.name}」？此操作無法復原。`)) return;
+    let deleteLinkedChildren = false;
+    if (childCount > 0) {
+      deleteLinkedChildren = confirm(`此母料有 ${childCount} 筆子料。\n是否同時刪除子料？`);
+      if (!deleteLinkedChildren) {
+        showToast('已取消刪除', 'error');
+        return;
+      }
+    }
     const res = await fetch('/api/material-products', {
       method: 'POST',
       headers: buildMaterialApiHeaders('delete'),
-      body: JSON.stringify({ action: 'delete_mother_materials', ids: [ingredient.id] }),
+      body: JSON.stringify({ action: 'delete_mother_materials', ids: [ingredient.id], deleteLinkedChildren }),
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok || !json.ok) {
@@ -693,7 +749,15 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       return;
     }
     setIngredients(prev => prev.filter(i => i.id !== ingredient.id));
-    setProducts(prev => prev.map(p => (p.ingredientId === ingredient.id || p.parentIngredientId === ingredient.id) ? { ...p, ingredientId: undefined, parentIngredientId: undefined } : p));
+    setProducts(prev => prev
+      .filter(p => !(deleteLinkedChildren && p.ingredientId === ingredient.id && p.productType === 'processed'))
+      .map(p => (p.ingredientId === ingredient.id || p.parentIngredientId === ingredient.id) ? { ...p, ingredientId: undefined, parentIngredientId: undefined } : p));
+    setChildOrderMap(prev => {
+      const map = { ...prev };
+      delete map[ingredient.id];
+      return map;
+    });
+    void saveChildOrder(ingredient.id, []);
     setSelectedIngredientIds(prev => {
       const next = new Set(prev);
       next.delete(ingredient.id);
@@ -721,10 +785,19 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     if (selectedIngredientIds.size === 0) return;
     if (!confirm(`確定刪除已選的 ${selectedIngredientIds.size} 項原材料？此操作無法復原。`)) return;
     const ids = Array.from(selectedIngredientIds);
+    const childCount = products.filter(p => p.ingredientId && ids.includes(p.ingredientId) && p.productType === 'processed').length;
+    let deleteLinkedChildren = false;
+    if (childCount > 0) {
+      deleteLinkedChildren = confirm(`已選母料下共有 ${childCount} 筆子料。\n是否同時刪除子料？`);
+      if (!deleteLinkedChildren) {
+        showToast('已取消批量刪除', 'error');
+        return;
+      }
+    }
     const res = await fetch('/api/material-products', {
       method: 'POST',
       headers: buildMaterialApiHeaders('delete'),
-      body: JSON.stringify({ action: 'delete_mother_materials', ids }),
+      body: JSON.stringify({ action: 'delete_mother_materials', ids, deleteLinkedChildren }),
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok || !json.ok) {
@@ -732,7 +805,15 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       return;
     }
     setIngredients(prev => prev.filter(i => !selectedIngredientIds.has(i.id)));
-    setProducts(prev => prev.map(p => (selectedIngredientIds.has(p.ingredientId || '') || selectedIngredientIds.has(p.parentIngredientId || '')) ? { ...p, ingredientId: undefined, parentIngredientId: undefined } : p));
+    setProducts(prev => prev
+      .filter(p => !(deleteLinkedChildren && selectedIngredientIds.has(p.ingredientId || '') && p.productType === 'processed'))
+      .map(p => (selectedIngredientIds.has(p.ingredientId || '') || selectedIngredientIds.has(p.parentIngredientId || '')) ? { ...p, ingredientId: undefined, parentIngredientId: undefined } : p));
+    ids.forEach(id => { void saveChildOrder(id, []); });
+    setChildOrderMap(prev => {
+      const map = { ...prev };
+      ids.forEach(id => { delete map[id]; });
+      return map;
+    });
     showToast(`已刪除 ${ids.length} 項原材料`);
     setSelectedIngredientIds(new Set());
   };
@@ -781,15 +862,20 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     if (!res.ok || !json.ok) { showToast(`儲存失敗：${json.error || `HTTP ${res.status}`}`, 'error'); return; }
     const saved = json.data ? mapProductRowToProduct(json.data) : null;
     setProducts(prev => prev.map(x => x.id === productId ? (saved || { ...x, ingredientId, parentIngredientId: ingredientId }) : x));
+    const order = childOrderMap[ingredientId] || [];
+    if (!order.includes(productId) && order.length > 0) {
+      void saveChildOrder(ingredientId, [...order, productId]);
+    }
     setProductTreeExpandedIds(prev => new Set(prev).add(ingredientId));
     showToast('已掛到母料下');
-  }, [buildMaterialApiHeaders, showToast, setProducts]);
+  }, [buildMaterialApiHeaders, childOrderMap, saveChildOrder, showToast, setProducts]);
 
   /** 商品樹：原地更新母料基本資料 */
   const updateIngredientInline = useCallback(async (
     ingredientId: string,
     patch: Partial<Pick<Ingredient, 'name' | 'category' | 'unit' | 'materialType' | 'baseCostPerLb' | 'supplier'>>
   ) => {
+    const previousName = ingredients.find(i => i.id === ingredientId)?.name || '';
     const nextPatch = { ...patch };
     if ('name' in nextPatch) {
       const name = (nextPatch.name || '').trim();
@@ -807,7 +893,13 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       const res = await fetch('/api/material-products', {
         method: 'POST',
         headers: buildMaterialApiHeaders('update'),
-        body: JSON.stringify({ action: 'update_mother_material', id: ingredientId, patch: nextPatch }),
+        body: JSON.stringify({
+          action: 'update_mother_material',
+          id: ingredientId,
+          patch: nextPatch,
+          syncChildNames: 'name' in nextPatch,
+          oldName: previousName,
+        }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.ok) {
@@ -818,6 +910,17 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       if (json.data) {
         const saved = mapIngredientRowToIngredient(json.data);
         setIngredients(prev => prev.map(i => i.id === ingredientId ? saved : i));
+        if ('name' in nextPatch) {
+          const newName = nextPatch.name || saved.name;
+          const ptNameById = new Map(processingTypes.map(pt => [pt.id, pt.name]));
+          setProducts(prev => prev.map(p => {
+            if (p.ingredientId !== ingredientId || p.productType !== 'processed') return p;
+            const suffix = (p.processingTypeId && ptNameById.get(p.processingTypeId))
+              || p.variantLabel
+              || (p.name.includes('-') ? p.name.slice(p.name.indexOf('-') + 1) : p.name);
+            return { ...p, name: suffix ? `${newName}-${suffix}` : newName };
+          }));
+        }
       }
       if ('name' in nextPatch) showToast('母料名稱已儲存');
       return true;
@@ -826,7 +929,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       loadIngredients();
       return false;
     }
-  }, [buildMaterialApiHeaders, loadIngredients, showToast]);
+  }, [buildMaterialApiHeaders, ingredients, loadIngredients, processingTypes, setProducts, showToast]);
 
   const getProductTreeDraft = useCallback((ingredient: Ingredient): ProductTreeChildDraft => {
     const existing = productTreeDrafts[ingredient.id];
@@ -900,7 +1003,20 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     const json = await res.json().catch(() => ({}));
     if (!res.ok || !json.ok) { showToast(`新增下料失敗：${json.error || `HTTP ${res.status}`}`, 'error'); return; }
     const data = json.data;
-    if (data) setProducts(prev => [...prev, mapProductRowToProduct(data)]);
+    if (data) {
+      const saved = mapProductRowToProduct(data);
+      setProducts(prev => [...prev, saved]);
+      setChildOrderMap(prev => {
+        const cur = prev[ingredient.id] || [];
+        if (cur.includes(saved.id)) return prev;
+        return { ...prev, [ingredient.id]: [...cur, saved.id] };
+      });
+      const existingOrder = childOrderMap[ingredient.id] || [];
+      if (existingOrder.length > 0) {
+        const nextOrder = [...existingOrder, saved.id];
+        void saveChildOrder(ingredient.id, nextOrder);
+      }
+    }
     setProductTreeDrafts(prev => {
       const next = { ...prev };
       delete next[ingredient.id];
@@ -908,7 +1024,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     });
     setProductTreeExpandedIds(prev => new Set(prev).add(ingredient.id));
     showToast(`已新增下料：${row.name}`);
-  }, [buildMaterialApiHeaders, getProductTreeDraft, processingTypes, setProducts, showToast]);
+  }, [buildMaterialApiHeaders, childOrderMap, getProductTreeDraft, processingTypes, saveChildOrder, setProducts, showToast]);
 
   /** 商品樹：刪除指定母料下的一筆下料產品 */
   const deleteChildProduct = useCallback(async (product: Product) => {
@@ -924,8 +1040,17 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       return;
     }
     setProducts(prev => prev.filter(p => p.id !== product.id));
+    if (product.ingredientId) {
+      const next = (childOrderMap[product.ingredientId] || []).filter(id => id !== product.id);
+      if (next.length > 0) void saveChildOrder(product.ingredientId, next);
+      else setChildOrderMap(prev => {
+        const map = { ...prev };
+        delete map[product.ingredientId!];
+        return map;
+      });
+    }
     showToast(`已刪除下料：${product.name}`);
-  }, [buildMaterialApiHeaders, setProducts, showToast]);
+  }, [buildMaterialApiHeaders, childOrderMap, saveChildOrder, setProducts, showToast]);
 
   // ── CSV helpers ──
   const downloadCsvTemplate = () => {
@@ -1886,12 +2011,12 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       <div className="flex items-center gap-2 flex-wrap">
         {([
           { id: 'product_tree' as SubTab, label: '原材料', icon: <Layers size={16} /> },
+          { id: 'product_costs' as SubTab, label: '產品外加成本', icon: <Coins size={16} /> },
           { id: 'suppliers' as SubTab, label: '供應商', icon: <Building2 size={16} /> },
           { id: 'quote_compare' as SubTab, label: '報價比較', icon: <BarChart3 size={16} /> },
           { id: 'purchase_orders' as SubTab, label: '購買訂單', icon: <ShoppingCart size={16} /> },
           { id: 'goods_receiving' as SubTab, label: '收貨入倉', icon: <PackageCheck size={16} /> },
           { id: 'processing_types' as SubTab, label: '加工方式', icon: <Scissors size={16} /> },
-          { id: 'product_costs' as SubTab, label: '產品成本一覽', icon: <Coins size={16} /> },
           { id: 'reorder_alerts' as SubTab, label: '補貨預警', icon: <AlertTriangle size={16} /> },
           { id: 'units' as SubTab, label: '單位管理', icon: <Filter size={16} /> },
         ].filter(tab => {
@@ -1929,13 +2054,28 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
           if (costsChannelFilter === 'wholesale') return ch === 'wholesale' || ch === 'both';
           return true;
         });
-        const sortUnderMother = (list: Product[]) =>
-          [...list].sort((a, b) => (a.variantLabel || a.name).localeCompare(b.variantLabel || b.name));
+        const sortUnderMother = (ingredientId: string, list: Product[]) => {
+          const orderedIds = childOrderMap[ingredientId] || [];
+          const orderIndex = new Map(orderedIds.map((id, idx) => [id, idx]));
+          return [...list].sort((a, b) => {
+            const ai = orderIndex.get(a.id);
+            const bi = orderIndex.get(b.id);
+            if (ai != null && bi != null) return ai - bi;
+            if (ai != null) return -1;
+            if (bi != null) return 1;
+            return (a.variantLabel || a.name).localeCompare(b.variantLabel || b.name);
+          });
+        };
         const ptName = (id?: string) => (id ? processingTypes.find(pt => pt.id === id)?.name : undefined) || '—';
         const ingredientCostAfterYield = (ingredient: Ingredient, yieldRate: number) =>
           yieldRate > 0 ? ingredient.baseCostPerLb / yieldRate : ingredient.baseCostPerLb;
         const orphans = treeProductsFiltered.filter(p => !p.ingredientId).sort((a, b) => a.name.localeCompare(b.name));
-        const treeRows = filtered;
+        const treeRows = [...filtered].sort((a, b) => {
+          const ao = a.category ? (categoryOrderMap.get(a.category) ?? Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER;
+          const bo = b.category ? (categoryOrderMap.get(b.category) ?? Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER;
+          if (ao !== bo) return ao - bo;
+          return a.name.localeCompare(b.name);
+        });
 
         return (
           <div className="space-y-5">
@@ -1977,7 +2117,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                   <div className="p-12 text-center text-sm font-bold text-slate-400">沒有符合篩選的母料</div>
                 ) : (
                   treeRows.map(ing => {
-                    const kids = sortUnderMother(treeProductsFiltered.filter(p => p.ingredientId === ing.id));
+                    const kids = sortUnderMother(ing.id, treeProductsFiltered.filter(p => p.ingredientId === ing.id));
                     const open = productTreeExpandedIds.has(ing.id);
                     const draft = getProductTreeDraft(ing);
                     const draftPt = processingTypes.find(pt => pt.id === draft.processingTypeId);
@@ -1994,50 +2134,39 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                           </button>
                           <div className="min-w-[180px] flex-[1.4]">
                             <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">母料名稱</label>
-                            <div className="flex items-center gap-1.5">
-                              <input
-                                value={ing.name}
-                                onChange={e => {
-                                  const prevName = ing.name;
-                                  const next = e.target.value;
-                                  setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, name: next } : x));
-                                  setProductTreeDrafts(prevDrafts => {
-                                    const cur = prevDrafts[ing.id];
-                                    if (!cur) return prevDrafts;
-                                    const pt = cur.processingTypeId ? processingTypes.find(p => p.id === cur.processingTypeId) : undefined;
-                                    if (cur.processingTypeId && pt) {
-                                      const prevAuto = `${prevName}-${pt.name}`;
-                                      const userEdited = cur.name && cur.name !== prevName && cur.name !== prevAuto;
-                                      if (userEdited) return prevDrafts;
-                                      return {
-                                        ...prevDrafts,
-                                        [ing.id]: { ...cur, name: `${next}-${pt.name}` },
-                                      };
-                                    }
-                                    const looseMatch = !cur.name || cur.name === prevName;
-                                    if (!looseMatch) return prevDrafts;
-                                    return { ...prevDrafts, [ing.id]: { ...cur, name: next } };
-                                  });
-                                }}
-                                onBlur={e => { void updateIngredientInline(ing.id, { name: e.currentTarget.value }); }}
-                                onKeyDown={e => {
-                                  if (e.key === 'Enter') {
-                                    e.preventDefault();
-                                    void updateIngredientInline(ing.id, { name: e.currentTarget.value });
+                            <input
+                              value={ing.name}
+                              onChange={e => {
+                                const prevName = ing.name;
+                                const next = e.target.value;
+                                setIngredients(prev => prev.map(x => x.id === ing.id ? { ...x, name: next } : x));
+                                setProductTreeDrafts(prevDrafts => {
+                                  const cur = prevDrafts[ing.id];
+                                  if (!cur) return prevDrafts;
+                                  const pt = cur.processingTypeId ? processingTypes.find(p => p.id === cur.processingTypeId) : undefined;
+                                  if (cur.processingTypeId && pt) {
+                                    const prevAuto = `${prevName}-${pt.name}`;
+                                    const userEdited = cur.name && cur.name !== prevName && cur.name !== prevAuto;
+                                    if (userEdited) return prevDrafts;
+                                    return {
+                                      ...prevDrafts,
+                                      [ing.id]: { ...cur, name: `${next}-${pt.name}` },
+                                    };
                                   }
-                                }}
-                                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-black text-slate-900"
-                              />
-                              <button
-                                type="button"
-                                onMouseDown={e => e.preventDefault()}
-                                onClick={() => { void updateIngredientInline(ing.id, { name: ing.name }); }}
-                                className="shrink-0 p-2 rounded-xl bg-teal-50 text-teal-700 border border-teal-100 hover:bg-teal-100"
-                                title="儲存母料名稱"
-                              >
-                                <Save size={14} />
-                              </button>
-                            </div>
+                                  const looseMatch = !cur.name || cur.name === prevName;
+                                  if (!looseMatch) return prevDrafts;
+                                  return { ...prevDrafts, [ing.id]: { ...cur, name: next } };
+                                });
+                              }}
+                              onBlur={e => { void updateIngredientInline(ing.id, { name: e.currentTarget.value }); }}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  void updateIngredientInline(ing.id, { name: e.currentTarget.value });
+                                }
+                              }}
+                              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-black text-slate-900"
+                            />
                             {ing.nameEn && <p className="text-[10px] text-slate-400 font-bold truncate mt-1">{ing.nameEn}</p>}
                           </div>
                           <div className="min-w-[130px]">
@@ -2109,44 +2238,68 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                               <p className="text-xs font-bold text-slate-400 py-3">此母料在目前通路篩選下尚無掛載產品。</p>
                             ) : (
                               <div className="overflow-x-auto rounded-xl border border-slate-100 bg-white">
-                                <table className="w-full table-fixed border-collapse text-xs">
-                                  <colgroup>
-                                    <col className="min-w-0" />
-                                    <col style={{ width: '13%' }} />
-                                    <col style={{ width: '11%' }} />
-                                    <col style={{ width: '9%' }} />
-                                    <col style={{ width: '11%' }} />
-                                    <col style={{ width: '12%' }} />
-                                    <col style={{ width: '10%' }} />
-                                    <col style={{ width: '7%' }} />
-                                  </colgroup>
+                                <table className="min-w-[980px] w-full border-collapse text-xs">
                                   <thead>
                                     <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                                      <th className="min-w-0 px-3 py-2.5 text-left align-middle">下料名稱</th>
-                                      <th className="px-3 py-2.5 text-left align-middle">加工</th>
+                                      <th className="min-w-[220px] px-3 py-2.5 text-left align-middle">下料名稱</th>
+                                      <th className="min-w-[130px] px-3 py-2.5 text-left align-middle">加工</th>
                                       <th className="px-3 py-2.5 text-right align-middle">出成率</th>
                                       <th className="px-3 py-2.5 text-center align-middle">單位</th>
                                       <th className="px-3 py-2.5 text-center align-middle">計價方法</th>
                                       <th className="px-3 py-2.5 text-right align-middle">成本</th>
                                       <th className="px-3 py-2.5 text-center align-middle">通路</th>
+                                      <th className="px-3 py-2.5 text-center align-middle">排序</th>
                                       <th className="px-3 py-2.5 text-center align-middle">刪除</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-slate-50">
                                     {kids.map(p => {
+                                      const idx = kids.findIndex(x => x.id === p.id);
                                       const ch = p.saleChannel || 'retail';
                                       const chLabel = ch === 'both' ? '雙' : ch === 'wholesale' ? '批' : '零';
                                       const yr = p.yieldRate && p.yieldRate > 0 ? p.yieldRate : 1;
                                       const costAfterYield = ingredientCostAfterYield(ing, yr);
                                       return (
                                         <tr key={p.id} className="hover:bg-slate-50/50">
-                                          <td className="min-w-0 px-3 py-2.5 align-middle font-bold text-slate-800 break-words">{p.name}</td>
-                                          <td className="px-3 py-2.5 align-middle text-slate-600">{ptName(p.processingTypeId)}</td>
+                                          <td className="min-w-[220px] px-3 py-2.5 align-middle font-bold text-slate-800 break-words">{p.name}</td>
+                                          <td className="min-w-[130px] px-3 py-2.5 align-middle text-slate-600 whitespace-normal break-words">{ptName(p.processingTypeId)}</td>
                                           <td className="px-3 py-2.5 text-right align-middle font-bold text-slate-700">{yr.toFixed(2)}</td>
                                           <td className="px-3 py-2.5 text-center align-middle font-bold text-slate-500">{ing.unit || 'lb'}</td>
                                           <td className="px-3 py-2.5 text-center align-middle font-bold text-slate-500">{p.pricingMode === 'by_piece' ? '抄碼' : '定裝'}</td>
                                           <td className="px-3 py-2.5 text-right align-middle font-black text-amber-700">${costAfterYield.toFixed(2)}</td>
                                           <td className="px-3 py-2.5 text-center align-middle font-black text-slate-500">{chLabel}</td>
+                                          <td className="px-3 py-2.5 text-center align-middle">
+                                            <div className="inline-flex items-center rounded-lg border border-slate-200 overflow-hidden">
+                                              <button
+                                                type="button"
+                                                disabled={idx <= 0}
+                                                onClick={() => {
+                                                  if (idx <= 0) return;
+                                                  const next = [...kids];
+                                                  const tmp = next[idx - 1];
+                                                  next[idx - 1] = next[idx];
+                                                  next[idx] = tmp;
+                                                  void saveChildOrder(ing.id, next.map(x => x.id));
+                                                }}
+                                                className="px-2 py-1 text-[10px] font-black text-slate-600 bg-white hover:bg-slate-50 disabled:opacity-30"
+                                                title="上移"
+                                              >上</button>
+                                              <button
+                                                type="button"
+                                                disabled={idx === -1 || idx >= kids.length - 1}
+                                                onClick={() => {
+                                                  if (idx === -1 || idx >= kids.length - 1) return;
+                                                  const next = [...kids];
+                                                  const tmp = next[idx + 1];
+                                                  next[idx + 1] = next[idx];
+                                                  next[idx] = tmp;
+                                                  void saveChildOrder(ing.id, next.map(x => x.id));
+                                                }}
+                                                className="px-2 py-1 text-[10px] font-black text-slate-600 bg-white hover:bg-slate-50 border-l border-slate-200 disabled:opacity-30"
+                                                title="下移"
+                                              >下</button>
+                                            </div>
+                                          </td>
                                           <td className="px-3 py-2.5 text-center align-middle">
                                             <button
                                               type="button"
@@ -3280,7 +3433,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
       )}
 
       {/* ══════════════════════════════════════════════════════════════ */}
-      {/* ── TAB: 產品成本一覽 ── */}
+      {/* ── TAB: 產品外加成本 ── */}
       {/* ══════════════════════════════════════════════════════════════ */}
       {subTab === 'product_costs' && (() => {
         const costsWsRules: WholesalePricingRules = siteConfig.wholesalePricingRules || { targetMarginFactor: 0.88, priceTiers: [] };
@@ -3305,7 +3458,12 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
           }
         });
         const ingredientGroups = {
-          linked: Array.from(ingredientGroupsMap.values()).sort((a, b) => a.ingredient.name.localeCompare(b.ingredient.name)),
+          linked: Array.from(ingredientGroupsMap.values()).sort((a, b) => {
+            const ao = a.ingredient.category ? (categoryOrderMap.get(a.ingredient.category) ?? Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER;
+            const bo = b.ingredient.category ? (categoryOrderMap.get(b.ingredient.category) ?? Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER;
+            if (ao !== bo) return ao - bo;
+            return a.ingredient.name.localeCompare(b.ingredient.name);
+          }),
           unlinked: unlinkedProducts,
         };
 
@@ -3359,6 +3517,12 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
 
         return (
           <div className="space-y-8">
+            <div className="bg-teal-50 border border-teal-100 rounded-2xl p-4">
+              <h3 className="font-black text-slate-900 text-sm">產品外加成本</h3>
+              <p className="text-[10px] text-teal-900/80 font-bold mt-1 leading-relaxed">
+                以原材料商品樹為基礎，逐個子料設定加工費、包裝費、雜費與外加成本項目。
+              </p>
+            </div>
             {/* Channel filter + save */}
             <div className="flex items-center justify-between flex-wrap gap-3">
               <div className="flex gap-2">
@@ -3406,7 +3570,17 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
             ) : (
               <>
                 {ingredientGroups.linked.map(({ ingredient: ing, products: ingProducts }) => {
-                  const relatedPTs = new Set(ingProducts.map(p => p.processingTypeId).filter(Boolean));
+                  const orderedIds = childOrderMap[ing.id] || [];
+                  const orderIndex = new Map(orderedIds.map((id, idx) => [id, idx]));
+                  const sortedIngProducts = [...ingProducts].sort((a, b) => {
+                    const ai = orderIndex.get(a.id);
+                    const bi = orderIndex.get(b.id);
+                    if (ai != null && bi != null) return ai - bi;
+                    if (ai != null) return -1;
+                    if (bi != null) return 1;
+                    return (a.variantLabel || a.name).localeCompare(b.variantLabel || b.name);
+                  });
+                  const relatedPTs = new Set(sortedIngProducts.map(p => p.processingTypeId).filter(Boolean));
                   const ptList = processingTypes.filter(pt => relatedPTs.has(pt.id)).sort((a, b) => a.sortOrder - b.sortOrder);
 
                   return (
@@ -3499,7 +3673,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-50">
-                            {ingProducts.map(p => {
+                            {sortedIngProducts.map(p => {
                               const perLbCost = computeProductCost(p, ing, costItems, matProcEntries);
                               const packCost = computePackCost(perLbCost, p.packWeightLb, p.pricingMode);
                               const p0 = packCost > 0 ? packCost / costsWsRules.targetMarginFactor : 0;
