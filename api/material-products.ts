@@ -19,7 +19,7 @@ export default async function handler(req: Req, res: Res) {
   const action = req.body?.action;
   const requiredOp =
     action === 'create_child_product' || action === 'create_mother_material' || action === 'import_mother_materials' || action === 'ensure_default_piece_children' ? 'create'
-      : action === 'update_mother_material' || action === 'bulk_update_mother_materials' || action === 'assign_product_to_mother' || action === 'save_child_order_map' || action === 'sync_child_names_by_mother' ? 'update'
+      : action === 'update_mother_material' || action === 'bulk_update_mother_materials' || action === 'assign_product_to_mother' || action === 'save_child_order_map' || action === 'sync_child_names_by_mother' || action === 'update_child_product' ? 'update'
         : action === 'get_child_order_map' ? 'read'
         : action === 'delete_child_product' || action === 'delete_mother_materials' ? 'delete'
           : undefined;
@@ -352,6 +352,39 @@ export default async function handler(req: Req, res: Res) {
         .eq('id', productId)
         .select('*')
         .single();
+      if (error) return res.status(400).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, data });
+    }
+
+    if (action === 'update_child_product') {
+      const productId = safeTrim(req.body?.productId);
+      const patch = req.body?.patch || {};
+      if (!productId) return res.status(400).json({ ok: false, error: '缺少子料 ID' });
+
+      const payload: Record<string, any> = {};
+      if ('yieldRate' in patch || 'yield_rate' in patch) {
+        const yr = Number(patch.yieldRate ?? patch.yield_rate);
+        if (Number.isNaN(yr) || yr < 0.5 || yr > 1) return res.status(400).json({ ok: false, error: '出成率必須介乎 0.5 至 1' });
+        payload.yield_rate = yr;
+      }
+      if ('pricingMode' in patch || 'pricing_mode' in patch) {
+        const pm = safeTrim(patch.pricingMode ?? patch.pricing_mode);
+        if (!['fixed_pack', 'by_piece'].includes(pm)) return res.status(400).json({ ok: false, error: '計價方法無效' });
+        payload.pricing_mode = pm;
+      }
+      if ('saleChannel' in patch || 'sale_channel' in patch) {
+        const ch = safeTrim(patch.saleChannel ?? patch.sale_channel);
+        if (!['retail', 'wholesale', 'both'].includes(ch)) return res.status(400).json({ ok: false, error: '渠道無效' });
+        payload.sale_channel = ch;
+      }
+      if ('name' in patch) {
+        const n = safeTrim(patch.name);
+        if (!n) return res.status(400).json({ ok: false, error: '名稱不可為空' });
+        payload.name = n;
+      }
+      if (Object.keys(payload).length === 0) return res.status(400).json({ ok: false, error: '沒有可更新資料' });
+
+      const { data, error } = await supabase.from('products').update(payload).eq('id', productId).select('*').single();
       if (error) return res.status(400).json({ ok: false, error: error.message });
       return res.status(200).json({ ok: true, data });
     }

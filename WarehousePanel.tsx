@@ -285,6 +285,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const defaultPieceEnsureKeyRef = useRef('');
+  const ingredientNameEditOriginRef = useRef<Record<string, string>>({});
 
   // ── Load data ──
   const loadIngredients = useCallback(async () => {
@@ -901,7 +902,8 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
   /** 商品樹：原地更新母料基本資料 */
   const updateIngredientInline = useCallback(async (
     ingredientId: string,
-    patch: Partial<Pick<Ingredient, 'name' | 'category' | 'unit' | 'materialType' | 'baseCostPerLb' | 'supplier'>>
+    patch: Partial<Pick<Ingredient, 'name' | 'category' | 'unit' | 'materialType' | 'baseCostPerLb' | 'supplier'>>,
+    oldNameOverride?: string
   ) => {
     const previousName = ingredients.find(i => i.id === ingredientId)?.name || '';
     const nextPatch = { ...patch };
@@ -926,7 +928,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
           id: ingredientId,
           patch: nextPatch,
           syncChildNames: 'name' in nextPatch,
-          oldName: previousName,
+          oldName: oldNameOverride || previousName,
         }),
       });
       const json = await res.json().catch(() => ({}));
@@ -948,6 +950,16 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
               || (p.name.includes('-') ? p.name.slice(p.name.indexOf('-') + 1) : p.name);
             return { ...p, name: suffix ? `${newName}-${suffix}` : newName };
           }));
+          await fetch('/api/material-products', {
+            method: 'POST',
+            headers: buildMaterialApiHeaders('update'),
+            body: JSON.stringify({
+              action: 'sync_child_names_by_mother',
+              id: ingredientId,
+              newName,
+              oldName: oldNameOverride || previousName,
+            }),
+          }).catch(() => undefined);
         }
       }
       if ('name' in nextPatch) showToast('母料名稱已儲存');
@@ -1053,6 +1065,29 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     setProductTreeExpandedIds(prev => new Set(prev).add(ingredient.id));
     showToast(`已新增下料：${row.name}`);
   }, [buildMaterialApiHeaders, childOrderMap, getProductTreeDraft, processingTypes, saveChildOrder, setProducts, showToast]);
+
+  /** 商品樹：原地更新子料（出成率／計價方法／渠道） */
+  const updateChildProductInline = useCallback(async (
+    productId: string,
+    patch: Partial<Pick<Product, 'yieldRate' | 'pricingMode' | 'saleChannel' | 'name'>>
+  ) => {
+    const optimistic = { ...patch } as any;
+    setProducts(prev => prev.map(p => p.id === productId ? { ...p, ...optimistic } : p));
+    const res = await fetch('/api/material-products', {
+      method: 'POST',
+      headers: buildMaterialApiHeaders('update'),
+      body: JSON.stringify({ action: 'update_child_product', productId, patch }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) {
+      showToast(`更新子料失敗：${json.error || `HTTP ${res.status}`}`, 'error');
+      return;
+    }
+    if (json.data) {
+      const saved = mapProductRowToProduct(json.data);
+      setProducts(prev => prev.map(p => p.id === productId ? saved : p));
+    }
+  }, [buildMaterialApiHeaders, setProducts, showToast]);
 
   /** 商品樹：刪除指定母料下的一筆下料產品 */
   const deleteChildProduct = useCallback(async (product: Product) => {
@@ -2164,6 +2199,11 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                             <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">母料名稱</label>
                             <input
                               value={ing.name}
+                              onFocus={() => {
+                                if (!ingredientNameEditOriginRef.current[ing.id]) {
+                                  ingredientNameEditOriginRef.current[ing.id] = ing.name;
+                                }
+                              }}
                               onChange={e => {
                                 const prevName = ing.name;
                                 const next = e.target.value;
@@ -2186,11 +2226,17 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                   return { ...prevDrafts, [ing.id]: { ...cur, name: next } };
                                 });
                               }}
-                              onBlur={e => { void updateIngredientInline(ing.id, { name: e.currentTarget.value }); }}
+                              onBlur={e => {
+                                const oldName = ingredientNameEditOriginRef.current[ing.id] || ing.name;
+                                delete ingredientNameEditOriginRef.current[ing.id];
+                                void updateIngredientInline(ing.id, { name: e.currentTarget.value }, oldName);
+                              }}
                               onKeyDown={e => {
                                 if (e.key === 'Enter') {
                                   e.preventDefault();
-                                  void updateIngredientInline(ing.id, { name: e.currentTarget.value });
+                                  const oldName = ingredientNameEditOriginRef.current[ing.id] || ing.name;
+                                  delete ingredientNameEditOriginRef.current[ing.id];
+                                  void updateIngredientInline(ing.id, { name: e.currentTarget.value }, oldName);
                                 }
                               }}
                               className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-black text-slate-900"
@@ -2285,18 +2331,54 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                       const idx = kids.findIndex(x => x.id === p.id);
                                       const isDefaultPiece = p.productType === 'raw_material' || p.variantLabel === '原件';
                                       const ch = p.saleChannel || 'retail';
-                                      const chLabel = ch === 'both' ? '雙' : ch === 'wholesale' ? '批' : '零';
                                       const yr = p.yieldRate && p.yieldRate > 0 ? p.yieldRate : 1;
                                       const costAfterYield = ingredientCostAfterYield(ing, yr);
                                       return (
                                         <tr key={p.id} className="hover:bg-slate-50/50">
                                           <td className="min-w-[220px] px-3 py-2.5 align-middle font-bold text-slate-800 break-words">{p.name}</td>
                                           <td className="min-w-[130px] px-3 py-2.5 align-middle text-slate-600 whitespace-normal break-words">{ptName(p.processingTypeId)}</td>
-                                          <td className="px-3 py-2.5 text-right align-middle font-bold text-slate-700">{yr.toFixed(2)}</td>
+                                          <td className="px-3 py-2.5 text-right align-middle font-bold text-slate-700">
+                                            <input
+                                              type="number"
+                                              min="0.5"
+                                              max="1"
+                                              step="0.01"
+                                              value={yr}
+                                              onChange={e => {
+                                                const v = Number(e.target.value);
+                                                setProducts(prev => prev.map(x => x.id === p.id ? { ...x, yieldRate: Number.isNaN(v) ? 1 : v } : x));
+                                              }}
+                                              onBlur={e => {
+                                                const v = Number(e.currentTarget.value);
+                                                if (Number.isNaN(v)) return;
+                                                void updateChildProductInline(p.id, { yieldRate: Math.min(1, Math.max(0.5, v)) });
+                                              }}
+                                              className="w-16 rounded-md border border-slate-200 bg-white px-2 py-1 text-right text-xs font-black text-slate-700"
+                                            />
+                                          </td>
                                           <td className="px-3 py-2.5 text-center align-middle font-bold text-slate-500">{ing.unit || 'lb'}</td>
-                                          <td className="px-3 py-2.5 text-center align-middle font-bold text-slate-500">{p.pricingMode === 'by_piece' ? '抄碼' : '定裝'}</td>
+                                          <td className="px-3 py-2.5 text-center align-middle font-bold text-slate-500">
+                                            <select
+                                              value={p.pricingMode || 'fixed_pack'}
+                                              onChange={e => { void updateChildProductInline(p.id, { pricingMode: e.target.value as 'fixed_pack' | 'by_piece' }); }}
+                                              className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-600"
+                                            >
+                                              <option value="fixed_pack">定裝</option>
+                                              <option value="by_piece">抄碼</option>
+                                            </select>
+                                          </td>
                                           <td className="px-3 py-2.5 text-right align-middle font-black text-amber-700">${costAfterYield.toFixed(2)}</td>
-                                          <td className="px-3 py-2.5 text-center align-middle font-black text-slate-500">{chLabel}</td>
+                                          <td className="px-3 py-2.5 text-center align-middle font-black text-slate-500">
+                                            <select
+                                              value={ch}
+                                              onChange={e => { void updateChildProductInline(p.id, { saleChannel: e.target.value as SaleChannel }); }}
+                                              className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-600"
+                                            >
+                                              {SALE_CHANNELS.map(opt => (
+                                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                              ))}
+                                            </select>
+                                          </td>
                                           <td className="px-3 py-2.5 text-center align-middle">
                                             <div className="inline-flex items-center rounded-lg border border-slate-200 overflow-hidden">
                                               <button
