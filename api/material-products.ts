@@ -18,7 +18,7 @@ export default async function handler(req: Req, res: Res) {
 
   const action = req.body?.action;
   const requiredOp =
-    action === 'create_child_product' || action === 'create_mother_material' || action === 'import_mother_materials' ? 'create'
+    action === 'create_child_product' || action === 'create_mother_material' || action === 'import_mother_materials' || action === 'ensure_default_piece_children' ? 'create'
       : action === 'update_mother_material' || action === 'bulk_update_mother_materials' || action === 'assign_product_to_mother' || action === 'save_child_order_map' || action === 'sync_child_names_by_mother' ? 'update'
         : action === 'get_child_order_map' ? 'read'
         : action === 'delete_child_product' || action === 'delete_mother_materials' ? 'delete'
@@ -80,6 +80,72 @@ export default async function handler(req: Req, res: Res) {
       return res.status(200).json({ ok: true, data });
     }
 
+    if (action === 'ensure_default_piece_children') {
+      const ingredientIds = Array.isArray(req.body?.ingredientIds)
+        ? req.body.ingredientIds.map(safeTrim).filter(Boolean)
+        : [];
+      if (ingredientIds.length === 0) return res.status(200).json({ ok: true, data: [] });
+
+      const { data: ingRows, error: ingError } = await supabase
+        .from('ingredients')
+        .select('id,name')
+        .in('id', ingredientIds);
+      if (ingError) return res.status(400).json({ ok: false, error: ingError.message });
+
+      const validIngredients = (ingRows || []) as { id: string; name: string }[];
+      if (validIngredients.length === 0) return res.status(200).json({ ok: true, data: [] });
+
+      const validIds = validIngredients.map(i => i.id);
+      const { data: existingRows, error: existingError } = await supabase
+        .from('products')
+        .select('id,ingredient_id,product_type,variant_label')
+        .in('ingredient_id', validIds);
+      if (existingError) return res.status(400).json({ ok: false, error: existingError.message });
+
+      const hasDefaultByIngredient = new Set<string>();
+      (existingRows || []).forEach((r: any) => {
+        const ingId = safeTrim(r.ingredient_id);
+        if (!ingId) return;
+        if (safeTrim(r.product_type) === 'raw_material' || safeTrim(r.variant_label) === '原件') {
+          hasDefaultByIngredient.add(ingId);
+        }
+      });
+
+      const rowsToInsert = validIngredients
+        .filter(ing => !hasDefaultByIngredient.has(ing.id))
+        .map(ing => ({
+          id: `P-RAW-${ing.id}`,
+          name: safeTrim(ing.name) || '原件',
+          categories: [],
+          price: 0,
+          member_price: 0,
+          stock: 0,
+          track_inventory: true,
+          tags: ['default_raw_piece'],
+          image: '🥩',
+          description: null,
+          ingredient_id: ing.id,
+          parent_ingredient_id: ing.id,
+          processing_type_id: null,
+          yield_rate: 1,
+          processing_cost: 0,
+          packaging_cost: 0,
+          misc_cost: 0,
+          sale_channel: 'both',
+          product_type: 'raw_material',
+          pack_size: null,
+          pack_weight_lb: null,
+          variant_label: '原件',
+          pricing_mode: 'by_piece',
+        }));
+
+      if (rowsToInsert.length === 0) return res.status(200).json({ ok: true, data: [] });
+
+      const { data, error } = await supabase.from('products').insert(rowsToInsert).select('*');
+      if (error) return res.status(400).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, data: data || [] });
+    }
+
     if (action === 'import_mother_materials') {
       const rows = Array.isArray(req.body?.rows)
         ? req.body.rows.map(normalizeMotherMaterialInput).filter((row: any) => row.name)
@@ -131,9 +197,9 @@ export default async function handler(req: Req, res: Res) {
           .eq('ingredient_id', id);
         if (kidsError) return res.status(400).json({ ok: false, error: kidsError.message });
 
-        const processedKids = (kids || []).filter((k: any) => k.ingredient_id && k.product_type === 'processed');
-        if (processedKids.length > 0) {
-          const ptIds = Array.from(new Set(processedKids.map((k: any) => safeTrim(k.processing_type_id)).filter(Boolean)));
+        const linkedKids = (kids || []).filter((k: any) => k.ingredient_id);
+        if (linkedKids.length > 0) {
+          const ptIds = Array.from(new Set(linkedKids.map((k: any) => safeTrim(k.processing_type_id)).filter(Boolean)));
           const ptNameMap = new Map<string, string>();
           if (ptIds.length > 0) {
             const { data: ptRows, error: ptError } = await supabase
@@ -144,7 +210,13 @@ export default async function handler(req: Req, res: Res) {
             (ptRows || []).forEach((pt: any) => ptNameMap.set(safeTrim(pt.id), safeTrim(pt.name)));
           }
 
-          for (const kid of processedKids) {
+          for (const kid of linkedKids) {
+            const isDefaultPiece = safeTrim(kid.product_type) === 'raw_material' || safeTrim(kid.variant_label) === '原件';
+            if (isDefaultPiece) {
+              const { error: renameDefaultError } = await supabase.from('products').update({ name: newMotherName }).eq('id', kid.id);
+              if (renameDefaultError) return res.status(400).json({ ok: false, error: renameDefaultError.message });
+              continue;
+            }
             const procName = ptNameMap.get(safeTrim(kid.processing_type_id)) || safeTrim(kid.variant_label);
             let suffix = procName;
             if (!suffix) {
@@ -173,8 +245,8 @@ export default async function handler(req: Req, res: Res) {
         .eq('ingredient_id', id);
       if (kidsError) return res.status(400).json({ ok: false, error: kidsError.message });
 
-      const processedKids = (kids || []).filter((k: any) => k.ingredient_id && k.product_type === 'processed');
-      const ptIds = Array.from(new Set(processedKids.map((k: any) => safeTrim(k.processing_type_id)).filter(Boolean)));
+      const linkedKids = (kids || []).filter((k: any) => k.ingredient_id);
+      const ptIds = Array.from(new Set(linkedKids.map((k: any) => safeTrim(k.processing_type_id)).filter(Boolean)));
       const ptNameMap = new Map<string, string>();
       if (ptIds.length > 0) {
         const { data: ptRows, error: ptError } = await supabase.from('processing_types').select('id,name').in('id', ptIds);
@@ -183,7 +255,14 @@ export default async function handler(req: Req, res: Res) {
       }
 
       let updatedCount = 0;
-      for (const kid of processedKids) {
+      for (const kid of linkedKids) {
+        const isDefaultPiece = safeTrim(kid.product_type) === 'raw_material' || safeTrim(kid.variant_label) === '原件';
+        if (isDefaultPiece) {
+          const { error: renameDefaultError } = await supabase.from('products').update({ name: newMotherName }).eq('id', kid.id);
+          if (renameDefaultError) return res.status(400).json({ ok: false, error: renameDefaultError.message });
+          updatedCount += 1;
+          continue;
+        }
         const procName = ptNameMap.get(safeTrim(kid.processing_type_id)) || safeTrim(kid.variant_label);
         let suffix = procName;
         if (!suffix) {
@@ -226,8 +305,7 @@ export default async function handler(req: Req, res: Res) {
       const { data: childRows, error: childCountError } = await supabase
         .from('products')
         .select('id,ingredient_id,product_type')
-        .in('ingredient_id', ids)
-        .eq('product_type', 'processed');
+        .in('ingredient_id', ids);
       if (childCountError) return res.status(400).json({ ok: false, error: childCountError.message });
       const childCount = (childRows || []).length;
       if (childCount > 0 && !deleteLinkedChildren) {
@@ -284,10 +362,13 @@ export default async function handler(req: Req, res: Res) {
 
       const { data: product, error: lookupError } = await supabase
         .from('products')
-        .select('id,name,ingredient_id,parent_ingredient_id,processing_type_id,product_type')
+        .select('id,name,ingredient_id,parent_ingredient_id,processing_type_id,product_type,variant_label')
         .eq('id', productId)
         .single();
       if (lookupError || !product) return res.status(404).json({ ok: false, error: lookupError?.message || '找不到下料' });
+      if (product.product_type === 'raw_material' || safeTrim((product as any).variant_label) === '原件') {
+        return res.status(400).json({ ok: false, error: '原件不可刪除' });
+      }
       if (!product.ingredient_id || !product.processing_type_id || product.product_type !== 'processed') {
         return res.status(400).json({ ok: false, error: '這不是商品樹下的下料，不能在此刪除' });
       }

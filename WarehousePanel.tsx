@@ -284,6 +284,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
   const [matProcLoading, setMatProcLoading] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const defaultPieceEnsureKeyRef = useRef('');
 
   // ── Load data ──
   const loadIngredients = useCallback(async () => {
@@ -670,11 +671,38 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     if (json.data && typeof json.data === 'object') setChildOrderMap(json.data as Record<string, string[]>);
   }, [buildMaterialApiHeaders, showToast]);
 
+  const ensureDefaultPieceChildren = useCallback(async (ingredientIds: string[]) => {
+    if (!ingredientIds.length) return;
+    const res = await fetch('/api/material-products', {
+      method: 'POST',
+      headers: buildMaterialApiHeaders('create'),
+      body: JSON.stringify({ action: 'ensure_default_piece_children', ingredientIds }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) {
+      showToast(`補齊原件失敗：${json.error || `HTTP ${res.status}`}`, 'error');
+      return;
+    }
+    if (Array.isArray(json.data) && json.data.length > 0) {
+      const created = json.data.map(mapProductRowToProduct);
+      setProducts(prev => {
+        const existing = new Set(prev.map(p => p.id));
+        return [...prev, ...created.filter((p: Product) => !existing.has(p.id))];
+      });
+    }
+  }, [buildMaterialApiHeaders, setProducts, showToast]);
+
   useEffect(() => {
     if (subTab === 'product_tree' || subTab === 'product_costs') {
+      const sortedIds = ingredients.map(i => i.id).sort();
+      const key = `${subTab}:${sortedIds.join(',')}`;
+      if (defaultPieceEnsureKeyRef.current !== key) {
+        defaultPieceEnsureKeyRef.current = key;
+        void ensureDefaultPieceChildren(sortedIds);
+      }
       void loadChildOrderMap();
     }
-  }, [subTab, loadChildOrderMap]);
+  }, [subTab, loadChildOrderMap, ensureDefaultPieceChildren, ingredients]);
 
   const handleSaveIngredient = async () => {
     if (!editing || !editing.name?.trim()) { showToast('請輸入名稱', 'error'); return; }
@@ -728,7 +756,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
   };
 
   const handleDeleteIngredient = async (ingredient: Ingredient) => {
-    const childCount = products.filter(p => p.ingredientId === ingredient.id && p.productType === 'processed').length;
+    const childCount = products.filter(p => p.ingredientId === ingredient.id).length;
     if (!confirm(`確定刪除原材料「${ingredient.name}」？此操作無法復原。`)) return;
     let deleteLinkedChildren = false;
     if (childCount > 0) {
@@ -750,7 +778,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     }
     setIngredients(prev => prev.filter(i => i.id !== ingredient.id));
     setProducts(prev => prev
-      .filter(p => !(deleteLinkedChildren && p.ingredientId === ingredient.id && p.productType === 'processed'))
+      .filter(p => !(deleteLinkedChildren && p.ingredientId === ingredient.id))
       .map(p => (p.ingredientId === ingredient.id || p.parentIngredientId === ingredient.id) ? { ...p, ingredientId: undefined, parentIngredientId: undefined } : p));
     setChildOrderMap(prev => {
       const map = { ...prev };
@@ -785,7 +813,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     if (selectedIngredientIds.size === 0) return;
     if (!confirm(`確定刪除已選的 ${selectedIngredientIds.size} 項原材料？此操作無法復原。`)) return;
     const ids = Array.from(selectedIngredientIds);
-    const childCount = products.filter(p => p.ingredientId && ids.includes(p.ingredientId) && p.productType === 'processed').length;
+    const childCount = products.filter(p => p.ingredientId && ids.includes(p.ingredientId)).length;
     let deleteLinkedChildren = false;
     if (childCount > 0) {
       deleteLinkedChildren = confirm(`已選母料下共有 ${childCount} 筆子料。\n是否同時刪除子料？`);
@@ -806,7 +834,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
     }
     setIngredients(prev => prev.filter(i => !selectedIngredientIds.has(i.id)));
     setProducts(prev => prev
-      .filter(p => !(deleteLinkedChildren && selectedIngredientIds.has(p.ingredientId || '') && p.productType === 'processed'))
+      .filter(p => !(deleteLinkedChildren && selectedIngredientIds.has(p.ingredientId || '')))
       .map(p => (selectedIngredientIds.has(p.ingredientId || '') || selectedIngredientIds.has(p.parentIngredientId || '')) ? { ...p, ingredientId: undefined, parentIngredientId: undefined } : p));
     ids.forEach(id => { void saveChildOrder(id, []); });
     setChildOrderMap(prev => {
@@ -2255,6 +2283,7 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                   <tbody className="divide-y divide-slate-50">
                                     {kids.map(p => {
                                       const idx = kids.findIndex(x => x.id === p.id);
+                                      const isDefaultPiece = p.productType === 'raw_material' || p.variantLabel === '原件';
                                       const ch = p.saleChannel || 'retail';
                                       const chLabel = ch === 'both' ? '雙' : ch === 'wholesale' ? '批' : '零';
                                       const yr = p.yieldRate && p.yieldRate > 0 ? p.yieldRate : 1;
@@ -2303,9 +2332,10 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                                           <td className="px-3 py-2.5 text-center align-middle">
                                             <button
                                               type="button"
-                                              onClick={() => { void deleteChildProduct(p); }}
-                                              className="inline-flex items-center justify-center rounded-lg p-1.5 text-slate-300 hover:bg-rose-50 hover:text-rose-500"
-                                              title="刪除此下料"
+                                              disabled={isDefaultPiece}
+                                              onClick={() => { if (!isDefaultPiece) void deleteChildProduct(p); }}
+                                              className="inline-flex items-center justify-center rounded-lg p-1.5 text-slate-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-300"
+                                              title={isDefaultPiece ? '原件不可刪除' : '刪除此下料'}
                                             >
                                               <Trash2 size={13} />
                                             </button>
@@ -3467,30 +3497,6 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
           unlinked: unlinkedProducts,
         };
 
-        const getMatEntry = (ingredientId: string, processingTypeId: string) =>
-          matProcEntries.find(e => e.ingredientId === ingredientId && e.processingTypeId === processingTypeId);
-
-        const updateMatEntry = async (ingredientId: string, processingTypeId: string, field: 'yieldRateOverride' | 'surchargeOverride', value: number | undefined) => {
-          const existing = getMatEntry(ingredientId, processingTypeId);
-          if (existing) {
-            const updates: any = {};
-            if (field === 'yieldRateOverride') updates.yield_rate_override = value ?? null;
-            if (field === 'surchargeOverride') updates.surcharge_override = value ?? null;
-            await supabase.from('material_processing_matrix').update(updates).eq('id', existing.id);
-            setMatProcEntries(prev => prev.map(e => e.id === existing.id ? { ...e, [field]: value } : e));
-          } else {
-            const newEntry = {
-              ingredient_id: ingredientId,
-              processing_type_id: processingTypeId,
-              yield_rate_override: field === 'yieldRateOverride' ? value : null,
-              surcharge_override: field === 'surchargeOverride' ? value : null,
-              is_available: true,
-            };
-            const { data } = await supabase.from('material_processing_matrix').insert(newEntry).select('*').single();
-            if (data) setMatProcEntries(prev => [...prev, mapMaterialProcessingRow(data)]);
-          }
-        };
-
         const saveCostItemsToDb = async () => {
           try {
             await supabase.from('site_config').upsert({ id: 'cost_items', value: costItems });
@@ -3580,8 +3586,6 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                     if (bi != null) return 1;
                     return (a.variantLabel || a.name).localeCompare(b.variantLabel || b.name);
                   });
-                  const relatedPTs = new Set(sortedIngProducts.map(p => p.processingTypeId).filter(Boolean));
-                  const ptList = processingTypes.filter(pt => relatedPTs.has(pt.id)).sort((a, b) => a.sortOrder - b.sortOrder);
 
                   return (
                     <div key={ing.id} className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
@@ -3596,62 +3600,6 @@ const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, cos
                           <span className="text-[10px] font-bold text-slate-400">{ingProducts.length} 款產品</span>
                         </div>
                       </div>
-
-                      {/* Processing type matrix */}
-                      {ptList.length > 0 && (
-                        <div className="px-6 py-3 border-b border-slate-50">
-                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2">加工方式成本矩陣</p>
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-xs">
-                              <thead>
-                                <tr className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
-                                  <th className="text-left px-2 py-1.5">加工方式</th>
-                                  <th className="text-right px-2 py-1.5 w-20">出成率</th>
-                                  <th className="text-right px-2 py-1.5 w-24">材料成本/lb</th>
-                                  <th className="text-right px-2 py-1.5 w-20">加工費/lb</th>
-                                  <th className="text-right px-2 py-1.5 w-24">小計/lb</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {/* Whole/原件 row (no processing) */}
-                                <tr className="border-t border-slate-50 bg-emerald-50/30">
-                                  <td className="px-2 py-2 font-bold text-emerald-700">原件（不加工）</td>
-                                  <td className="px-2 py-2 text-right text-emerald-600 font-bold">100%</td>
-                                  <td className="px-2 py-2 text-right font-bold">${ing.baseCostPerLb.toFixed(2)}</td>
-                                  <td className="px-2 py-2 text-right text-slate-400">—</td>
-                                  <td className="px-2 py-2 text-right font-black text-slate-800">${ing.baseCostPerLb.toFixed(2)}</td>
-                                </tr>
-                                {ptList.map(pt => {
-                                  const entry = getMatEntry(ing.id, pt.id);
-                                  const yr = entry?.yieldRateOverride || 1;
-                                  const proc = entry?.surchargeOverride || 0;
-                                  const matCost = yr > 0 ? ing.baseCostPerLb / yr : ing.baseCostPerLb;
-                                  const subtotal = matCost + proc;
-                                  return (
-                                    <tr key={pt.id} className="border-t border-slate-50 hover:bg-slate-50/50">
-                                      <td className="px-2 py-2 font-bold text-slate-700">{pt.name}{pt.spec ? ` (${pt.spec})` : ''}</td>
-                                      <td className="px-2 py-2 text-right">
-                                        <input type="number" min="0" max="1" step="0.01"
-                                          value={entry?.yieldRateOverride ?? ''}
-                                          onChange={e => updateMatEntry(ing.id, pt.id, 'yieldRateOverride', e.target.value ? Number(e.target.value) : undefined)}
-                                          placeholder="—" className="w-14 p-1 bg-slate-50 rounded-md font-bold text-right border border-slate-100 text-xs" />
-                                      </td>
-                                      <td className="px-2 py-2 text-right font-bold text-blue-600">${matCost.toFixed(2)}</td>
-                                      <td className="px-2 py-2 text-right">
-                                        <input type="number" min="0" step="0.1"
-                                          value={entry?.surchargeOverride ?? ''}
-                                          onChange={e => updateMatEntry(ing.id, pt.id, 'surchargeOverride', e.target.value ? Number(e.target.value) : undefined)}
-                                          placeholder="0" className="w-14 p-1 bg-slate-50 rounded-md font-bold text-right border border-slate-100 text-xs" />
-                                      </td>
-                                      <td className="px-2 py-2 text-right font-black text-amber-700">${subtotal.toFixed(2)}</td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      )}
 
                       {/* Products under this ingredient */}
                       <div className="overflow-x-auto">
