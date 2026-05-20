@@ -10,7 +10,6 @@ import {
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import { computeProductCost, computePackCost, mapIngredientRowToIngredient, mapMaterialProcessingRow, mapProductRowToProduct } from './supabaseMappers';
-import MaterialFlowPanel from './MaterialFlowPanel';
 import type {
   Ingredient, IngredientCategory, SaleChannel, MaterialType, Supplier,
   RawMaterialCatalog, SupplierQuote, QuoteLineItem,
@@ -147,10 +146,6 @@ interface ProductTreeChildDraft {
 }
 
 const WarehousePanel: React.FC<Props> = ({ showToast, products, setProducts, costItems, setCostItems, siteConfig, isMediaUrl, mode = 'all' }) => {
-  if (mode === 'materials') {
-    return <MaterialFlowPanel showToast={showToast} products={products} setProducts={setProducts} />;
-  }
-
   const defaultSubTab: SubTab = mode === 'warehouse' ? 'purchase_orders' : 'product_tree';
   const [subTab, setSubTab] = useState<SubTab>(defaultSubTab);
 

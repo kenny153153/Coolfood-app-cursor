@@ -30,9 +30,7 @@ interface ClientOption {
 
 interface ProductOption {
   id: string;
-  skuId?: string;
   name: string;
-  displayName?: string;
   nameEn?: string;
   price: number;
   unit: string;
@@ -186,15 +184,14 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [clientsRes, skuRes, productsRes, ingredientsRes, correctionsRes, unitsRes, ptRes, matrixRes] = await Promise.all([
+    const [clientsRes, productsRes, correctionsRes, unitsRes, ptRes, matrixRes, groupsRes] = await Promise.all([
       supabase.from('members').select('id, company_name, name, phone_number, delivery_address, wholesale_brand, wholesale_price_tier, route_id, client_code, is_wholesale_active').eq('member_type', 'wholesale').eq('wholesale_status', 'approved'),
-      supabase.from('sellable_skus').select('id, name, alias, sale_channel, ingredient_id, process_spec_id, pack_spec_id, product_id, is_active, sort_order').eq('is_active', true).order('sort_order'),
-      supabase.from('products').select('id, name, name_en, price, weight, categories, sale_channel, product_type, processing_type_id, pack_size, ingredient_id, parent_ingredient_id, group_id, variant_label, pricing_mode'),
-      supabase.from('ingredients').select('id, name'),
+      supabase.from('products').select('id, name, name_en, price, weight, categories, sale_channel, product_type, processing_type_id, pack_size, processing_types(name), ingredient_id, parent_ingredient_id, group_id, variant_label, pricing_mode').order('name'),
       supabase.from('parsing_corrections').select('original_text, corrected_product_name, corrected_qty, corrected_unit').order('created_at', { ascending: false }).limit(40),
       supabase.from('site_config').select('value').eq('id', 'custom_units').single(),
       supabase.from('processing_types').select('id, code, name, name_en, spec, sort_order').eq('is_active', true).order('sort_order'),
       supabase.from('material_processing_matrix').select('ingredient_id, processing_type_id').eq('is_available', true),
+      supabase.from('product_groups').select('id, name, classification, ingredient_id').eq('is_active', true).order('name'),
     ]);
     if (clientsRes.data) {
       setClients(clientsRes.data
@@ -205,52 +202,46 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
           priceTier: c.wholesale_price_tier || 'P0', routeId: c.route_id, clientCode: c.client_code || '',
         })));
     }
-    const productById = new Map<string, any>((productsRes.data || []).map((p: any) => [p.id, p]));
-    const ingredientNameById = new Map<string, string>((ingredientsRes.data || []).map((i: any) => [i.id, i.name]));
     const allProducts: ProductOption[] = [];
-    const groupMap = new Map<string, ProductGroupOption>();
-    for (const sku of (skuRes.data || []) as any[]) {
-      const prod = productById.get(sku.product_id);
-      if (!prod) continue;
-      const ch = sku.sale_channel || prod.sale_channel || 'retail';
-      if (ch !== 'wholesale' && ch !== 'both') continue;
-      const ingredientId = sku.ingredient_id || prod.parent_ingredient_id || prod.ingredient_id || '';
-      const groupName = ingredientNameById.get(ingredientId) || '未分類 SKU';
-      const displayName = (sku.alias || sku.name || prod.name || '').trim();
-      const option: ProductOption = {
-        id: prod.id,
-        skuId: sku.id,
-        name: prod.name,
-        displayName,
-        nameEn: prod.name_en || undefined,
-        price: prod.price,
-        unit: '磅',
-        weight: prod.weight || undefined,
-        categories: prod.categories || [],
-        saleChannel: ch,
-        productType: prod.product_type || 'standalone',
-        packSize: prod.pack_size || undefined,
-        ingredientId: prod.ingredient_id || ingredientId || undefined,
-        parentIngredientId: prod.parent_ingredient_id || ingredientId || undefined,
-        groupId: ingredientId || undefined,
-        variantLabel: displayName || prod.variant_label || prod.name,
-        pricingMode: prod.pricing_mode || undefined,
-      };
-      allProducts.push(option);
-      const groupId = ingredientId || `_sku_group_${sku.id}`;
-      if (!groupMap.has(groupId)) {
-        groupMap.set(groupId, {
-          id: groupId,
-          name: groupName,
-          classification: 'raw_material',
-          ingredientId: ingredientId || undefined,
-          specs: [],
-        });
-      }
-      groupMap.get(groupId)!.specs.push(option);
+    if (productsRes.data) {
+      const mapped = productsRes.data
+        .filter((p: any) => {
+          const ch = p.sale_channel || 'retail';
+          return ch === 'wholesale' || ch === 'both';
+        })
+        .map((p: any) => ({
+          id: p.id, name: p.name, nameEn: p.name_en || undefined,
+          price: p.price, unit: '磅',
+          weight: p.weight || undefined,
+          categories: p.categories || [],
+          saleChannel: p.sale_channel || 'retail',
+          productType: p.product_type || 'standalone',
+          processingTypeName: p.processing_types?.name || undefined,
+          packSize: p.pack_size || undefined,
+          ingredientId: p.ingredient_id || undefined,
+          parentIngredientId: p.parent_ingredient_id || undefined,
+          groupId: p.group_id || undefined,
+          variantLabel: p.variant_label || undefined,
+          pricingMode: p.pricing_mode || undefined,
+        }));
+      allProducts.push(...mapped);
+      setProducts(mapped);
     }
-    setProducts(allProducts);
-    setProductGroupOptions(Array.from(groupMap.values()));
+    if (groupsRes.data && allProducts.length > 0) {
+      const groups: ProductGroupOption[] = [];
+      for (const g of groupsRes.data as any[]) {
+        const specs = allProducts.filter(p => p.groupId === g.id);
+        if (specs.length > 0) {
+          groups.push({ id: g.id, name: g.name, classification: g.classification, ingredientId: g.ingredient_id || undefined, specs });
+        }
+      }
+      const groupedIds = new Set(groups.flatMap(g => g.specs.map(s => s.id)));
+      const ungrouped = allProducts.filter(p => !groupedIds.has(p.id));
+      for (const p of ungrouped) {
+        groups.push({ id: `_ug_${p.id}`, name: p.name, classification: 'raw_material', specs: [p] });
+      }
+      setProductGroupOptions(groups);
+    }
     if (correctionsRes.data) {
       const seen = new Set<string>();
       const deduped = correctionsRes.data.filter((c: any) => {
@@ -689,10 +680,10 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
       next[idx] = {
         ...next[idx],
         productId: spec.id,
-        productName: (spec.displayName || spec.variantLabel || spec.name).trim(),
+        productName: `${group.name} ${spec.variantLabel || ''}`.trim(),
         groupId: group.id,
         groupName: group.name,
-        specId: spec.skuId || spec.id,
+        specId: spec.id,
         unitPrice: spec.price,
         pricingMode: (spec.pricingMode || 'fixed_pack') as any,
         unit: isByPiece ? '磅' : (next[idx].unit || '磅'),
@@ -711,6 +702,21 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
     if (isDifferentProduct) {
       const original = parsedLines[idx]?.productName || snapshot.productName;
       saveCorrection(original, spec.id, spec.name, snapshot.qty, snapshot.unit);
+    }
+  };
+
+  const selectProduct = (idx: number, product: ProductOption) => {
+    const group = productGroupOptions.find(g => g.specs.some(s => s.id === product.id));
+    if (group) {
+      selectSpec(idx, group, product);
+    } else {
+      setOrderLines(prev => {
+        const next = [...prev];
+        next[idx] = { ...next[idx], productId: product.id, productName: product.name, unitPrice: product.price, lineTotal: next[idx].qty * product.price * (1 - next[idx].discount / 100) };
+        return next;
+      });
+      setActiveProductRow(null);
+      setProductSearch('');
     }
   };
 
@@ -1099,11 +1105,11 @@ ${pages}
 
   const filteredProductGroups = productGroupOptions.filter(g =>
     !productSearch || g.name.toLowerCase().includes(productSearch.toLowerCase()) ||
-    g.specs.some(s =>
-      s.name.toLowerCase().includes(productSearch.toLowerCase()) ||
-      (s.displayName || '').toLowerCase().includes(productSearch.toLowerCase()) ||
-      (s.variantLabel || '').toLowerCase().includes(productSearch.toLowerCase())
-    )
+    g.specs.some(s => s.name.toLowerCase().includes(productSearch.toLowerCase()) || (s.variantLabel || '').toLowerCase().includes(productSearch.toLowerCase()))
+  ).slice(0, 10);
+
+  const filteredProducts = products.filter(p =>
+    !productSearch || p.name.toLowerCase().includes(productSearch.toLowerCase())
   ).slice(0, 10);
 
   if (loading) {
@@ -1440,7 +1446,7 @@ ${pages}
                                 className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-violet-50/50 text-left gap-2 border-b border-slate-50 last:border-0"
                               >
                                 <div className="flex items-center gap-1.5 min-w-0">
-                                  <span className="text-xs font-bold text-slate-700">{spec.displayName || spec.variantLabel || spec.name}</span>
+                                  <span className="text-xs font-bold text-slate-700">{spec.variantLabel || spec.name}</span>
                                   {spec.pricingMode === 'by_piece' && <span className="px-1 py-0.5 bg-pink-50 text-pink-600 rounded text-[8px] font-black">抄碼</span>}
                                   {spec.pricingMode !== 'by_piece' && <span className="px-1 py-0.5 bg-slate-100 text-slate-500 rounded text-[8px] font-bold">定裝</span>}
                                 </div>
