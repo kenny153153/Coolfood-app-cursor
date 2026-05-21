@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, FileDown, Grid3X3, Layers, Package, Pencil, Plus, RefreshCw, Save, Scissors, Search, Settings2, Upload } from 'lucide-react';
+import { Check, FileDown, Grid3X3, Layers, Package, Pencil, Plus, RefreshCw, Save, Scissors, Search, Settings2, Trash2, Upload } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import type { CostItem, Ingredient, Product, SaleChannel } from './types';
 import { mapIngredientRowToIngredient } from './supabaseMappers';
@@ -33,7 +33,6 @@ interface ProcessRow {
   name: string;
   category: MethodCategory;
   yieldRate: number;
-  processingCost: number;
   packQuantity?: number;
   packUnit?: WeightUnit;
   isDefaultPiece: boolean;
@@ -45,10 +44,8 @@ interface ProcessDraftRow {
   ingredientId: string;
   methodId?: string;
   code: string;
-  name: string;
   category: MethodCategory;
   yieldRate: number;
-  processingCost: number;
   packQuantity?: number;
   packUnit?: WeightUnit;
 }
@@ -148,6 +145,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   const [newSku, setNewSku] = useState({ packSpecId: '', name: '', alias: '' });
   const [feeEditorId, setFeeEditorId] = useState<string | null>(null);
   const [processDraftRows, setProcessDraftRows] = useState<ProcessDraftRow[]>([]);
+  const [editingMethodId, setEditingMethodId] = useState<string | null>(null);
   const [editingIngredientId, setEditingIngredientId] = useState<string | null>(null);
   const [savingIngredientId, setSavingIngredientId] = useState<string | null>(null);
   const [savedIngredientId, setSavedIngredientId] = useState<string | null>(null);
@@ -216,7 +214,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         name: r.name,
         category: (['original_or_cutting', 'repacking', 'marinating', 'others'].includes(r.processing_category) ? r.processing_category : 'others') as MethodCategory,
         yieldRate: Number(r.yield_rate) || 1,
-        processingCost: Number(r.processing_cost) || 0,
         packQuantity: r.pack_quantity == null ? undefined : Number(r.pack_quantity),
         packUnit: (['g', 'kg', 'lb', 'catty'].includes(r.pack_unit) ? r.pack_unit : undefined) as WeightUnit | undefined,
         isDefaultPiece: !!r.is_default_piece,
@@ -282,7 +279,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       name: r.name,
       category: (['original_or_cutting', 'repacking', 'marinating', 'others'].includes(r.processing_category) ? r.processing_category : 'others') as MethodCategory,
       yieldRate: Number(r.yield_rate) || 1,
-      processingCost: Number(r.processing_cost) || 0,
       packQuantity: r.pack_quantity == null ? undefined : Number(r.pack_quantity),
       packUnit: (['g', 'kg', 'lb', 'catty'].includes(r.pack_unit) ? r.pack_unit : undefined) as WeightUnit | undefined,
       isDefaultPiece: !!r.is_default_piece,
@@ -381,10 +377,10 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       const netLb = convertWeight(ing.netContentVolume || 0, ing.netContentUnit, 'lb');
       if (netLb > 0) basePerLb = (ing.baseCostPerLb || 0) / netLb;
     }
-    return round2((basePerLb / y) + (proc.processingCost || 0));
+    return round2(basePerLb / y);
   }, [ingredientMap, processMap]);
 
-  const processedCostPreview = useCallback((ingredientId: string, yieldRate: number, processingCost: number, isDefaultPiece: boolean) => {
+  const processedCostPreview = useCallback((ingredientId: string, yieldRate: number, isDefaultPiece: boolean) => {
     const ing = ingredientMap.get(ingredientId);
     if (!ing) return 0;
     const y = isDefaultPiece ? 1 : Math.max(0.5, Math.min(1, yieldRate || 1));
@@ -394,7 +390,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       const netLb = convertWeight(ing.netContentVolume || 0, ing.netContentUnit, 'lb');
       if (netLb > 0) basePerLb = (ing.baseCostPerLb || 0) / netLb;
     }
-    return round2((basePerLb / y) + (processingCost || 0));
+    return round2(basePerLb / y);
   }, [ingredientMap]);
 
   const isYieldValid = useCallback((yieldRate: number, isDefaultPiece?: boolean) => {
@@ -496,11 +492,41 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     setNewMethod({ code: '', name: '', category: 'original_or_cutting' });
   };
 
+  const saveMethod = async (method: GlobalMethod) => {
+    const code = method.code.trim().toUpperCase().replace(/\s+/g, '_');
+    if (!code || !method.name.trim()) return showToast('請輸入完整加工方式資料', 'error');
+    const { error } = await supabase.from('processing_methods').update({
+      code,
+      name: method.name.trim(),
+      category: method.category,
+    }).eq('id', method.id);
+    if (error) return showToast(`更新方式失敗：${error.message}`, 'error');
+    setMethods(prev => prev.map(m => m.id === method.id ? { ...method, code } : m));
+    setEditingMethodId(null);
+    showToast('加工方式已更新', 'success');
+  };
+
+  const deleteMethod = async (method: GlobalMethod) => {
+    const { count, error: countErr } = await supabase
+      .from('material_process_specs')
+      .select('id', { count: 'exact', head: true })
+      .eq('processing_method_id', method.id)
+      .eq('is_active', true);
+    if (countErr) return showToast(`檢查使用情況失敗：${countErr.message}`, 'error');
+    if ((count || 0) > 0) return showToast('此加工方式已有材料使用，不能刪除', 'error');
+
+    const { error } = await supabase.from('processing_methods').delete().eq('id', method.id);
+    if (error) return showToast(`刪除方式失敗：${error.message}`, 'error');
+    setMethods(prev => prev.filter(m => m.id !== method.id));
+    if (editingMethodId === method.id) setEditingMethodId(null);
+    showToast('加工方式已刪除', 'success');
+  };
+
   const ensureWholeBaselineForIngredient = useCallback(async (ingredientId: string) => {
     if (!ingredientId) return;
     const existing = processRows.find(r => r.ingredientId === ingredientId && (r.code === 'WHOLE' || r.isDefaultPiece) && r.isActive);
     const wholeMethod = methods.find(m => m.code === 'WHOLE');
-    const baselineName = '原件/原箱 (Whole Block/Box)';
+    const baselineName = '原件/原箱 (Whole Block/Case)';
     if (existing) {
       if (
         existing.code === 'WHOLE' &&
@@ -517,7 +543,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         code: 'WHOLE',
         name: baselineName,
         yield_rate: 1,
-        processing_cost: 0,
         is_default_piece: true,
       }).eq('id', existing.id);
       if (error) return;
@@ -528,7 +553,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         name: baselineName,
         category: 'original_or_cutting',
         yieldRate: 1,
-        processingCost: 0,
         isDefaultPiece: true,
       } : r));
       return;
@@ -541,7 +565,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       code: 'WHOLE',
       name: baselineName,
       yield_rate: 1,
-      processing_cost: 0,
       pack_quantity: null,
       pack_unit: null,
       is_default_piece: true,
@@ -558,7 +581,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       name: data.name,
       category: 'original_or_cutting',
       yieldRate: 1,
-      processingCost: 0,
       packQuantity: data.pack_quantity == null ? undefined : Number(data.pack_quantity),
       packUnit: data.pack_unit || undefined,
       isDefaultPiece: true,
@@ -576,12 +598,8 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       ingredientId: selectedIngredientId,
       methodId: firstMethod.id,
       code: `${firstMethod.code}_${suffix}`,
-      name: `${firstMethod.name} ${prev.length + 1}`,
       category: firstMethod.category,
       yieldRate: 0.85,
-      processingCost: 0,
-      packQuantity: firstMethod.category === 'repacking' ? 100 : undefined,
-      packUnit: firstMethod.category === 'repacking' ? 'g' : undefined,
     }]));
   }, [methods, selectedIngredientId, showToast]);
 
@@ -596,11 +614,10 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       processing_method_id: draft.methodId || null,
       processing_category: draft.category,
       code: (draft.code || method?.code || 'PROC').trim(),
-      name: (draft.name || method?.name || '加工規格').trim(),
+      name: (method?.name || draft.code || '加工規格').trim(),
       yield_rate: draft.yieldRate,
-      processing_cost: draft.processingCost,
-      pack_quantity: draft.category === 'repacking' ? (draft.packQuantity || 0) : null,
-      pack_unit: draft.category === 'repacking' ? (draft.packUnit || 'g') : null,
+      pack_quantity: null,
+      pack_unit: null,
       is_default_piece: false,
       sort_order: processRows.filter(r => r.ingredientId === draft.ingredientId).length,
       is_active: true,
@@ -615,7 +632,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       name: data.name,
       category: (['original_or_cutting', 'repacking', 'marinating', 'others'].includes(data.processing_category) ? data.processing_category : 'others') as MethodCategory,
       yieldRate: Number(data.yield_rate) || 1,
-      processingCost: Number(data.processing_cost) || 0,
       packQuantity: data.pack_quantity == null ? undefined : Number(data.pack_quantity),
       packUnit: data.pack_unit || undefined,
       isDefaultPiece: !!data.is_default_piece,
@@ -636,56 +652,19 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     });
   }, [tab, selectedIngredientId, processRows, ensureWholeBaselineForIngredient]);
 
-  const addProcessRow = async (methodId: string) => {
-    const method = methods.find(m => m.id === methodId);
-    if (!selectedIngredientId || !method) return;
-    const isWhole = method.code === 'WHOLE';
-    const payload = {
-      id: mkId('PS'),
-      ingredient_id: selectedIngredientId,
-      processing_method_id: method.id,
-      processing_category: method.category,
-      code: method.code,
-      name: method.name,
-      yield_rate: isWhole ? 1 : 0.8,
-      processing_cost: 0,
-      pack_quantity: method.category === 'repacking' ? 100 : null,
-      pack_unit: method.category === 'repacking' ? 'g' : null,
-      is_default_piece: isWhole,
-      sort_order: processRowsForMaterial.length,
-      is_active: true,
-    };
-    const { data, error } = await supabase.from('material_process_specs').insert(payload).select('*').single();
-    if (error) return showToast(`新增加工失敗：${error.message}`, 'error');
-    setProcessRows(prev => uniqueById([...prev, {
-      id: data.id,
-      ingredientId: data.ingredient_id,
-      methodId: data.processing_method_id || undefined,
-      code: data.code,
-      name: data.name,
-      category: data.processing_category || method.category,
-      yieldRate: Number(data.yield_rate) || 1,
-      processingCost: Number(data.processing_cost) || 0,
-      packQuantity: data.pack_quantity == null ? undefined : Number(data.pack_quantity),
-      packUnit: data.pack_unit || undefined,
-      isDefaultPiece: !!data.is_default_piece,
-      isActive: data.is_active !== false,
-    }]));
-  };
-
   const saveProcessRow = async (row: ProcessRow) => {
     if (!isYieldValid(row.yieldRate, row.isDefaultPiece)) {
       return showToast('Yield 必須介乎 0.5 至 1.0', 'error');
     }
+    const method = methods.find(m => m.id === row.methodId);
     const { error } = await supabase.from('material_process_specs').update({
       processing_method_id: row.methodId || null,
-      processing_category: row.category,
-      code: row.code,
-      name: row.name,
+      processing_category: method?.category || row.category,
+      code: method?.code || row.code,
+      name: method?.name || row.name,
       yield_rate: row.isDefaultPiece ? 1 : Math.max(0.5, Math.min(1, row.yieldRate)),
-      processing_cost: row.processingCost,
-      pack_quantity: row.category === 'repacking' ? (row.packQuantity || 0) : null,
-      pack_unit: row.category === 'repacking' ? (row.packUnit || 'g') : null,
+      pack_quantity: null,
+      pack_unit: null,
     }).eq('id', row.id);
     if (error) return showToast(`保存加工失敗：${error.message}`, 'error');
     showToast('加工方式已儲存', 'success');
@@ -786,7 +765,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       parent_ingredient_id: ingredient.id,
       processing_type_id: process.methodId || null,
       yield_rate: process.yieldRate,
-      processing_cost: process.processingCost,
+      processing_cost: 0,
       packaging_cost: packagingCostPerLb,
       misc_cost: 0,
       sale_channel: pack.channel,
@@ -842,7 +821,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       ingredientId: ingredient.id,
       parentIngredientId: ingredient.id,
       yieldRate: process.yieldRate,
-      processingCost: process.processingCost,
+      processingCost: 0,
       packagingCost: packagingCostPerLb,
       miscCost: 0,
       saleChannel: pack.channel,
@@ -1125,9 +1104,8 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                 <thead>
                   <tr className="bg-slate-50 text-slate-500">
                     <th className="px-2 py-2 text-left">加工方式</th>
-                    <th className="px-2 py-2 text-left">自訂名稱</th>
+                    <th className="px-2 py-2 text-left">加工大類</th>
                     <th className="px-2 py-2 text-right">Yield (0.5-1.0)</th>
-                    <th className="px-2 py-2 text-right">加工費</th>
                     <th className="px-2 py-2 text-right">加工後成本</th>
                     <th className="px-2 py-2 text-right">操作</th>
                   </tr>
@@ -1147,7 +1125,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                               onChange={e => {
                                 const method = methods.find(m => m.id === e.target.value);
                                 if (!method) return;
-                                setProcessRows(prev => prev.map(x => x.id === r.id ? { ...x, methodId: method.id, category: method.category } : x));
+                                setProcessRows(prev => prev.map(x => x.id === r.id ? { ...x, methodId: method.id, code: method.code, name: method.name, category: method.category } : x));
                               }}
                               className="w-full p-1 border border-slate-200 rounded font-bold"
                             >
@@ -1156,11 +1134,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                           )}
                         </td>
                         <td className="px-2 py-1.5">
-                          {r.isDefaultPiece ? (
-                            <div className="font-bold">原件/原箱 (Whole Block/Box)</div>
-                          ) : (
-                            <input value={r.name} onChange={e => setProcessRows(prev => prev.map(x => x.id === r.id ? { ...x, name: e.target.value } : x))} className="w-full p-1 border border-slate-200 rounded font-bold" />
-                          )}
+                          <span className={`inline-block px-2 py-0.5 text-[10px] rounded-full border ${categoryBadge(r.category)}`}>{categoryLabel(r.category)}</span>
                         </td>
                         <td className="px-2 py-1.5">
                           <input
@@ -1174,7 +1148,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                             className={`w-24 p-1 border rounded text-right font-bold ml-auto block disabled:opacity-50 ${invalidYield ? 'border-rose-400 bg-rose-50 text-rose-700' : 'border-slate-200'}`}
                           />
                         </td>
-                        <td className="px-2 py-1.5"><input disabled={r.isDefaultPiece} type="number" step="0.01" value={r.processingCost} onChange={e => setProcessRows(prev => prev.map(x => x.id === r.id ? { ...x, processingCost: Number(e.target.value) || 0 } : x))} className="w-24 p-1 border border-slate-200 rounded text-right font-bold ml-auto block disabled:opacity-50" /></td>
                         <td className="px-2 py-1.5 text-right font-black text-amber-700">${processed.toFixed(2)}</td>
                         <td className="px-2 py-1.5 text-right">
                           {r.isDefaultPiece ? (
@@ -1188,7 +1161,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                   })}
                   {processDraftRowsForMaterial.map(d => {
                     const invalidYield = !isYieldValid(d.yieldRate);
-                    const previewCost = processedCostPreview(d.ingredientId, d.yieldRate, d.processingCost, false);
+                    const previewCost = processedCostPreview(d.ingredientId, d.yieldRate, false);
                     return (
                       <tr key={d.tempId} className="border-t border-blue-100 bg-blue-50/40">
                         <td className="px-2 py-1.5">
@@ -1202,7 +1175,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                                 methodId: method.id,
                                 category: method.category,
                                 code: `${method.code}_${Date.now().toString().slice(-4)}`,
-                                name: x.name || method.name,
                                 packQuantity: method.category === 'repacking' ? (x.packQuantity || 100) : undefined,
                                 packUnit: method.category === 'repacking' ? (x.packUnit || 'g') : undefined,
                               } : x));
@@ -1212,9 +1184,8 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                             {methods.filter(m => m.isActive).map(m => <option key={m.id} value={m.id}>{m.code} · {m.name}</option>)}
                           </select>
                         </td>
-                        <td className="px-2 py-1.5"><input value={d.name} onChange={e => setProcessDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, name: e.target.value } : x))} className="w-full p-1 border border-slate-200 rounded font-bold" /></td>
+                        <td className="px-2 py-1.5"><span className={`inline-block px-2 py-0.5 text-[10px] rounded-full border ${categoryBadge(d.category)}`}>{categoryLabel(d.category)}</span></td>
                         <td className="px-2 py-1.5"><input type="number" min="0.5" max="1" step="0.01" value={d.yieldRate} onChange={e => setProcessDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, yieldRate: Number(e.target.value) || 0 } : x))} className={`w-24 p-1 border rounded text-right font-bold ml-auto block ${invalidYield ? 'border-rose-400 bg-rose-50 text-rose-700' : 'border-slate-200'}`} /></td>
-                        <td className="px-2 py-1.5"><input type="number" step="0.01" value={d.processingCost} onChange={e => setProcessDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, processingCost: Number(e.target.value) || 0 } : x))} className="w-24 p-1 border border-slate-200 rounded text-right font-bold ml-auto block" /></td>
                         <td className="px-2 py-1.5 text-right font-black text-amber-700">${previewCost.toFixed(2)}</td>
                         <td className="px-2 py-1.5 text-right">
                           <button disabled={invalidYield} onClick={() => void saveDraftProcessRow(d)} className={`px-2 py-1 rounded text-[10px] font-black ${invalidYield ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white'}`}>💾 確定儲存加工</button>
@@ -1366,8 +1337,57 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
             <button onClick={() => void addMethod()} className="mt-2 px-3 py-2 rounded-lg bg-violet-600 text-white text-xs font-black">新增方式</button>
             <div className="mt-3 border border-slate-100 rounded-xl overflow-auto max-h-[70vh]">
               <table className="w-full text-xs">
-                <thead><tr className="bg-slate-50 text-slate-500"><th className="px-2 py-2 text-left">Code</th><th className="px-2 py-2 text-left">Name</th><th className="px-2 py-2 text-left">Category</th></tr></thead>
-                <tbody>{methods.filter(m => m.isActive).map(m => <tr key={m.id} className="border-t border-slate-100"><td className="px-2 py-1.5 font-mono">{m.code}</td><td className="px-2 py-1.5 font-bold">{m.name}</td><td className="px-2 py-1.5"><span className={`px-2 py-0.5 text-[10px] rounded-full border ${categoryBadge(m.category)}`}>{categoryLabel(m.category)}</span></td></tr>)}</tbody>
+                <thead>
+                  <tr className="bg-slate-50 text-slate-500">
+                    <th className="px-2 py-2 text-left">Code</th>
+                    <th className="px-2 py-2 text-left">Name</th>
+                    <th className="px-2 py-2 text-left">Category</th>
+                    <th className="px-2 py-2 text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {methods.filter(m => m.isActive).map(m => {
+                    const editing = editingMethodId === m.id;
+                    return (
+                      <tr key={m.id} className="border-t border-slate-100">
+                        <td className="px-2 py-1.5 font-mono">
+                          {editing ? (
+                            <input value={m.code} onChange={e => setMethods(prev => prev.map(x => x.id === m.id ? { ...x, code: e.target.value } : x))} className="w-full p-1 border border-slate-200 rounded font-bold" />
+                          ) : m.code}
+                        </td>
+                        <td className="px-2 py-1.5">
+                          {editing ? (
+                            <input value={m.name} onChange={e => setMethods(prev => prev.map(x => x.id === m.id ? { ...x, name: e.target.value } : x))} className="w-full p-1 border border-slate-200 rounded font-bold" />
+                          ) : (
+                            <span className="font-bold">{m.name}</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1.5">
+                          {editing ? (
+                            <select value={m.category} onChange={e => setMethods(prev => prev.map(x => x.id === m.id ? { ...x, category: e.target.value as MethodCategory } : x))} className="w-full p-1 border border-slate-200 rounded font-bold">
+                              <option value="original_or_cutting">原裝/切割</option>
+                              <option value="repacking">分裝</option>
+                              <option value="marinating">醃製</option>
+                              <option value="others">其他</option>
+                            </select>
+                          ) : (
+                            <span className={`px-2 py-0.5 text-[10px] rounded-full border ${categoryBadge(m.category)}`}>{categoryLabel(m.category)}</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1.5 text-right">
+                          <div className="inline-flex items-center gap-1">
+                            {editing ? (
+                              <button onClick={() => void saveMethod(m)} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">保存</button>
+                            ) : (
+                              <button onClick={() => setEditingMethodId(m.id)} className="px-2 py-1 rounded border border-slate-200 text-[10px] font-black text-slate-600 inline-flex items-center gap-1"><Pencil size={11} />編輯</button>
+                            )}
+                            <button onClick={() => void deleteMethod(m)} className="px-2 py-1 rounded border border-rose-200 text-[10px] font-black text-rose-600 inline-flex items-center gap-1"><Trash2 size={11} />刪除</button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
               </table>
             </div>
           </div>

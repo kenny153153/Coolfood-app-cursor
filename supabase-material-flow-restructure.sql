@@ -36,7 +36,6 @@ CREATE TABLE IF NOT EXISTS public.material_process_specs (
   code TEXT NOT NULL,
   name TEXT NOT NULL,
   yield_rate NUMERIC(6,4) NOT NULL DEFAULT 1 CHECK (yield_rate >= 0.5 AND yield_rate <= 1.0),
-  processing_cost NUMERIC(10,2) NOT NULL DEFAULT 0,
   pack_quantity NUMERIC(10,3),
   pack_unit TEXT CHECK (pack_unit IN ('g', 'kg', 'lb', 'catty')),
   is_default_piece BOOLEAN NOT NULL DEFAULT false,
@@ -128,6 +127,8 @@ ALTER TABLE public.material_process_specs
   ADD COLUMN IF NOT EXISTS pack_quantity NUMERIC(10,3);
 ALTER TABLE public.material_process_specs
   ADD COLUMN IF NOT EXISTS pack_unit TEXT;
+ALTER TABLE public.material_process_specs
+  DROP COLUMN IF EXISTS processing_cost;
 UPDATE public.material_process_specs
 SET yield_rate = LEAST(1.0, GREATEST(0.5, COALESCE(yield_rate, 1.0)))
 WHERE yield_rate IS NULL OR yield_rate < 0.5 OR yield_rate > 1.0;
@@ -252,18 +253,16 @@ FOR EACH ROW EXECUTE FUNCTION public.touch_material_flow_updated_at();
 -- Canonical method seed (strict categories)
 INSERT INTO public.processing_methods (code, name, category, sort_order, is_active)
 VALUES
-  ('WHOLE', '原件 (Whole Block)', 'original_or_cutting', 0, true),
-  ('SLICED', '切片 (Sliced)', 'original_or_cutting', 1, true),
-  ('STEAK', '切扒 (Steak Cut)', 'original_or_cutting', 2, true),
-  ('STRIPS', '切條 (Strips)', 'original_or_cutting', 3, true),
-  ('DICED', '切粒 (Diced)', 'original_or_cutting', 4, true),
-  ('BONELESS', '去骨 (Boneless)', 'original_or_cutting', 5, true),
-  ('REPACK_RET', '零售精裝', 'repacking', 6, true),
-  ('REPACK_WHL', '商用大包裝', 'repacking', 7, true),
-  ('MAR_GARLIC', '蒜香醃製', 'marinating', 8, true),
-  ('MAR_PEPPER', '黑椒醃製', 'marinating', 9, true),
-  ('MAR_SPICY', '麻辣醃製', 'marinating', 10, true),
-  ('QUICK_FREEZE', '速凍拉膜', 'others', 11, true)
+  ('WHOLE', '原件/原箱 (Whole Block/Case)', 'original_or_cutting', 0, true),
+  ('STEAK', '切扒 (Steak)', 'original_or_cutting', 1, true),
+  ('PREM_STEAK', '精修切扒 (Premium Steak)', 'original_or_cutting', 2, true),
+  ('DICED', '切粒 (Diced)', 'original_or_cutting', 3, true),
+  ('STRIPS', '切條 (Strips)', 'original_or_cutting', 4, true),
+  ('SLICED_HP', '切片 (Sliced)', 'original_or_cutting', 5, true),
+  ('SHREDDED', '切絲 (Shredded)', 'original_or_cutting', 6, true),
+  ('BULK_PACK', '商用分裝 (Bulk Repack)', 'repacking', 7, true),
+  ('VAC_PACK', '零售分裝 (Vacuum Repack)', 'repacking', 8, true),
+  ('MAR', '醃製 (Marinating)', 'marinating', 9, true)
 ON CONFLICT (code) DO UPDATE
 SET
   name = EXCLUDED.name,
@@ -271,15 +270,18 @@ SET
   sort_order = EXCLUDED.sort_order,
   is_active = EXCLUDED.is_active;
 
+UPDATE public.processing_methods
+SET is_active = false
+WHERE code NOT IN ('WHOLE', 'STEAK', 'PREM_STEAK', 'DICED', 'STRIPS', 'SLICED_HP', 'SHREDDED', 'BULK_PACK', 'VAC_PACK', 'MAR');
+
 -- 6) Backfill defaults: WHOLE process + BULK pack + SKU for existing linked products
-INSERT INTO public.material_process_specs (id, ingredient_id, code, name, yield_rate, processing_cost, is_default_piece, sort_order, is_active)
+INSERT INTO public.material_process_specs (id, ingredient_id, code, name, yield_rate, is_default_piece, sort_order, is_active)
 SELECT
   'PS-WHOLE-' || i.id,
   i.id,
   'WHOLE',
-  '原件',
+  '原件/原箱 (Whole Block/Case)',
   1,
-  0,
   true,
   0,
   true
