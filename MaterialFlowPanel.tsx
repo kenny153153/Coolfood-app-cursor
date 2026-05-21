@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { FileDown, Grid3X3, Layers, Package, Plus, RefreshCw, Save, Scissors, Search, Settings2, Upload } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, FileDown, Grid3X3, Layers, Package, Pencil, Plus, RefreshCw, Save, Scissors, Search, Settings2, Upload } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import type { CostItem, Ingredient, Product, SaleChannel } from './types';
 import { mapIngredientRowToIngredient } from './supabaseMappers';
@@ -81,6 +81,8 @@ interface SkuGridRow {
 const round2 = (v: number) => Math.round(v * 100) / 100;
 const mkId = (prefix: string) => `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 const QUOTE_SUFFIX: Record<string, string> = { P0: 'A0', P1: 'B1', P2: 'B2', 'P-1': 'Y1', 'P-2': 'Z2' };
+const RAW_UNIT_OPTIONS = ['lb', 'kg', 'g', 'catty', 'pack', 'box'] as const;
+const needsNetContent = (unit?: string) => ['pack', 'box'].includes((unit || '').trim().toLowerCase());
 
 const uniqueById = <T extends { id: string }>(rows: T[]): T[] => {
   const map = new Map<string, T>();
@@ -107,6 +109,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   const [loading, setLoading] = useState(false);
   const [showMethodModal, setShowMethodModal] = useState(false);
   const [showTierModal, setShowTierModal] = useState(false);
+  const [showUnitGuide, setShowUnitGuide] = useState(false);
 
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [methods, setMethods] = useState<GlobalMethod[]>([]);
@@ -130,6 +133,11 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   const [newMethod, setNewMethod] = useState({ code: '', name: '', category: 'original_or_cutting' as MethodCategory });
   const [newSku, setNewSku] = useState({ packSpecId: '', name: '', alias: '' });
   const [feeEditorId, setFeeEditorId] = useState<string | null>(null);
+  const [editingIngredientId, setEditingIngredientId] = useState<string | null>(null);
+  const [savingIngredientId, setSavingIngredientId] = useState<string | null>(null);
+  const [savedIngredientId, setSavedIngredientId] = useState<string | null>(null);
+  const [saveErrorIngredientId, setSaveErrorIngredientId] = useState<string | null>(null);
+  const savedIndicatorTimerRef = useRef<number | null>(null);
 
   const ingredientMap = useMemo(() => new Map(ingredients.map(i => [i.id, i])), [ingredients]);
   const processMap = useMemo(() => new Map(processRows.map(r => [r.id, r])), [processRows]);
@@ -246,8 +254,22 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
 
   const materials = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return ingredients.filter(i => !q || i.name.toLowerCase().includes(q)).sort((a, b) => a.name.localeCompare(b.name));
+    return ingredients
+      .filter(i => !q || (
+        i.name.toLowerCase().includes(q) ||
+        (i.supplier || '').toLowerCase().includes(q) ||
+        (i.unit || '').toLowerCase().includes(q)
+      ))
+      .sort((a, b) => a.name.localeCompare(b.name));
   }, [ingredients, search]);
+
+  const unitGuideRows = useMemo(() => {
+    const units: WeightUnit[] = ['g', 'kg', 'lb', 'catty'];
+    return units.map(from => ({
+      from,
+      rates: units.map(to => ({ to, value: round2(convertWeight(1, from, to)) })),
+    }));
+  }, []);
 
   const processRowsForMaterial = useMemo(() => processRows.filter(r => r.ingredientId === selectedIngredientId && r.isActive), [processRows, selectedIngredientId]);
   const packRowsForMaterial = useMemo(() => packRows
@@ -322,6 +344,9 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
 
   const addIngredient = async () => {
     if (!newIngredient.name.trim()) return showToast('請輸入母料名稱', 'error');
+    if (needsNetContent(newIngredient.unit) && (newIngredient.netContentVolume || 0) <= 0) {
+      return showToast('使用 pack/box 單位時，請填寫淨含量', 'error');
+    }
     const row = {
       id: mkId('ING'),
       name: newIngredient.name.trim(),
@@ -340,7 +365,14 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     setNewIngredient({ name: '', supplier: '', unit: 'lb', cost: 0, netContentVolume: 0, netContentUnit: 'g' });
   };
 
-  const saveIngredient = async (item: Ingredient) => {
+  const saveIngredient = async (item: Ingredient, options?: { silentSuccess?: boolean }) => {
+    if (needsNetContent(item.unit) && (item.netContentVolume || 0) <= 0) {
+      setSaveErrorIngredientId(item.id);
+      showToast('pack/box 單位必須設定淨含量', 'error');
+      return false;
+    }
+    setSavingIngredientId(item.id);
+    setSaveErrorIngredientId(null);
     const { error } = await supabase.from('ingredients').update({
       name: item.name,
       supplier: item.supplier || null,
@@ -349,8 +381,23 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       net_content_volume: item.netContentVolume || null,
       net_content_unit: item.netContentVolume ? (item.netContentUnit || 'g') : null,
     }).eq('id', item.id);
-    if (error) return showToast(`保存母料失敗：${error.message}`, 'error');
+    if (error) {
+      setSaveErrorIngredientId(item.id);
+      showToast(`保存母料失敗：${error.message}`, 'error');
+      setSavingIngredientId(prev => (prev === item.id ? null : prev));
+      return false;
+    }
+    setSavingIngredientId(prev => (prev === item.id ? null : prev));
+    setSavedIngredientId(item.id);
+    if (savedIndicatorTimerRef.current) window.clearTimeout(savedIndicatorTimerRef.current);
+    savedIndicatorTimerRef.current = window.setTimeout(() => setSavedIngredientId(prev => (prev === item.id ? null : prev)), 1600);
+    if (!options?.silentSuccess) showToast('母料已自動儲存', 'success');
+    return true;
   };
+
+  useEffect(() => () => {
+    if (savedIndicatorTimerRef.current) window.clearTimeout(savedIndicatorTimerRef.current);
+  }, []);
 
   const addMethod = async () => {
     if (!newMethod.name.trim()) return showToast('請輸入加工方式名稱', 'error');
@@ -628,10 +675,10 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       </div>
 
       <div className="flex flex-wrap gap-2">
-        <button onClick={() => setTab('raw')} className={`px-6 py-3 rounded-xl text-base font-semibold flex items-center gap-2 ${tab === 'raw' ? 'bg-blue-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Layers size={16} />1. 母料</button>
-        <button onClick={() => setTab('process')} className={`px-6 py-3 rounded-xl text-base font-semibold flex items-center gap-2 ${tab === 'process' ? 'bg-violet-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Scissors size={16} />2. 加工</button>
-        <button onClick={() => setTab('pack')} className={`px-6 py-3 rounded-xl text-base font-semibold flex items-center gap-2 ${tab === 'pack' ? 'bg-amber-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Package size={16} />3. 包裝</button>
-        <button onClick={() => setTab('sku')} className={`px-6 py-3 rounded-xl text-base font-semibold flex items-center gap-2 ${tab === 'sku' ? 'bg-emerald-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Grid3X3 size={16} />4. SKU 控價</button>
+        <button onClick={() => setTab('raw')} className={`px-7 py-3.5 rounded-xl text-lg font-bold flex items-center gap-2 ${tab === 'raw' ? 'bg-blue-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Layers size={16} />1. 母料</button>
+        <button onClick={() => setTab('process')} className={`px-7 py-3.5 rounded-xl text-lg font-bold flex items-center gap-2 ${tab === 'process' ? 'bg-violet-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Scissors size={16} />2. 加工</button>
+        <button onClick={() => setTab('pack')} className={`px-7 py-3.5 rounded-xl text-lg font-bold flex items-center gap-2 ${tab === 'pack' ? 'bg-amber-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Package size={16} />3. 包裝</button>
+        <button onClick={() => setTab('sku')} className={`px-7 py-3.5 rounded-xl text-lg font-bold flex items-center gap-2 ${tab === 'sku' ? 'bg-emerald-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Grid3X3 size={16} />4. SKU 控價</button>
       </div>
 
       <div className="bg-white border border-slate-100 rounded-2xl p-3 flex flex-wrap items-center gap-2">
@@ -641,31 +688,183 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         </div>
         {(['all', 'wholesale', 'retail'] as ChannelFilter[]).map(v => <button key={v} onClick={() => setChannelFilter(v)} className={`px-3 py-2 rounded-lg text-[11px] font-black ${channelFilter === v ? 'bg-slate-900 text-white' : 'bg-slate-50 border border-slate-200 text-slate-500'}`}>{v === 'all' ? '全部' : v === 'wholesale' ? '批發' : '零售'}</button>)}
         {(['all', 'fixed_pack', 'by_piece'] as TypeFilter[]).map(v => <button key={v} onClick={() => setTypeFilter(v)} className={`px-3 py-2 rounded-lg text-[11px] font-black ${typeFilter === v ? 'bg-indigo-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-500'}`}>{v === 'all' ? '全部類型' : v === 'fixed_pack' ? '定額' : '抄碼'}</button>)}
-        {tab === 'raw' && <button onClick={() => setShowMethodModal(true)} className="px-3 py-2 rounded-lg border border-slate-200 text-[11px] font-black text-slate-600 flex items-center gap-1"><Settings2 size={12} />管理加工方式</button>}
-        {tab === 'raw' && <button onClick={() => showToast('批量匯入入口已啟用', 'success')} className="px-3 py-2 rounded-lg border border-slate-200 text-[11px] font-black text-slate-600 flex items-center gap-1"><Upload size={12} />批量匯入</button>}
+        {tab === 'raw' && (
+          <div className="ml-auto flex items-center gap-2">
+            <button onClick={() => setShowUnitGuide(prev => !prev)} className={`px-3 py-2 rounded-lg border text-[11px] font-black flex items-center gap-1 ${showUnitGuide ? 'bg-blue-50 border-blue-200 text-blue-700' : 'border-slate-200 text-slate-600'}`}>
+              <Settings2 size={12} />單位換算表
+            </button>
+            <button onClick={() => setShowMethodModal(true)} className="px-3 py-2 rounded-lg border border-slate-200 text-[11px] font-black text-slate-600 flex items-center gap-1">
+              <Settings2 size={12} />⚙️ 管理加工方式
+            </button>
+            <button onClick={() => showToast('批量匯入入口已啟用', 'success')} className="px-3 py-2 rounded-lg border border-slate-200 text-[11px] font-black text-slate-600 flex items-center gap-1">
+              <Upload size={12} />批量匯入
+            </button>
+          </div>
+        )}
       </div>
+
+      {tab === 'raw' && showUnitGuide && (
+        <div className="bg-white border border-blue-100 rounded-2xl p-3">
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-sm font-black text-slate-900">單位換算表（像匯率一樣看 1 單位轉換）</h4>
+            <span className="text-[11px] font-bold text-slate-500">可用於 pack/box 淨含量判斷</span>
+          </div>
+          <div className="overflow-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-slate-50 text-slate-500">
+                  <th className="px-2 py-2 text-left">1 單位</th>
+                  <th className="px-2 py-2 text-right">g</th>
+                  <th className="px-2 py-2 text-right">kg</th>
+                  <th className="px-2 py-2 text-right">lb</th>
+                  <th className="px-2 py-2 text-right">catty/斤</th>
+                </tr>
+              </thead>
+              <tbody>
+                {unitGuideRows.map(row => (
+                  <tr key={row.from} className="border-t border-slate-100">
+                    <td className="px-2 py-1.5 font-black">{row.from}</td>
+                    {row.rates.map(rate => (
+                      <td key={`${row.from}-${rate.to}`} className="px-2 py-1.5 text-right font-bold">{rate.value}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {tab === 'raw' && (
         <div className="bg-white border border-slate-100 rounded-2xl p-3 overflow-auto">
           <table className="w-full text-xs">
-            <thead><tr className="bg-slate-50 text-slate-500"><th className="px-2 py-2 text-left">母料</th><th className="px-2 py-2 text-left">供應商</th><th className="px-2 py-2 text-center">單位</th><th className="px-2 py-2 text-right">成本</th><th className="px-2 py-2 text-right">預包裝淨含量</th><th className="px-2 py-2 text-right">保存</th></tr></thead>
+            <thead><tr className="bg-slate-50 text-slate-500"><th className="px-2 py-2 text-left">母料</th><th className="px-2 py-2 text-left">供應商</th><th className="px-2 py-2 text-center">單位</th><th className="px-2 py-2 text-right">成本</th><th className="px-2 py-2 text-right">預包裝淨含量</th><th className="px-2 py-2 text-right">操作</th></tr></thead>
             <tbody>
               <tr className="border-t border-slate-100 bg-blue-50/40">
                 <td className="px-2 py-1.5"><input value={newIngredient.name} onChange={e => setNewIngredient(v => ({ ...v, name: e.target.value }))} placeholder="新增母料" className="w-full p-1.5 border border-slate-200 rounded font-bold" /></td>
                 <td className="px-2 py-1.5"><input value={newIngredient.supplier} onChange={e => setNewIngredient(v => ({ ...v, supplier: e.target.value }))} placeholder="供應商" className="w-full p-1.5 border border-slate-200 rounded font-bold" /></td>
-                <td className="px-2 py-1.5"><input value={newIngredient.unit} onChange={e => setNewIngredient(v => ({ ...v, unit: e.target.value }))} className="w-16 p-1.5 border border-slate-200 rounded font-bold text-center mx-auto block" /></td>
+                <td className="px-2 py-1.5">
+                  <select value={newIngredient.unit} onChange={e => setNewIngredient(v => ({ ...v, unit: e.target.value }))} className="w-24 p-1.5 border border-slate-200 rounded font-bold text-center mx-auto block">
+                    {RAW_UNIT_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                </td>
                 <td className="px-2 py-1.5"><input type="number" value={newIngredient.cost} onChange={e => setNewIngredient(v => ({ ...v, cost: Number(e.target.value) || 0 }))} className="w-24 p-1.5 border border-slate-200 rounded font-bold text-right ml-auto block" /></td>
                 <td className="px-2 py-1.5"><div className="flex gap-1 justify-end"><input type="number" value={newIngredient.netContentVolume} onChange={e => setNewIngredient(v => ({ ...v, netContentVolume: Number(e.target.value) || 0 }))} className="w-16 p-1.5 border border-slate-200 rounded font-bold text-right" /><select value={newIngredient.netContentUnit} onChange={e => setNewIngredient(v => ({ ...v, netContentUnit: e.target.value as WeightUnit }))} className="p-1.5 border border-slate-200 rounded font-bold"><option value="g">g</option><option value="lb">lb</option><option value="kg">kg</option><option value="catty">斤</option></select></div></td>
-                <td className="px-2 py-1.5 text-right"><button onClick={() => void addIngredient()} className="px-2 py-1 rounded bg-blue-600 text-white text-[10px] font-black">新增</button></td>
+                <td className="px-2 py-1.5 text-right">
+                  <button onClick={() => void addIngredient()} className="px-2 py-1 rounded bg-blue-600 text-white text-[10px] font-black">新增</button>
+                  {needsNetContent(newIngredient.unit) && (newIngredient.netContentVolume || 0) <= 0 && (
+                    <div className="mt-1 text-[10px] font-black text-rose-600">pack/box 需填淨含量</div>
+                  )}
+                </td>
               </tr>
               {materials.map(i => (
-                <tr key={i.id} className="border-t border-slate-100">
-                  <td className="px-2 py-1.5"><input value={i.name} onChange={e => setIngredients(prev => prev.map(x => x.id === i.id ? { ...x, name: e.target.value } : x))} className="w-full p-1.5 border border-slate-200 rounded font-bold" /></td>
-                  <td className="px-2 py-1.5"><input value={i.supplier || ''} onChange={e => setIngredients(prev => prev.map(x => x.id === i.id ? { ...x, supplier: e.target.value } : x))} className="w-full p-1.5 border border-slate-200 rounded font-bold" /></td>
-                  <td className="px-2 py-1.5"><input value={i.unit} onChange={e => setIngredients(prev => prev.map(x => x.id === i.id ? { ...x, unit: e.target.value } : x))} className="w-16 p-1.5 border border-slate-200 rounded font-bold text-center mx-auto block" /></td>
-                  <td className="px-2 py-1.5"><input type="number" value={i.baseCostPerLb} onChange={e => setIngredients(prev => prev.map(x => x.id === i.id ? { ...x, baseCostPerLb: Number(e.target.value) || 0 } : x))} className="w-24 p-1.5 border border-slate-200 rounded font-bold text-right ml-auto block" /></td>
-                  <td className="px-2 py-1.5"><div className="flex gap-1 justify-end"><input type="number" value={i.netContentVolume || 0} onChange={e => setIngredients(prev => prev.map(x => x.id === i.id ? { ...x, netContentVolume: Number(e.target.value) || 0 } : x))} className="w-16 p-1.5 border border-slate-200 rounded font-bold text-right" /><select value={i.netContentUnit || 'g'} onChange={e => setIngredients(prev => prev.map(x => x.id === i.id ? { ...x, netContentUnit: e.target.value as WeightUnit } : x))} className="p-1.5 border border-slate-200 rounded font-bold"><option value="g">g</option><option value="lb">lb</option><option value="kg">kg</option><option value="catty">斤</option></select></div></td>
-                  <td className="px-2 py-1.5 text-right"><button onClick={() => void saveIngredient(i)} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">保存</button></td>
+                <tr key={i.id} className={`border-t border-slate-100 ${editingIngredientId === i.id ? 'bg-emerald-50/30' : ''}`} onDoubleClick={() => setEditingIngredientId(i.id)}>
+                  <td className="px-2 py-1.5">
+                    {editingIngredientId === i.id ? (
+                      <input
+                        value={i.name}
+                        onChange={e => setIngredients(prev => prev.map(x => x.id === i.id ? { ...x, name: e.target.value } : x))}
+                        onBlur={() => void saveIngredient(i, { silentSuccess: true })}
+                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
+                        className="w-full p-1.5 border border-slate-200 rounded font-bold"
+                      />
+                    ) : (
+                      <span className="font-bold text-slate-800">{i.name}</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    {editingIngredientId === i.id ? (
+                      <input
+                        value={i.supplier || ''}
+                        onChange={e => setIngredients(prev => prev.map(x => x.id === i.id ? { ...x, supplier: e.target.value } : x))}
+                        onBlur={() => void saveIngredient(i, { silentSuccess: true })}
+                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
+                        className="w-full p-1.5 border border-slate-200 rounded font-bold"
+                      />
+                    ) : (
+                      <span>{i.supplier || '-'}</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5 text-center">
+                    {editingIngredientId === i.id ? (
+                      <select
+                        value={i.unit}
+                        onChange={e => setIngredients(prev => prev.map(x => x.id === i.id ? { ...x, unit: e.target.value } : x))}
+                        onBlur={() => void saveIngredient(i, { silentSuccess: true })}
+                        className="w-24 p-1.5 border border-slate-200 rounded font-bold text-center mx-auto block"
+                      >
+                        {RAW_UNIT_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
+                      </select>
+                    ) : (
+                      <span className="font-bold">{i.unit}</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5 text-right">
+                    {editingIngredientId === i.id ? (
+                      <input
+                        type="number"
+                        value={i.baseCostPerLb}
+                        onChange={e => setIngredients(prev => prev.map(x => x.id === i.id ? { ...x, baseCostPerLb: Number(e.target.value) || 0 } : x))}
+                        onBlur={() => void saveIngredient(i, { silentSuccess: true })}
+                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
+                        className="w-24 p-1.5 border border-slate-200 rounded font-bold text-right ml-auto block"
+                      />
+                    ) : (
+                      <span className="font-black">${Number(i.baseCostPerLb || 0).toFixed(2)}</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    {editingIngredientId === i.id ? (
+                      <div className="flex gap-1 justify-end">
+                        <input
+                          type="number"
+                          value={i.netContentVolume || 0}
+                          onChange={e => setIngredients(prev => prev.map(x => x.id === i.id ? { ...x, netContentVolume: Number(e.target.value) || 0 } : x))}
+                          onBlur={() => void saveIngredient(i, { silentSuccess: true })}
+                          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
+                          className="w-16 p-1.5 border border-slate-200 rounded font-bold text-right"
+                        />
+                        <select
+                          value={i.netContentUnit || 'g'}
+                          onChange={e => setIngredients(prev => prev.map(x => x.id === i.id ? { ...x, netContentUnit: e.target.value as WeightUnit } : x))}
+                          onBlur={() => void saveIngredient(i, { silentSuccess: true })}
+                          className="p-1.5 border border-slate-200 rounded font-bold"
+                        >
+                          <option value="g">g</option><option value="lb">lb</option><option value="kg">kg</option><option value="catty">斤</option>
+                        </select>
+                      </div>
+                    ) : (
+                      <div className="text-right">
+                        {(i.netContentVolume || 0) > 0 ? (
+                          <span className="font-bold">{i.netContentVolume}{i.netContentUnit || 'g'}</span>
+                        ) : (
+                          <span className={`${needsNetContent(i.unit) ? 'text-rose-600 font-black' : 'text-slate-300'}`}>
+                            {needsNetContent(i.unit) ? '需設定淨含量' : '-'}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      {savingIngredientId === i.id && <span className="text-[10px] font-black text-emerald-600 animate-pulse">儲存中...</span>}
+                      {savedIngredientId === i.id && <span className="text-[10px] font-black text-emerald-600 inline-flex items-center gap-1"><Check size={11} />已自動儲存</span>}
+                      {saveErrorIngredientId === i.id && <span className="text-[10px] font-black text-rose-600">儲存失敗</span>}
+                      {editingIngredientId === i.id ? (
+                        <button
+                          onClick={() => {
+                            void saveIngredient(i, { silentSuccess: true });
+                            setEditingIngredientId(null);
+                          }}
+                          className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black"
+                        >
+                          完成
+                        </button>
+                      ) : (
+                        <button onClick={() => setEditingIngredientId(i.id)} className="px-2 py-1 rounded border border-slate-200 text-[10px] font-black text-slate-600 inline-flex items-center gap-1"><Pencil size={11} />編輯</button>
+                      )}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
