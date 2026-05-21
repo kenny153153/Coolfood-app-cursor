@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS public.material_process_specs (
   processing_category TEXT NOT NULL DEFAULT 'others' CHECK (processing_category IN ('original_or_cutting', 'repacking', 'marinating', 'others')),
   code TEXT NOT NULL,
   name TEXT NOT NULL,
-  yield_rate NUMERIC(6,4) NOT NULL DEFAULT 1,
+  yield_rate NUMERIC(6,4) NOT NULL DEFAULT 1 CHECK (yield_rate >= 0.5 AND yield_rate <= 1.0),
   processing_cost NUMERIC(10,2) NOT NULL DEFAULT 0,
   pack_quantity NUMERIC(10,3),
   pack_unit TEXT CHECK (pack_unit IN ('g', 'kg', 'lb', 'catty')),
@@ -128,6 +128,13 @@ ALTER TABLE public.material_process_specs
   ADD COLUMN IF NOT EXISTS pack_quantity NUMERIC(10,3);
 ALTER TABLE public.material_process_specs
   ADD COLUMN IF NOT EXISTS pack_unit TEXT;
+UPDATE public.material_process_specs
+SET yield_rate = LEAST(1.0, GREATEST(0.5, COALESCE(yield_rate, 1.0)))
+WHERE yield_rate IS NULL OR yield_rate < 0.5 OR yield_rate > 1.0;
+ALTER TABLE public.material_process_specs
+  DROP CONSTRAINT IF EXISTS material_process_specs_yield_rate_check;
+ALTER TABLE public.material_process_specs
+  ADD CONSTRAINT material_process_specs_yield_rate_check CHECK (yield_rate >= 0.5 AND yield_rate <= 1.0);
 ALTER TABLE public.material_process_specs
   DROP CONSTRAINT IF EXISTS material_process_specs_processing_category_check;
 UPDATE public.material_process_specs
