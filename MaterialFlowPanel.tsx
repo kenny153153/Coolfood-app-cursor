@@ -231,6 +231,20 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       setPackagingItems(rows);
       return;
     }
+    if (res.error && (res.error.code === '42P01' || res.error.code === 'PGRST205' || String(res.error.message || '').includes('schema cache'))) {
+      const cfg = await supabase.from('site_config').select('value').eq('id', 'packaging_items').maybeSingle();
+      if (!cfg.error && Array.isArray(cfg.data?.value)) {
+        const rows = (cfg.data.value as any[])
+          .map((item: any) => ({
+            id: item.id || item.code || mkId('PKI'),
+            code: (item.code || item.id || '').toString().trim().toUpperCase(),
+            name: (item.name || '').toString(),
+            defaultPrice: Number(item.defaultPrice ?? item.cost ?? 0) || 0,
+          }))
+          .filter((item: PackagingItem) => item.code && item.name);
+        setPackagingItems(rows);
+      }
+    }
   }, []);
 
   const loadAll = useCallback(async () => {
@@ -766,7 +780,18 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       is_active: true,
     };
     const { data, error } = await supabase.from('packaging_materials').insert(payload).select('id,code,name,cost').single();
-    if (error) return showToast(`新增包材失敗：${error.message}`, 'error');
+    if (error) {
+      if (error.code === '42P01' || error.code === 'PGRST205' || String(error.message || '').includes('schema cache')) {
+        const next = [...packagingItems, { id: mkId('PKI'), code, name: newPackagingItem.name.trim(), defaultPrice: Number(newPackagingItem.defaultPrice) || 0 }];
+        const fb = await supabase.from('site_config').upsert({ id: 'packaging_items', value: next });
+        if (fb.error) return showToast(`新增包材失敗：${fb.error.message}`, 'error');
+        setPackagingItems(next);
+        setNewPackagingItem({ code: '', name: '', defaultPrice: 0 });
+        showToast('包材項目已新增（本地字典）', 'success');
+        return;
+      }
+      return showToast(`新增包材失敗：${error.message}`, 'error');
+    }
     setPackagingItems(prev => [...prev, { id: data.id, code: data.code, name: data.name, defaultPrice: Number(data.cost) || 0 }]);
     setNewPackagingItem({ code: '', name: '', defaultPrice: 0 });
     showToast('包材項目已新增', 'success');
@@ -782,7 +807,18 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       name: item.name.trim(),
       cost: Number(item.defaultPrice) || 0,
     }).eq('id', item.id);
-    if (error) return showToast(`更新包材失敗：${error.message}`, 'error');
+    if (error) {
+      if (error.code === '42P01' || error.code === 'PGRST205' || String(error.message || '').includes('schema cache')) {
+        const next = packagingItems.map(i => i.id === item.id ? { ...item, code } : i);
+        const fb = await supabase.from('site_config').upsert({ id: 'packaging_items', value: next });
+        if (fb.error) return showToast(`更新包材失敗：${fb.error.message}`, 'error');
+        setPackagingItems(next);
+        setEditingPackagingItemId(null);
+        showToast('包材項目已更新（本地字典）', 'success');
+        return;
+      }
+      return showToast(`更新包材失敗：${error.message}`, 'error');
+    }
     setPackagingItems(prev => prev.map(i => i.id === item.id ? { ...item, code } : i));
     setEditingPackagingItemId(null);
     showToast('包材項目已更新', 'success');
@@ -790,7 +826,18 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
 
   const deletePackagingItem = async (item: PackagingItem) => {
     const { error } = await supabase.from('packaging_materials').delete().eq('id', item.id);
-    if (error) return showToast(`刪除包材失敗：${error.message}`, 'error');
+    if (error) {
+      if (error.code === '42P01' || error.code === 'PGRST205' || String(error.message || '').includes('schema cache')) {
+        const next = packagingItems.filter(i => i.id !== item.id);
+        const fb = await supabase.from('site_config').upsert({ id: 'packaging_items', value: next });
+        if (fb.error) return showToast(`刪除包材失敗：${fb.error.message}`, 'error');
+        setPackagingItems(next);
+        setEditingPackagingItemId(prev => (prev === item.id ? null : prev));
+        showToast('包材項目已刪除（本地字典）', 'success');
+        return;
+      }
+      return showToast(`刪除包材失敗：${error.message}`, 'error');
+    }
     setPackagingItems(prev => prev.filter(i => i.id !== item.id));
     setEditingPackagingItemId(prev => (prev === item.id ? null : prev));
     showToast('包材項目已刪除', 'success');
@@ -883,6 +930,20 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   };
 
   const deletePackRow = async (rowId: string) => {
+    const skuRes = await supabase.from('sellable_skus').select('id,product_id').eq('pack_spec_id', rowId);
+    if (!skuRes.error && Array.isArray(skuRes.data) && skuRes.data.length > 0) {
+      const skuIds = skuRes.data.map((r: any) => r.id).filter(Boolean);
+      if (skuIds.length > 0) {
+        const delSku = await supabase.from('sellable_skus').delete().in('id', skuIds);
+        if (delSku.error) return showToast(`刪除關聯 SKU 失敗：${delSku.error.message}`, 'error');
+      }
+    }
+    // Compatibility: some environments may still use material_skus table.
+    const legacySkuDelete = await supabase.from('material_skus').delete().eq('pack_spec_id', rowId);
+    if (legacySkuDelete.error && legacySkuDelete.error.code !== '42P01' && legacySkuDelete.error.code !== 'PGRST205') {
+      return showToast(`刪除舊關聯 SKU 失敗：${legacySkuDelete.error.message}`, 'error');
+    }
+
     const { error } = await supabase.from('material_pack_specs').delete().eq('id', rowId);
     if (error) return showToast(`刪除規格失敗：${error.message}`, 'error');
     setPackRows(prev => prev.filter(r => r.id !== rowId));
@@ -1392,6 +1453,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
             <div className="space-y-3 max-h-[34rem] overflow-auto">
               {processRowsForMaterial.map(proc => {
                 const method = methods.find(m => m.id === proc.methodId) || methods.find(m => m.code === proc.code);
+                const isWholeProcess = (method?.code || proc.code) === 'WHOLE';
                 const costPerLb = processedCostPerLb(proc.ingredientId, proc.id);
                 const rows = packRowsForMaterial.filter(r => r.processSpecId === proc.id);
                 const drafts = packDraftRowsForMaterial.filter(r => r.processSpecId === proc.id);
@@ -1458,7 +1520,9 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                                 <td className="px-2 py-1.5 text-right">
                                   <div className="inline-flex items-center gap-1">
                                     <button onClick={() => void savePackRow({ ...r, packagingFee: fee })} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">💾 儲存規格</button>
-                                    <button onClick={() => void deletePackRow(r.id)} className="px-2 py-1 rounded border border-rose-200 text-rose-600 text-[10px] font-black">🗑️ 刪除</button>
+                                    {!isWholeProcess && (
+                                      <button onClick={() => void deletePackRow(r.id)} className="px-2 py-1 rounded border border-rose-200 text-rose-600 text-[10px] font-black">🗑️ 刪除</button>
+                                    )}
                                   </div>
                                 </td>
                               </tr>
@@ -1519,7 +1583,9 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                                 <td className="px-2 py-1.5 text-right">
                                   <div className="inline-flex items-center gap-1">
                                     <button onClick={() => void savePackDraftRow(d)} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">💾 儲存規格</button>
-                                    <button onClick={() => setPackDraftRows(prev => prev.filter(x => x.tempId !== d.tempId))} className="px-2 py-1 rounded border border-rose-200 text-rose-600 text-[10px] font-black">🗑️ 刪除</button>
+                                    {!isWholeProcess && (
+                                      <button onClick={() => setPackDraftRows(prev => prev.filter(x => x.tempId !== d.tempId))} className="px-2 py-1 rounded border border-rose-200 text-rose-600 text-[10px] font-black">🗑️ 刪除</button>
+                                    )}
                                   </div>
                                 </td>
                               </tr>

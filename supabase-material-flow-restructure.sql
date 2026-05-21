@@ -395,4 +395,4 @@ WHERE ps.code = 'WHOLE'
 -- WHERE ps.id IS NULL OR pk.id IS NULL OR p.id IS NULL;
 
 -- Refresh PostgREST schema cache after migration:
--- NOTIFY pgrst, 'reload schema';
+NOTIFY pgrst, 'reload schema';
