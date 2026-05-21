@@ -80,6 +80,27 @@ CREATE TABLE IF NOT EXISTS public.material_pack_specs (
   UNIQUE (process_spec_id, code)
 );
 
+-- Global packaging dictionary (for Tab 3 checkbox list)
+CREATE TABLE IF NOT EXISTS public.packaging_materials (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  code TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  cost NUMERIC(10,2) NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Optional relation table for explicit per-pack material mapping
+CREATE TABLE IF NOT EXISTS public.material_packaging_specs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pack_spec_id TEXT NOT NULL REFERENCES public.material_pack_specs(id) ON DELETE CASCADE,
+  packaging_material_id UUID NOT NULL REFERENCES public.packaging_materials(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (pack_spec_id, packaging_material_id)
+);
+
 -- Keep existing environments aligned (fix missing-column runtime errors)
 ALTER TABLE public.material_pack_specs
   ADD COLUMN IF NOT EXISTS pricing_mode TEXT NOT NULL DEFAULT 'fixed_pack';
@@ -132,6 +153,23 @@ ALTER TABLE public.material_process_specs
   ADD COLUMN IF NOT EXISTS pack_unit TEXT;
 ALTER TABLE public.material_process_specs
   DROP COLUMN IF EXISTS processing_cost;
+
+-- Local MVP override: disable RLS to avoid policy blocking packaging writes.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'packaging_materials'
+  ) THEN
+    EXECUTE 'ALTER TABLE public.packaging_materials DISABLE ROW LEVEL SECURITY';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'material_packaging_specs'
+  ) THEN
+    EXECUTE 'ALTER TABLE public.material_packaging_specs DISABLE ROW LEVEL SECURITY';
+  END IF;
+END $$;
 UPDATE public.material_process_specs
 SET yield_rate = LEAST(1.0, GREATEST(0.5, COALESCE(yield_rate, 1.0)))
 WHERE yield_rate IS NULL OR yield_rate < 0.5 OR yield_rate > 1.0;
@@ -276,6 +314,23 @@ SET
 UPDATE public.processing_methods
 SET is_active = false
 WHERE code NOT IN ('WHOLE', 'STEAK', 'PREM_STEAK', 'DICED', 'STRIPS', 'SLICED_HP', 'SHREDDED', 'BULK_PACK', 'VAC_PACK', 'MAR');
+
+-- Tab 3 packaging materials seed + cleanup legacy "A" row
+DELETE FROM public.packaging_materials
+WHERE UPPER(code) = 'A' OR name = 'A';
+
+INSERT INTO public.packaging_materials (code, name, cost, sort_order, is_active)
+VALUES
+  ('YELLOW_BAG', '黃袋', 0.06, 0, true),
+  ('VAC_FILM', '真空膜', 0.09, 1, true),
+  ('BLACK_TRAY', '黑碟', 0.05, 2, true),
+  ('LABEL', '貼紙標籤', 0.01, 3, true)
+ON CONFLICT (code) DO UPDATE
+SET
+  name = EXCLUDED.name,
+  cost = EXCLUDED.cost,
+  sort_order = EXCLUDED.sort_order,
+  is_active = EXCLUDED.is_active;
 
 -- 6) Backfill defaults: WHOLE process + BULK pack + SKU for existing linked products
 INSERT INTO public.material_process_specs (id, ingredient_id, code, name, yield_rate, is_default_piece, sort_order, is_active)

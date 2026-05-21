@@ -83,7 +83,6 @@ interface PackDraftRow {
   code: string;
   name: string;
   pricingType: PricingType;
-  channel: SaleChannel;
   specWeight: number;
   specUnit: WeightUnit;
   packLabel: string;
@@ -213,6 +212,27 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     setMethods(uniqueById(rows));
   }, []);
 
+  const loadPackagingItems = useCallback(async () => {
+    const res = await supabase
+      .from('packaging_materials')
+      .select('id,code,name,cost,is_active,sort_order')
+      .order('sort_order')
+      .order('name');
+    if (!res.error) {
+      const rows = (res.data || [])
+        .filter((r: any) => r.is_active !== false)
+        .map((r: any) => ({
+          id: r.id,
+          code: (r.code || '').toString().trim().toUpperCase(),
+          name: (r.name || '').toString(),
+          defaultPrice: Number(r.cost) || 0,
+        }))
+        .filter((item: PackagingItem) => item.code && item.name);
+      setPackagingItems(rows);
+      return;
+    }
+  }, []);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
@@ -230,6 +250,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         throw (ingRes.error || processRes.error || packRes.error || cfgRes.error);
       }
       await loadMethods();
+      await loadPackagingItems();
 
       setIngredients((ingRes.data || []).map(mapIngredientRowToIngredient));
       setProcessRows(uniqueById((processRes.data || []).map((r: any) => ({
@@ -279,7 +300,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
 
       const cfgMap = new Map((cfgRes.data || []).map((r: any) => [r.id, r.value]));
       if (Array.isArray(cfgMap.get('cost_items'))) setCostItems(cfgMap.get('cost_items') as CostItem[]);
-      if (Array.isArray(cfgMap.get('packaging_items'))) {
+      if (packagingItems.length === 0 && Array.isArray(cfgMap.get('packaging_items'))) {
         const rows = (cfgMap.get('packaging_items') as any[]).map((item: any) => ({
           id: item.id || item.code || mkId('PKI'),
           code: (item.code || item.id || '').toString().trim().toUpperCase(),
@@ -287,7 +308,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
           defaultPrice: Number(item.defaultPrice ?? item.cost ?? 0) || 0,
         })).filter((item: PackagingItem) => item.code && item.name);
         setPackagingItems(rows);
-      } else if (Array.isArray(cfgMap.get('cost_items'))) {
+      } else if (packagingItems.length === 0 && Array.isArray(cfgMap.get('cost_items'))) {
         const fallback = (cfgMap.get('cost_items') as CostItem[]).map((item) => ({
           id: item.id,
           code: item.id,
@@ -304,7 +325,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     } finally {
       setLoading(false);
     }
-  }, [loadMethods, showToast]);
+  }, [loadMethods, loadPackagingItems, packagingItems.length, showToast]);
 
   const reloadProcessRowsForIngredient = useCallback(async (ingredientId: string) => {
     if (!ingredientId) return;
@@ -733,24 +754,20 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     return round2(codes.reduce((sum, code) => sum + (packagingItems.find(item => item.code === code)?.defaultPrice || 0), 0));
   }, [packagingItems]);
 
-  const upsertPackagingDictionary = async (rows: PackagingItem[]) => {
-    const payload = rows.map(item => ({ id: item.id, code: item.code, name: item.name, defaultPrice: item.defaultPrice }));
-    const { error } = await supabase.from('site_config').upsert({ id: 'packaging_items', value: payload });
-    if (error) {
-      showToast(`保存包材字典失敗：${error.message}`, 'error');
-      return false;
-    }
-    return true;
-  };
-
   const addPackagingItem = async () => {
     const code = newPackagingItem.code.trim().toUpperCase().replace(/\s+/g, '_');
     if (!code || !newPackagingItem.name.trim()) return showToast('請輸入包材 code / 名稱', 'error');
     if (packagingItems.some(i => i.code === code)) return showToast('包材 Code 重覆', 'error');
-    const next = [...packagingItems, { id: mkId('PKI'), code, name: newPackagingItem.name.trim(), defaultPrice: Number(newPackagingItem.defaultPrice) || 0 }];
-    const ok = await upsertPackagingDictionary(next);
-    if (!ok) return;
-    setPackagingItems(next);
+    const payload = {
+      code,
+      name: newPackagingItem.name.trim(),
+      cost: Number(newPackagingItem.defaultPrice) || 0,
+      sort_order: packagingItems.length,
+      is_active: true,
+    };
+    const { data, error } = await supabase.from('packaging_materials').insert(payload).select('id,code,name,cost').single();
+    if (error) return showToast(`新增包材失敗：${error.message}`, 'error');
+    setPackagingItems(prev => [...prev, { id: data.id, code: data.code, name: data.name, defaultPrice: Number(data.cost) || 0 }]);
     setNewPackagingItem({ code: '', name: '', defaultPrice: 0 });
     showToast('包材項目已新增', 'success');
   };
@@ -760,19 +777,21 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     if (!code || !item.name.trim()) return showToast('請輸入完整包材資料', 'error');
     const duplicated = packagingItems.some(i => i.id !== item.id && i.code === code);
     if (duplicated) return showToast('包材 Code 重覆', 'error');
-    const next = packagingItems.map(i => i.id === item.id ? { ...item, code } : i);
-    const ok = await upsertPackagingDictionary(next);
-    if (!ok) return;
-    setPackagingItems(next);
+    const { error } = await supabase.from('packaging_materials').update({
+      code,
+      name: item.name.trim(),
+      cost: Number(item.defaultPrice) || 0,
+    }).eq('id', item.id);
+    if (error) return showToast(`更新包材失敗：${error.message}`, 'error');
+    setPackagingItems(prev => prev.map(i => i.id === item.id ? { ...item, code } : i));
     setEditingPackagingItemId(null);
     showToast('包材項目已更新', 'success');
   };
 
   const deletePackagingItem = async (item: PackagingItem) => {
-    const next = packagingItems.filter(i => i.id !== item.id);
-    const ok = await upsertPackagingDictionary(next);
-    if (!ok) return;
-    setPackagingItems(next);
+    const { error } = await supabase.from('packaging_materials').delete().eq('id', item.id);
+    if (error) return showToast(`刪除包材失敗：${error.message}`, 'error');
+    setPackagingItems(prev => prev.filter(i => i.id !== item.id));
     setEditingPackagingItemId(prev => (prev === item.id ? null : prev));
     showToast('包材項目已刪除', 'success');
   };
@@ -786,7 +805,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       code: `PACK_${Date.now().toString().slice(-4)}`,
       name: `${process.name} 規格`,
       pricingType: defaultMode,
-      channel: 'wholesale',
       specWeight: 500,
       specUnit: 'g',
       packLabel: '500g/包',
@@ -806,7 +824,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       code: draft.code,
       name: draft.name.trim(),
       pricing_mode: draft.pricingType,
-      target_channel: draft.channel,
+      target_channel: 'both',
       spec_weight: draft.pricingType === 'fixed_pack' ? draft.specWeight : 1,
       spec_unit: draft.pricingType === 'fixed_pack' ? draft.specUnit : 'lb',
       pack_label: draft.packLabel || null,
@@ -827,7 +845,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       code: data.code,
       name: data.name,
       pricingType: data.pricing_mode === 'by_piece' ? 'by_piece' : 'fixed_pack',
-      channel: data.target_channel,
+      channel: data.target_channel === 'retail' || data.target_channel === 'wholesale' || data.target_channel === 'both' ? data.target_channel : 'both',
       specWeight: Number(data.spec_weight) || 0,
       specUnit: data.spec_unit,
       packLabel: data.pack_label || '',
@@ -849,7 +867,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       process_spec_id: row.processSpecId,
       name: row.name,
       pricing_mode: row.pricingType,
-      target_channel: row.channel,
+      target_channel: 'both',
       spec_weight: row.specWeight,
       spec_unit: row.specUnit,
       pack_label: row.packLabel,
@@ -862,6 +880,13 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     if (error) return showToast(`保存包裝失敗：${error.message}`, 'error');
     setPackRows(prev => prev.map(r => r.id === row.id ? { ...r, packagingFee: fee } : r));
     showToast('包裝規格已儲存', 'success');
+  };
+
+  const deletePackRow = async (rowId: string) => {
+    const { error } = await supabase.from('material_pack_specs').delete().eq('id', rowId);
+    if (error) return showToast(`刪除規格失敗：${error.message}`, 'error');
+    setPackRows(prev => prev.filter(r => r.id !== rowId));
+    showToast('包裝規格已刪除', 'success');
   };
 
   const addSku = async () => {
@@ -1385,7 +1410,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                           <tr className="bg-slate-50 text-slate-500">
                             <th className="px-2 py-2 text-left">規格名稱</th>
                             <th className="px-2 py-2 text-left">定額/抄碼</th>
-                            <th className="px-2 py-2 text-left">通路</th>
                             <th className="px-2 py-2 text-left">規格數量&單位</th>
                             <th className="px-2 py-2 text-left">包材選擇</th>
                             <th className="px-2 py-2 text-right">最終總成本</th>
@@ -1401,7 +1425,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                               <tr key={r.id} className="border-t border-slate-100">
                                 <td className="px-2 py-1.5"><input value={r.name} onChange={e => setPackRows(prev => prev.map(x => x.id === r.id ? { ...x, name: e.target.value } : x))} className="w-full p-1 border border-slate-200 rounded font-bold" /></td>
                                 <td className="px-2 py-1.5"><select value={r.pricingType} onChange={e => setPackRows(prev => prev.map(x => x.id === r.id ? { ...x, pricingType: e.target.value as PricingType } : x))} className="p-1 border border-slate-200 rounded font-bold"><option value="fixed_pack">定額</option><option value="by_piece">抄碼</option></select></td>
-                                <td className="px-2 py-1.5"><select value={r.channel} onChange={e => setPackRows(prev => prev.map(x => x.id === r.id ? { ...x, channel: e.target.value as SaleChannel } : x))} className="p-1 border border-slate-200 rounded font-bold"><option value="wholesale">批發</option><option value="retail">零售</option></select></td>
                                 <td className="px-2 py-1.5">
                                   {r.pricingType === 'fixed_pack' ? (
                                     <div className="flex gap-1">
@@ -1432,7 +1455,12 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                                   </div>
                                 </td>
                                 <td className="px-2 py-1.5 text-right font-black text-amber-700">${packCost.toFixed(2)}</td>
-                                <td className="px-2 py-1.5 text-right"><button onClick={() => void savePackRow({ ...r, packagingFee: fee })} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">💾 儲存規格</button></td>
+                                <td className="px-2 py-1.5 text-right">
+                                  <div className="inline-flex items-center gap-1">
+                                    <button onClick={() => void savePackRow({ ...r, packagingFee: fee })} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">💾 儲存規格</button>
+                                    <button onClick={() => void deletePackRow(r.id)} className="px-2 py-1 rounded border border-rose-200 text-rose-600 text-[10px] font-black">🗑️ 刪除</button>
+                                  </div>
+                                </td>
                               </tr>
                             );
                           })}
@@ -1445,7 +1473,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                               code: d.code,
                               name: d.name,
                               pricingType: d.pricingType,
-                              channel: d.channel,
+                              channel: 'both',
                               specWeight: d.specWeight,
                               specUnit: d.specUnit,
                               packLabel: d.packLabel,
@@ -1458,7 +1486,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                               <tr key={d.tempId} className="border-t border-blue-100 bg-blue-50/40">
                                 <td className="px-2 py-1.5"><input value={d.name} onChange={e => setPackDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, name: e.target.value } : x))} className="w-full p-1 border border-slate-200 rounded font-bold" /></td>
                                 <td className="px-2 py-1.5"><select value={d.pricingType} onChange={e => setPackDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, pricingType: e.target.value as PricingType } : x))} className="p-1 border border-slate-200 rounded font-bold"><option value="fixed_pack">定額</option><option value="by_piece">抄碼</option></select></td>
-                                <td className="px-2 py-1.5"><select value={d.channel} onChange={e => setPackDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, channel: e.target.value as SaleChannel } : x))} className="p-1 border border-slate-200 rounded font-bold"><option value="wholesale">批發</option><option value="retail">零售</option></select></td>
                                 <td className="px-2 py-1.5">
                                   {d.pricingType === 'fixed_pack' ? (
                                     <div className="flex gap-1">
@@ -1489,7 +1516,12 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                                   </div>
                                 </td>
                                 <td className="px-2 py-1.5 text-right font-black text-amber-700">${packCost.toFixed(2)}</td>
-                                <td className="px-2 py-1.5 text-right"><button onClick={() => void savePackDraftRow(d)} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">💾 儲存規格</button></td>
+                                <td className="px-2 py-1.5 text-right">
+                                  <div className="inline-flex items-center gap-1">
+                                    <button onClick={() => void savePackDraftRow(d)} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">💾 儲存規格</button>
+                                    <button onClick={() => setPackDraftRows(prev => prev.filter(x => x.tempId !== d.tempId))} className="px-2 py-1 rounded border border-rose-200 text-rose-600 text-[10px] font-black">🗑️ 刪除</button>
+                                  </div>
+                                </td>
                               </tr>
                             );
                           })}
