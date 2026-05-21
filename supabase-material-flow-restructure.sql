@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS public.material_pack_specs (
   pack_unit TEXT CHECK (pack_unit IN ('g', 'kg', 'lb', 'catty')),
   pack_label TEXT,
   packaging_fee NUMERIC(10,2) NOT NULL DEFAULT 0, -- flat fee for one pack
+  packaging_item_codes TEXT[] NOT NULL DEFAULT '{}',
   pack_weight_lb NUMERIC(10,3), -- normalized base for fixed-pack
   sort_order INTEGER NOT NULL DEFAULT 0,
   is_active BOOLEAN NOT NULL DEFAULT true,
@@ -92,6 +93,8 @@ ALTER TABLE public.material_pack_specs
   ADD COLUMN IF NOT EXISTS pack_label TEXT;
 ALTER TABLE public.material_pack_specs
   ADD COLUMN IF NOT EXISTS packaging_fee NUMERIC(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE public.material_pack_specs
+  ADD COLUMN IF NOT EXISTS packaging_item_codes TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE public.material_pack_specs
   ADD COLUMN IF NOT EXISTS pack_weight_lb NUMERIC(10,3);
 ALTER TABLE public.material_pack_specs
