@@ -109,11 +109,27 @@ interface SkuGridRow {
   sku?: SkuRow;
 }
 
+type PricingTierKey = 'P0' | 'P1' | 'P2' | 'P3';
+
+interface PricingTierState {
+  price: number;
+  margin: number;
+}
+
+interface PricingRowState {
+  costOverride?: number;
+  tiers: Record<PricingTierKey, PricingTierState>;
+}
+
 const round2 = (v: number) => Math.round(v * 100) / 100;
 const mkId = (prefix: string) => `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-const QUOTE_SUFFIX: Record<string, string> = { P0: 'A0', P1: 'B1', P2: 'B2', 'P-1': 'Y1', 'P-2': 'Z2' };
+const QUOTE_SUFFIX: Record<string, string> = { P0: 'A0', P1: 'B1', P2: 'B2', P3: 'C3', 'P-1': 'Y1', 'P-2': 'Z2' };
 const RAW_UNIT_OPTIONS = ['lb', 'kg', 'g', 'catty', 'pack', 'box'] as const;
 const needsNetContent = (unit?: string) => ['pack', 'box'].includes((unit || '').trim().toLowerCase());
+const isMissingPackagingItemCodesError = (error: any) => {
+  const msg = String(error?.message || '');
+  return msg.includes("packaging_item_codes") && msg.includes("material_pack_specs");
+};
 
 const uniqueById = <T extends { id: string }>(rows: T[]): T[] => {
   const map = new Map<string, T>();
@@ -149,19 +165,23 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   const [packRows, setPackRows] = useState<PackRow[]>([]);
   const [skuRows, setSkuRows] = useState<SkuRow[]>([]);
   const [costItems, setCostItems] = useState<CostItem[]>([]);
-  const [manualOverrides, setManualOverrides] = useState<Record<string, number>>({});
+  const [pricingOverrides, setPricingOverrides] = useState<Record<string, any>>({});
   const [packagingItems, setPackagingItems] = useState<PackagingItem[]>([]);
 
   const [search, setSearch] = useState('');
+  const [skuSearch, setSkuSearch] = useState('');
   const [processMaterialSearch, setProcessMaterialSearch] = useState('');
   const [packMaterialSearch, setPackMaterialSearch] = useState('');
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>('all');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [selectedIngredientId, setSelectedIngredientId] = useState('');
-  const [selectedSkuRowIds, setSelectedSkuRowIds] = useState<Set<string>>(new Set());
   const [selectedTierForPdf, setSelectedTierForPdf] = useState('P0');
   const [baseDenominator, setBaseDenominator] = useState(0.88);
   const [tierStep, setTierStep] = useState(0.01);
+  const [showStoplightConfig, setShowStoplightConfig] = useState(false);
+  const [greenThresholdPct, setGreenThresholdPct] = useState(15);
+  const [redThresholdPct, setRedThresholdPct] = useState(5);
+  const [pricingDrafts, setPricingDrafts] = useState<Record<string, PricingRowState>>({});
 
   const [newIngredient, setNewIngredient] = useState({ name: '', supplier: '', unit: 'lb', cost: 0, netContentVolume: 0, netContentUnit: 'g' as WeightUnit });
   const [newMethod, setNewMethod] = useState({ code: '', name: '', category: 'original_or_cutting' as MethodCategory });
@@ -177,11 +197,12 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   const [saveErrorIngredientId, setSaveErrorIngredientId] = useState<string | null>(null);
   const savedIndicatorTimerRef = useRef<number | null>(null);
   const baselineEnsuringRef = useRef<Record<string, boolean>>({});
+  const [supportsPackagingItemCodes, setSupportsPackagingItemCodes] = useState(true);
 
   const ingredientMap = useMemo(() => new Map(ingredients.map(i => [i.id, i])), [ingredients]);
   const processMap = useMemo(() => new Map(processRows.map(r => [r.id, r])), [processRows]);
   const packMap = useMemo(() => new Map(packRows.map(r => [r.id, r])), [packRows]);
-  const tierDefs = useMemo(() => ([{ key: 'P-2', delta: -2 }, { key: 'P-1', delta: -1 }, { key: 'P0', delta: 0 }, { key: 'P1', delta: 1 }, { key: 'P2', delta: 2 }]), []);
+  const tierDefs = useMemo(() => ([{ key: 'P0', level: 0 }, { key: 'P1', level: 1 }, { key: 'P2', level: 2 }, { key: 'P3', level: 3 }] as { key: PricingTierKey; level: number }[]), []);
 
   const loadMethods = useCallback(async () => {
     const methodRes = await supabase
@@ -332,7 +353,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         setPackagingItems(fallback);
       }
       if (cfgMap.get('material_flow_price_overrides') && typeof cfgMap.get('material_flow_price_overrides') === 'object') {
-        setManualOverrides(cfgMap.get('material_flow_price_overrides') as Record<string, number>);
+        setPricingOverrides(cfgMap.get('material_flow_price_overrides') as Record<string, any>);
       }
     } catch (error: any) {
       showToast(`載入失敗：${error?.message || '未知錯誤'}`, 'error');
@@ -458,6 +479,33 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       });
   }, [packRows, channelFilter, typeFilter, search, skuRows, processMap, ingredientMap]);
 
+  const skuRowKey = useCallback((row: SkuGridRow) => row.sku?.id || `PACK:${row.pack.id}`, []);
+
+  const formatPackDescriptor = useCallback((pack: PackRow) => {
+    if (pack.pricingType === 'fixed_pack') return `${pack.specWeight}${pack.specUnit}`;
+    if (pack.packLabel) return pack.packLabel;
+    return '抄碼';
+  }, []);
+
+  const buildSkuDisplayName = useCallback((row: SkuGridRow) => {
+    const ingredient = ingredientMap.get(row.pack.ingredientId);
+    const process = row.process || processMap.get(row.pack.processSpecId);
+    const materialName = ingredient?.name || '未命名母料';
+    const processName = process?.name || row.pack.name;
+    const size = formatPackDescriptor(row.pack);
+    return `${materialName} - ${processName} (${size})`;
+  }, [ingredientMap, processMap, formatPackDescriptor]);
+
+  const skuPricingRows = useMemo(() => {
+    const q = skuSearch.trim().toLowerCase();
+    if (!q) return skuGridRows;
+    return skuGridRows.filter(row => {
+      const display = buildSkuDisplayName(row).toLowerCase();
+      const skuCode = (row.sku?.code || '').toLowerCase();
+      return display.includes(q) || skuCode.includes(q);
+    });
+  }, [skuGridRows, skuSearch, buildSkuDisplayName]);
+
   const processedCostPerLb = useCallback((ingredientId: string, processId: string) => {
     const ing = ingredientMap.get(ingredientId);
     const proc = processMap.get(processId);
@@ -500,13 +548,16 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     return round2((costPerG * weightG) + (pack.packagingFee || 0));
   }, [processedCostPerLb]);
 
-  const tierPrice = useCallback((skuId: string, totalCost: number, delta: number) => {
-    const key = `${skuId}:${delta}`;
-    if (manualOverrides[key] != null) return round2(manualOverrides[key]);
-    const denom = baseDenominator - (delta * tierStep);
-    if (denom <= 0.01) return 0;
-    return round2(totalCost / denom);
-  }, [manualOverrides, baseDenominator, tierStep]);
+  const computeMarginPct = useCallback((price: number, cost: number) => {
+    if (price <= 0) return 0;
+    return round2(((price - cost) / price) * 100);
+  }, []);
+
+  const computePriceFromMargin = useCallback((cost: number, marginPct: number) => {
+    const ratio = 1 - (marginPct / 100);
+    if (ratio <= 0.001) return 0;
+    return round2(cost / ratio);
+  }, []);
 
   const addIngredient = async () => {
     if (!newIngredient.name.trim()) return showToast('請輸入母料名稱', 'error');
@@ -864,7 +915,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     if (draft.pricingType === 'fixed_pack' && (draft.specWeight || 0) <= 0) return showToast('定額規格需設定數量', 'error');
     const fee = packagingFeeByCodes(draft.packagingItemCodes);
     const lb = draft.pricingType === 'fixed_pack' ? convertWeight(draft.specWeight || 0, draft.specUnit, 'lb') : null;
-    const payload = {
+    const payload: any = {
       id: mkId('PK'),
       ingredient_id: draft.ingredientId,
       process_spec_id: draft.processSpecId,
@@ -876,15 +927,46 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       spec_unit: draft.pricingType === 'fixed_pack' ? draft.specUnit : 'lb',
       pack_label: draft.packLabel || null,
       packaging_fee: fee,
-      packaging_item_codes: draft.packagingItemCodes,
       pack_weight_lb: lb,
       pack_quantity: null,
       pack_unit: null,
       is_active: true,
       sort_order: packRows.filter(r => r.ingredientId === draft.ingredientId && r.processSpecId === draft.processSpecId).length,
     };
+    if (supportsPackagingItemCodes) payload.packaging_item_codes = draft.packagingItemCodes;
     const { data, error } = await supabase.from('material_pack_specs').insert(payload).select('*').single();
-    if (error) return showToast(`儲存規格失敗：${error.message}`, 'error');
+    if (error) {
+      if (supportsPackagingItemCodes && isMissingPackagingItemCodesError(error)) {
+        setSupportsPackagingItemCodes(false);
+        const retryPayload = { ...payload };
+        delete retryPayload.packaging_item_codes;
+        const retry = await supabase.from('material_pack_specs').insert(retryPayload).select('*').single();
+        if (retry.error) return showToast(`儲存規格失敗：${retry.error.message}`, 'error');
+        const retryData = retry.data as any;
+        setPackRows(prev => uniqueById([...prev, {
+          id: retryData.id,
+          ingredientId: retryData.ingredient_id,
+          processSpecId: retryData.process_spec_id,
+          code: retryData.code,
+          name: retryData.name,
+          pricingType: retryData.pricing_mode === 'by_piece' ? 'by_piece' : 'fixed_pack',
+          channel: retryData.target_channel === 'retail' || retryData.target_channel === 'wholesale' || retryData.target_channel === 'both' ? retryData.target_channel : 'both',
+          specWeight: Number(retryData.spec_weight) || 0,
+          specUnit: retryData.spec_unit,
+          packLabel: retryData.pack_label || '',
+          packagingFee: Number(retryData.packaging_fee) || 0,
+          packagingItemCodes: draft.packagingItemCodes,
+          packWeightLb: retryData.pack_weight_lb == null ? undefined : Number(retryData.pack_weight_lb),
+          packQuantity: retryData.pack_quantity == null ? undefined : Number(retryData.pack_quantity),
+          packUnit: retryData.pack_unit || undefined,
+          isActive: retryData.is_active !== false,
+        }]));
+        setPackDraftRows(prev => prev.filter(r => r.tempId !== draft.tempId));
+        showToast('包裝規格已儲存（兼容模式）', 'success');
+        return;
+      }
+      return showToast(`儲存規格失敗：${error.message}`, 'error');
+    }
     setPackRows(prev => uniqueById([...prev, {
       id: data.id,
       ingredientId: data.ingredient_id,
@@ -910,7 +992,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   const savePackRow = async (row: PackRow) => {
     const lb = row.pricingType === 'fixed_pack' ? convertWeight(row.specWeight || 0, row.specUnit, 'lb') : null;
     const fee = packagingFeeByCodes(row.packagingItemCodes || []);
-    const { error } = await supabase.from('material_pack_specs').update({
+    const updatePayload: any = {
       process_spec_id: row.processSpecId,
       name: row.name,
       pricing_mode: row.pricingType,
@@ -919,12 +1001,25 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       spec_unit: row.specUnit,
       pack_label: row.packLabel,
       packaging_fee: fee,
-      packaging_item_codes: row.packagingItemCodes || [],
       pack_weight_lb: lb,
       pack_quantity: null,
       pack_unit: null,
-    }).eq('id', row.id);
-    if (error) return showToast(`保存包裝失敗：${error.message}`, 'error');
+    };
+    if (supportsPackagingItemCodes) updatePayload.packaging_item_codes = row.packagingItemCodes || [];
+    const { error } = await supabase.from('material_pack_specs').update(updatePayload).eq('id', row.id);
+    if (error) {
+      if (supportsPackagingItemCodes && isMissingPackagingItemCodesError(error)) {
+        setSupportsPackagingItemCodes(false);
+        const retryPayload = { ...updatePayload };
+        delete retryPayload.packaging_item_codes;
+        const retry = await supabase.from('material_pack_specs').update(retryPayload).eq('id', row.id);
+        if (retry.error) return showToast(`保存包裝失敗：${retry.error.message}`, 'error');
+        setPackRows(prev => prev.map(r => r.id === row.id ? { ...r, packagingFee: fee } : r));
+        showToast('包裝規格已儲存（兼容模式）', 'success');
+        return;
+      }
+      return showToast(`保存包裝失敗：${error.message}`, 'error');
+    }
     setPackRows(prev => prev.map(r => r.id === row.id ? { ...r, packagingFee: fee } : r));
     showToast('包裝規格已儲存', 'success');
   };
@@ -1056,22 +1151,126 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     setNewSku({ packSpecId: '', name: '', alias: '' });
   };
 
-  const saveOverrides = async () => {
-    const { error } = await supabase.from('site_config').upsert({ id: 'material_flow_price_overrides', value: manualOverrides });
+  useEffect(() => {
+    if (tab !== 'sku') return;
+    setPricingDrafts(prev => {
+      const next: Record<string, PricingRowState> = {};
+      skuGridRows.forEach((row) => {
+        const rowKey = skuRowKey(row);
+        const baseCost = calcTotalCost(row.pack);
+        const saved = pricingOverrides[rowKey];
+        const fallbackByLevel = (level: number) => {
+          const denom = baseDenominator - (level * tierStep);
+          if (denom <= 0.01) return 0;
+          return round2(baseCost / denom);
+        };
+        const fromSaved = (tier: PricingTierKey, level: number): PricingTierState => {
+          const savedTier = saved && typeof saved === 'object' ? saved[tier] : null;
+          const price = Number(savedTier?.price);
+          const validPrice = Number.isFinite(price) && price > 0 ? price : fallbackByLevel(level);
+          const margin = Number(savedTier?.margin);
+          const validMargin = Number.isFinite(margin) ? margin : computeMarginPct(validPrice, Number(saved?.costOverride ?? baseCost) || baseCost);
+          return { price: round2(validPrice), margin: round2(validMargin) };
+        };
+        const baseRowState: PricingRowState = {
+          costOverride: Number.isFinite(Number(saved?.costOverride)) ? Number(saved.costOverride) : undefined,
+          tiers: {
+            P0: fromSaved('P0', 0),
+            P1: fromSaved('P1', 1),
+            P2: fromSaved('P2', 2),
+            P3: fromSaved('P3', 3),
+          },
+        };
+        next[rowKey] = prev[rowKey] || baseRowState;
+      });
+      return next;
+    });
+  }, [tab, skuGridRows, pricingOverrides, baseDenominator, tierStep, calcTotalCost, skuRowKey, computeMarginPct]);
+
+  const marginTextClass = useCallback((margin: number) => {
+    if (margin >= greenThresholdPct) return 'text-emerald-600';
+    if (margin < redThresholdPct) return 'text-rose-600';
+    return 'text-amber-600';
+  }, [greenThresholdPct, redThresholdPct]);
+
+  const updatePriceInput = (rowKey: string, tier: PricingTierKey, nextPrice: number, effectiveCost: number) => {
+    setPricingDrafts(prev => {
+      const row = prev[rowKey];
+      if (!row) return prev;
+      const price = Number.isFinite(nextPrice) ? nextPrice : 0;
+      const margin = computeMarginPct(price, effectiveCost);
+      return {
+        ...prev,
+        [rowKey]: {
+          ...row,
+          tiers: {
+            ...row.tiers,
+            [tier]: { price, margin },
+          },
+        },
+      };
+    });
+  };
+
+  const updateMarginInput = (rowKey: string, tier: PricingTierKey, nextMargin: number, effectiveCost: number) => {
+    setPricingDrafts(prev => {
+      const row = prev[rowKey];
+      if (!row) return prev;
+      const margin = Number.isFinite(nextMargin) ? nextMargin : 0;
+      const price = computePriceFromMargin(effectiveCost, margin);
+      return {
+        ...prev,
+        [rowKey]: {
+          ...row,
+          tiers: {
+            ...row.tiers,
+            [tier]: { price, margin },
+          },
+        },
+      };
+    });
+  };
+
+  const savePricingRow = async (row: SkuGridRow) => {
+    const rowKey = skuRowKey(row);
+    const draft = pricingDrafts[rowKey];
+    if (!draft) return;
+    const payload = {
+      costOverride: draft.costOverride ?? null,
+      P0: draft.tiers.P0,
+      P1: draft.tiers.P1,
+      P2: draft.tiers.P2,
+      P3: draft.tiers.P3,
+    };
+    const merged = { ...pricingOverrides, [rowKey]: payload };
+    const { error } = await supabase.from('site_config').upsert({ id: 'material_flow_price_overrides', value: merged });
     if (error) return showToast(`保存控價失敗：${error.message}`, 'error');
+
+    if (row.sku?.productId) {
+      const p0Price = Number(payload.P0?.price) || 0;
+      const p1Price = Number(payload.P1?.price) || p0Price;
+      await supabase
+        .from('products')
+        .update({ price: p0Price, member_price: p1Price })
+        .eq('id', row.sku.productId);
+      setProducts(prev => prev.map(p => p.id === row.sku?.productId ? { ...p, price: p0Price, memberPrice: p1Price } : p));
+    }
+
+    setPricingOverrides(merged);
+    showToast('控價已儲存', 'success');
   };
 
   const exportQuotePdf = () => {
-    const chosen = skuGridRows.filter(r => r.sku && selectedSkuRowIds.has(r.rowId));
-    if (chosen.length === 0) return showToast('請先勾選 SKU', 'error');
-    const tier = tierDefs.find(t => t.key === selectedTierForPdf);
+    const chosen = skuPricingRows.filter(r => r.sku);
+    if (chosen.length === 0) return showToast('目前沒有可導出的 SKU', 'error');
+    const tier = tierDefs.find(t => t.key === (selectedTierForPdf as PricingTierKey));
     if (!tier) return;
     const refNo = `QT-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(Date.now()).slice(-4)}-${QUOTE_SUFFIX[selectedTierForPdf] || 'A0'}`;
     const rows = chosen.map((row, i) => {
-      const totalCost = calcTotalCost(row.pack);
-      const skuId = row.sku?.id || `PACK:${row.pack.id}`;
-      const displayName = row.sku?.name || row.pack.name;
-      const price = tierPrice(skuId, totalCost, tier.delta);
+      const rowKey = skuRowKey(row);
+      const draft = pricingDrafts[rowKey];
+      const displayName = buildSkuDisplayName(row);
+      const price = draft?.tiers?.[tier.key]?.price ?? 0;
       return `<tr><td style="padding:10px;border-bottom:1px solid #e2e8f0">${i + 1}</td><td style="padding:10px;border-bottom:1px solid #e2e8f0">${displayName}</td><td style="padding:10px;border-bottom:1px solid #e2e8f0;text-align:right">$${price.toFixed(2)}</td></tr>`;
     }).join('');
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>Quotation</title></head><body style="font-family:Inter,Arial,sans-serif;padding:32px;color:#0f172a"><div style="display:flex;justify-content:space-between;border-bottom:2px solid #0f172a;padding-bottom:12px"><div><h1 style="margin:0;font-size:24px">Quotation</h1><div style="font-size:12px;color:#64748b">Material Flow Pricing</div></div><div style="text-align:right"><div style="font-size:12px;color:#64748b">Ref No.</div><div style="font-weight:800">${refNo}</div></div></div><table style="width:100%;border-collapse:collapse;margin-top:16px"><thead><tr style="background:#f8fafc"><th style="padding:10px;text-align:left">#</th><th style="padding:10px;text-align:left">Item</th><th style="padding:10px;text-align:right">Price</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
@@ -1608,45 +1807,88 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       {tab === 'sku' && (
         <div className="space-y-3">
           <div className="bg-white border border-slate-100 rounded-2xl p-3 flex flex-wrap items-center gap-2">
-            <select value={newSku.packSpecId} onChange={e => setNewSku(v => ({ ...v, packSpecId: e.target.value }))} className="p-2 border border-slate-200 rounded-lg text-xs font-bold min-w-[260px]"><option value="">選擇包裝規格</option>{availablePackRows.map(p => <option key={p.id} value={p.id}>{p.name} · {p.channel} · {p.pricingType === 'fixed_pack' ? '定額' : '抄碼'}</option>)}</select>
+            <select value={newSku.packSpecId} onChange={e => setNewSku(v => ({ ...v, packSpecId: e.target.value }))} className="p-2 border border-slate-200 rounded-lg text-xs font-bold min-w-[260px]"><option value="">選擇包裝規格</option>{availablePackRows.map(p => <option key={p.id} value={p.id}>{p.name} · {p.pricingType === 'fixed_pack' ? '定額' : '抄碼'}</option>)}</select>
             <input value={newSku.name} onChange={e => setNewSku(v => ({ ...v, name: e.target.value }))} placeholder="SKU 名稱" className="p-2 border border-slate-200 rounded-lg text-xs font-bold min-w-[180px]" />
             <input value={newSku.alias} onChange={e => setNewSku(v => ({ ...v, alias: e.target.value }))} placeholder="Alias (選填)" className="p-2 border border-slate-200 rounded-lg text-xs font-bold min-w-[140px]" />
             <button onClick={() => void addSku()} className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-black flex items-center gap-1"><Plus size={12} />新增 SKU</button>
           </div>
+          <div className="bg-white border border-slate-100 rounded-2xl p-3">
+            <button onClick={() => setShowStoplightConfig(prev => !prev)} className="w-full flex items-center justify-between px-3 py-2 rounded-xl border border-slate-200 text-left">
+              <span className="font-black text-sm text-slate-900">🚦 利潤燈號安全閾值設定</span>
+              <span className="text-xs font-black text-slate-500">{showStoplightConfig ? '收起' : '展開'}</span>
+            </button>
+            {showStoplightConfig && (
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2">
+                <label className="text-xs font-black text-emerald-700">🟢 綠燈 (&gt;= %)<input type="number" value={greenThresholdPct} onChange={e => setGreenThresholdPct(Number(e.target.value) || 15)} className="mt-1 w-full p-2 border border-slate-200 rounded-lg text-sm font-bold text-slate-700" /></label>
+                <label className="text-xs font-black text-amber-700">🟡 橙燈 (介乎)<div className="mt-1 w-full p-2 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 bg-slate-50">{`${redThresholdPct}% ~ ${greenThresholdPct}%`}</div></label>
+                <label className="text-xs font-black text-rose-700">🔴 紅燈 (&lt; %)<input type="number" value={redThresholdPct} onChange={e => setRedThresholdPct(Number(e.target.value) || 5)} className="mt-1 w-full p-2 border border-slate-200 rounded-lg text-sm font-bold text-slate-700" /></label>
+              </div>
+            )}
+          </div>
+
           <div className="bg-white border border-slate-100 rounded-2xl p-3 flex flex-wrap items-center gap-2">
-            <label className="text-[11px] font-black text-slate-500">Base Denominator</label><input type="number" step="0.01" value={baseDenominator} onChange={e => setBaseDenominator(Number(e.target.value) || 0.88)} className="w-24 p-2 border border-slate-200 rounded-lg text-xs font-black" />
-            <label className="text-[11px] font-black text-slate-500">Tier Step</label><input type="number" step="0.005" value={tierStep} onChange={e => setTierStep(Number(e.target.value) || 0.01)} className="w-20 p-2 border border-slate-200 rounded-lg text-xs font-black" />
-            <button onClick={() => void saveOverrides()} className="px-3 py-2 rounded-lg border border-slate-200 text-xs font-black text-slate-600">保存手動控價</button>
+            <div className="relative flex-1 min-w-[260px]">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input value={skuSearch} onChange={e => setSkuSearch(e.target.value)} placeholder="搜尋 SKU 名稱..." className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 text-sm font-bold" />
+            </div>
+            <label className="text-[11px] font-black text-slate-500">P0 基準分母</label><input type="number" step="0.01" value={baseDenominator} onChange={e => setBaseDenominator(Number(e.target.value) || 0.88)} className="w-24 p-2 border border-slate-200 rounded-lg text-xs font-black" />
+            <label className="text-[11px] font-black text-slate-500">級距</label><input type="number" step="0.005" value={tierStep} onChange={e => setTierStep(Number(e.target.value) || 0.01)} className="w-20 p-2 border border-slate-200 rounded-lg text-xs font-black" />
             <button onClick={() => setShowTierModal(true)} className="ml-auto px-3 py-2 rounded-lg bg-slate-900 text-white text-xs font-black flex items-center gap-1"><FileDown size={12} />下載報價 PDF</button>
           </div>
           <div className="bg-white border border-slate-100 rounded-2xl p-3 overflow-auto">
             <table className="w-full text-xs">
-              <thead><tr className="bg-slate-50 text-slate-500"><th className="px-2 py-2">#</th><th className="px-2 py-2 text-left">規格/SKU</th><th className="px-2 py-2 text-left">分類</th><th className="px-2 py-2 text-left">通路</th><th className="px-2 py-2 text-right">成本</th>{tierDefs.map(t => <th key={t.key} className="px-2 py-2 text-right">{t.key}</th>)}</tr></thead>
+              <thead><tr className="bg-slate-50 text-slate-500"><th className="px-2 py-2">#</th><th className="px-2 py-2 text-left">商品 SKU 名稱</th><th className="px-2 py-2 text-left">加工大類</th><th className="px-2 py-2 text-right">基準總成本</th><th className="px-2 py-2 text-right">成本手動覆蓋</th><th className="px-2 py-2 text-right">有效商品成本</th>{tierDefs.map(t => <th key={t.key} className="px-2 py-2 text-left min-w-[170px]">{t.key}</th>)}<th className="px-2 py-2 text-right">操作</th></tr></thead>
               <tbody>
-                {skuGridRows.map(row => {
+                {skuPricingRows.map((row, idx) => {
                   const s = row.sku;
                   const pack = row.pack;
                   const process = row.process;
-                  const totalCost = calcTotalCost(pack);
-                  const rowKey = row.rowId;
-                  const pricingKeyBase = s?.id || `PACK:${pack.id}`;
+                  const baseCost = calcTotalCost(pack);
+                  const rowKey = skuRowKey(row);
+                  const draft = pricingDrafts[rowKey] || {
+                    costOverride: undefined,
+                    tiers: {
+                      P0: { price: round2(baseCost / Math.max(0.01, baseDenominator)), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator)), baseCost) },
+                      P1: { price: round2(baseCost / Math.max(0.01, baseDenominator - tierStep)), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - tierStep)), baseCost) },
+                      P2: { price: round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 2))), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 2))), baseCost) },
+                      P3: { price: round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 3))), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 3))), baseCost) },
+                    },
+                  };
+                  const effectiveCost = draft.costOverride != null && Number.isFinite(draft.costOverride) ? draft.costOverride : baseCost;
                   return (
                     <tr key={rowKey} className="border-t border-slate-100">
-                      <td className="px-2 py-1.5 text-center"><input disabled={!s} type="checkbox" checked={selectedSkuRowIds.has(rowKey)} onChange={e => setSelectedSkuRowIds(prev => { const next = new Set(prev); if (e.target.checked) next.add(rowKey); else next.delete(rowKey); return next; })} /></td>
-                      <td className="px-2 py-1.5"><div className="font-black">{s?.name || pack.name}</div><div className="text-[10px] text-slate-400">{s?.code || `${pack.code} · 待建立 SKU`}</div></td>
+                      <td className="px-2 py-1.5 text-center">{idx + 1}</td>
+                      <td className="px-2 py-1.5"><div className="font-black">{buildSkuDisplayName(row)}</div><div className="text-[10px] text-slate-400">{s?.code || `${pack.code} · 待建立 SKU`}</div></td>
                       <td className="px-2 py-1.5"><span className={`inline-block px-2 py-0.5 text-[10px] rounded-full border ${categoryBadge(process?.category || 'others')}`}>{categoryLabel(process?.category || 'others')}</span></td>
-                      <td className="px-2 py-1.5">{s?.saleChannel || pack.channel}</td>
-                      <td className="px-2 py-1.5 text-right font-black text-amber-700">${totalCost.toFixed(2)}</td>
+                      <td className="px-2 py-1.5 text-right font-black text-amber-700">${baseCost.toFixed(2)}</td>
+                      <td className="px-2 py-1.5 text-right"><input value={draft.costOverride ?? ''} onChange={e => {
+                        const raw = e.target.value.trim();
+                        const override = raw === '' ? undefined : Number(raw);
+                        setPricingDrafts(prev => {
+                          const rowState = prev[rowKey] || draft;
+                          const nextCost = override == null || !Number.isFinite(override) ? baseCost : override;
+                          const nextTiers = Object.fromEntries(
+                            (Object.keys(rowState.tiers) as PricingTierKey[]).map(k => [k, { ...rowState.tiers[k], margin: computeMarginPct(rowState.tiers[k].price, nextCost) }])
+                          ) as Record<PricingTierKey, PricingTierState>;
+                          return { ...prev, [rowKey]: { ...rowState, costOverride: override, tiers: nextTiers } };
+                        });
+                      }} placeholder="留空=用基準" className="w-24 p-1 border border-slate-200 rounded text-right font-bold ml-auto block" /></td>
+                      <td className="px-2 py-1.5 text-right font-black text-slate-800">${effectiveCost.toFixed(2)}</td>
                       {tierDefs.map(t => {
-                        const price = tierPrice(pricingKeyBase, totalCost, t.delta);
-                        const margin = round2(price - totalCost);
-                        const isLoss = margin < 0;
+                        const tier = draft.tiers[t.key];
                         return (
-                          <td key={t.key} className="px-2 py-1.5 text-right">
-                            <div className={`font-black ${isLoss ? 'text-rose-600' : 'text-emerald-600'}`}>${price.toFixed(2)} ({margin >= 0 ? '+' : ''}{margin.toFixed(2)})</div>
+                          <td key={t.key} className="px-2 py-1.5">
+                            <div className="space-y-1">
+                              <input type="number" step="0.01" value={tier.price} onChange={e => updatePriceInput(rowKey, t.key, Number(e.target.value) || 0, effectiveCost)} className="w-full p-1 border border-slate-200 rounded text-right font-bold" />
+                              <div className="flex items-center gap-1">
+                                <input type="number" step="0.1" value={tier.margin} onChange={e => updateMarginInput(rowKey, t.key, Number(e.target.value) || 0, effectiveCost)} className={`w-full p-1 border border-slate-200 rounded text-right font-bold ${marginTextClass(tier.margin)}`} />
+                                <span className={`text-[11px] font-black ${marginTextClass(tier.margin)}`}>%</span>
+                              </div>
+                            </div>
                           </td>
                         );
                       })}
+                      <td className="px-2 py-1.5 text-right"><button onClick={() => void savePricingRow(row)} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">💾 儲存控價</button></td>
                     </tr>
                   );
                 })}
@@ -1776,8 +2018,8 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       {showTierModal && (
         <div className="fixed inset-0 bg-slate-900/35 z-50 flex items-center justify-center">
           <div className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 p-4">
-            <h4 className="font-black text-slate-900">請選擇導出的價格梯度 (P-2 至 P2)</h4>
-            <div className="grid grid-cols-5 gap-1 mt-3">{tierDefs.map(t => <button key={t.key} onClick={() => setSelectedTierForPdf(t.key)} className={`px-2 py-2 rounded-lg text-xs font-black ${selectedTierForPdf === t.key ? 'bg-slate-900 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600'}`}>{t.key}</button>)}</div>
+            <h4 className="font-black text-slate-900">請選擇導出的價格梯度 (P0 至 P3)</h4>
+            <div className="grid grid-cols-4 gap-1 mt-3">{tierDefs.map(t => <button key={t.key} onClick={() => setSelectedTierForPdf(t.key)} className={`px-2 py-2 rounded-lg text-xs font-black ${selectedTierForPdf === t.key ? 'bg-slate-900 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600'}`}>{t.key}</button>)}</div>
             <div className="mt-3 flex justify-end gap-2"><button onClick={() => setShowTierModal(false)} className="px-3 py-2 rounded-lg border border-slate-200 text-xs font-black text-slate-600">取消</button><button onClick={() => { setShowTierModal(false); exportQuotePdf(); }} className="px-3 py-2 rounded-lg bg-slate-900 text-white text-xs font-black">產生 PDF</button></div>
           </div>
         </div>
