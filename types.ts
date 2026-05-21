@@ -182,6 +182,8 @@ export interface Ingredient {
   name: string;
   nameEn?: string;
   baseCostPerLb: number;    // 買入成本（每磅/每單位）
+  netContentVolume?: number; // 預包裝淨含量（例如 1800）
+  netContentUnit?: 'g' | 'kg' | 'lb' | 'catty'; // 預包裝淨含量單位
   supplier?: string;
   marketBenchmark?: number; // 市場參考價
   unit: string;             // 'lb' | 'kg' | 'pc' etc.
@@ -213,6 +215,8 @@ export interface SupabaseIngredientRow {
   name: string;
   name_en?: string | null;
   base_cost_per_lb: number;
+  net_content_volume?: number | null;
+  net_content_unit?: string | null;
   supplier?: string | null;
   market_benchmark?: number | null;
   unit: string;

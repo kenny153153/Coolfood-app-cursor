@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS public.processing_methods (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   code TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
-  category TEXT NOT NULL CHECK (category IN ('cutting', 'repacking', 'marinating', 'others')),
+  category TEXT NOT NULL CHECK (category IN ('original_or_cutting', 'repacking', 'marinating', 'others')),
   sort_order INTEGER NOT NULL DEFAULT 0,
   is_active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -18,13 +18,21 @@ CREATE TABLE IF NOT EXISTS public.processing_methods (
 ALTER TABLE public.processing_methods ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS processing_methods_all ON public.processing_methods;
 CREATE POLICY processing_methods_all ON public.processing_methods FOR ALL USING (true) WITH CHECK (true);
+ALTER TABLE public.processing_methods
+  DROP CONSTRAINT IF EXISTS processing_methods_category_check;
+UPDATE public.processing_methods
+SET category = 'original_or_cutting'
+WHERE category = 'cutting';
+ALTER TABLE public.processing_methods
+  ADD CONSTRAINT processing_methods_category_check
+  CHECK (category IN ('original_or_cutting', 'repacking', 'marinating', 'others'));
 
 -- 1) Process layer (per material)
 CREATE TABLE IF NOT EXISTS public.material_process_specs (
   id TEXT PRIMARY KEY,
   ingredient_id TEXT NOT NULL REFERENCES public.ingredients(id) ON DELETE CASCADE,
   processing_method_id UUID REFERENCES public.processing_methods(id) ON DELETE SET NULL,
-  processing_category TEXT NOT NULL DEFAULT 'others' CHECK (processing_category IN ('cutting', 'repacking', 'marinating', 'others')),
+  processing_category TEXT NOT NULL DEFAULT 'others' CHECK (processing_category IN ('original_or_cutting', 'repacking', 'marinating', 'others')),
   code TEXT NOT NULL,
   name TEXT NOT NULL,
   yield_rate NUMERIC(6,4) NOT NULL DEFAULT 1,
@@ -35,9 +43,19 @@ CREATE TABLE IF NOT EXISTS public.material_process_specs (
   sort_order INTEGER NOT NULL DEFAULT 0,
   is_active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (ingredient_id, code)
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Tab 1 pre-packed wholesale unit support
+ALTER TABLE public.ingredients
+  ADD COLUMN IF NOT EXISTS net_content_volume NUMERIC(10,3);
+ALTER TABLE public.ingredients
+  ADD COLUMN IF NOT EXISTS net_content_unit TEXT;
+ALTER TABLE public.ingredients
+  DROP CONSTRAINT IF EXISTS ingredients_net_content_unit_check;
+ALTER TABLE public.ingredients
+  ADD CONSTRAINT ingredients_net_content_unit_check
+  CHECK (net_content_unit IS NULL OR net_content_unit IN ('g', 'kg', 'lb', 'catty'));
 
 -- 2) Pack layer (physical spec matrix)
 CREATE TABLE IF NOT EXISTS public.material_pack_specs (
@@ -112,12 +130,54 @@ ALTER TABLE public.material_process_specs
   ADD COLUMN IF NOT EXISTS pack_unit TEXT;
 ALTER TABLE public.material_process_specs
   DROP CONSTRAINT IF EXISTS material_process_specs_processing_category_check;
+UPDATE public.material_process_specs
+SET processing_category = 'original_or_cutting'
+WHERE processing_category = 'cutting';
 ALTER TABLE public.material_process_specs
-  ADD CONSTRAINT material_process_specs_processing_category_check CHECK (processing_category IN ('cutting', 'repacking', 'marinating', 'others'));
+  ADD CONSTRAINT material_process_specs_processing_category_check CHECK (processing_category IN ('original_or_cutting', 'repacking', 'marinating', 'others'));
 ALTER TABLE public.material_process_specs
   DROP CONSTRAINT IF EXISTS material_process_specs_pack_unit_check;
 ALTER TABLE public.material_process_specs
   ADD CONSTRAINT material_process_specs_pack_unit_check CHECK (pack_unit IS NULL OR pack_unit IN ('g', 'kg', 'lb', 'catty'));
+
+-- Drop legacy constraints that block multiple repack rows
+ALTER TABLE public.material_process_specs
+  DROP CONSTRAINT IF EXISTS material_process_specs_ingredient_id_code_key;
+DROP INDEX IF EXISTS public.material_process_specs_ingredient_id_code_key;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_name = 'material_process_wastes'
+  ) THEN
+    ALTER TABLE public.material_process_wastes
+      ADD COLUMN IF NOT EXISTS pack_quantity NUMERIC(10,3);
+    ALTER TABLE public.material_process_wastes
+      ADD COLUMN IF NOT EXISTS pack_unit TEXT;
+    ALTER TABLE public.material_process_wastes
+      DROP CONSTRAINT IF EXISTS material_process_wastes_ingredient_id_code_key;
+    DROP INDEX IF EXISTS public.material_process_wastes_ingredient_id_code_key;
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_material_process_wastes_ing_code_pack
+    ON public.material_process_wastes (
+      ingredient_id,
+      code,
+      COALESCE(pack_quantity, -1),
+      COALESCE(pack_unit, '')
+    );
+  END IF;
+END $$;
+
+-- New uniqueness rule: same ingredient/code can exist with different pack size
+CREATE UNIQUE INDEX IF NOT EXISTS ux_material_process_specs_ing_code_pack
+ON public.material_process_specs (
+  ingredient_id,
+  code,
+  COALESCE(pack_quantity, -1),
+  COALESCE(pack_unit, '')
+);
 
 -- 3) SKU layer
 CREATE TABLE IF NOT EXISTS public.sellable_skus (
@@ -185,12 +245,12 @@ FOR EACH ROW EXECUTE FUNCTION public.touch_material_flow_updated_at();
 -- Canonical method seed (strict categories)
 INSERT INTO public.processing_methods (code, name, category, sort_order, is_active)
 VALUES
-  ('WHOLE', '原件 (Whole Block)', 'cutting', 0, true),
-  ('SLICED', '切片 (Sliced)', 'cutting', 1, true),
-  ('STEAK', '切扒 (Steak Cut)', 'cutting', 2, true),
-  ('STRIPS', '切條 (Strips)', 'cutting', 3, true),
-  ('DICED', '切粒 (Diced)', 'cutting', 4, true),
-  ('BONELESS', '去骨 (Boneless)', 'cutting', 5, true),
+  ('WHOLE', '原件 (Whole Block)', 'original_or_cutting', 0, true),
+  ('SLICED', '切片 (Sliced)', 'original_or_cutting', 1, true),
+  ('STEAK', '切扒 (Steak Cut)', 'original_or_cutting', 2, true),
+  ('STRIPS', '切條 (Strips)', 'original_or_cutting', 3, true),
+  ('DICED', '切粒 (Diced)', 'original_or_cutting', 4, true),
+  ('BONELESS', '去骨 (Boneless)', 'original_or_cutting', 5, true),
   ('REPACK_RET', '零售精裝', 'repacking', 6, true),
   ('REPACK_WHL', '商用大包裝', 'repacking', 7, true),
   ('MAR_GARLIC', '蒜香醃製', 'marinating', 8, true),
@@ -228,6 +288,10 @@ SET
   processing_category = pm.category
 FROM public.processing_methods pm
 WHERE pm.code = ps.code;
+
+UPDATE public.material_process_specs
+SET processing_category = 'original_or_cutting'
+WHERE processing_category = 'cutting';
 
 INSERT INTO public.material_pack_specs (id, ingredient_id, process_spec_id, code, name, pricing_mode, target_channel, spec_weight, spec_unit, pack_label, packaging_fee, pack_weight_lb, sort_order, is_active)
 SELECT
