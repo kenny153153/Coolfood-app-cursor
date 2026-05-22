@@ -126,6 +126,15 @@ CREATE TABLE IF NOT EXISTS public.packaging_materials (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS public.material_categories (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Optional relation table for explicit per-pack material mapping
 CREATE TABLE IF NOT EXISTS public.material_packaging_specs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -353,6 +362,7 @@ ALTER TABLE public.material_process_specs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.material_pack_specs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.sellable_skus ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.material_skus ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.material_categories ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS material_process_specs_all ON public.material_process_specs;
 CREATE POLICY material_process_specs_all ON public.material_process_specs
@@ -368,6 +378,10 @@ FOR ALL USING (true) WITH CHECK (true);
 
 DROP POLICY IF EXISTS material_skus_all ON public.material_skus;
 CREATE POLICY material_skus_all ON public.material_skus
+FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS material_categories_all ON public.material_categories;
+CREATE POLICY material_categories_all ON public.material_categories
 FOR ALL USING (true) WITH CHECK (true);
 
 -- 5) updated_at trigger helper
@@ -397,6 +411,11 @@ FOR EACH ROW EXECUTE FUNCTION public.touch_material_flow_updated_at();
 DROP TRIGGER IF EXISTS trg_material_skus_updated_at ON public.material_skus;
 CREATE TRIGGER trg_material_skus_updated_at
 BEFORE UPDATE ON public.material_skus
+FOR EACH ROW EXECUTE FUNCTION public.touch_material_flow_updated_at();
+
+DROP TRIGGER IF EXISTS trg_material_categories_updated_at ON public.material_categories;
+CREATE TRIGGER trg_material_categories_updated_at
+BEFORE UPDATE ON public.material_categories
 FOR EACH ROW EXECUTE FUNCTION public.touch_material_flow_updated_at();
 
 DROP TRIGGER IF EXISTS trg_processing_methods_updated_at ON public.processing_methods;
@@ -442,6 +461,20 @@ ON CONFLICT (code) DO UPDATE
 SET
   name = EXCLUDED.name,
   cost = EXCLUDED.cost,
+  sort_order = EXCLUDED.sort_order,
+  is_active = EXCLUDED.is_active;
+
+INSERT INTO public.material_categories (id, name, sort_order, is_active)
+VALUES
+  ('CAT-PORK', '豬類', 0, true),
+  ('CAT-BEEF', '牛類', 1, true),
+  ('CAT-CHICKEN', '雞類', 2, true),
+  ('CAT-POULTRY', '家禽類', 3, true),
+  ('CAT-SEAFOOD', '海鮮類', 4, true),
+  ('CAT-OTHERS', '其他', 5, true)
+ON CONFLICT (id) DO UPDATE
+SET
+  name = EXCLUDED.name,
   sort_order = EXCLUDED.sort_order,
   is_active = EXCLUDED.is_active;
 
