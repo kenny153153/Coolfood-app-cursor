@@ -446,7 +446,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     [packDraftRows, selectedIngredientId]
   );
 
-  const availablePackRows = useMemo(() => uniqueById(packRows.filter(r => r.isActive)), [packRows]);
   const skuGridRows = useMemo<SkuGridRow[]>(() => {
     const q = search.trim().toLowerCase();
     return packRows
@@ -481,20 +480,33 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
 
   const skuRowKey = useCallback((row: SkuGridRow) => row.sku?.id || `PACK:${row.pack.id}`, []);
 
-  const formatPackDescriptor = useCallback((pack: PackRow) => {
-    if (pack.pricingType === 'fixed_pack') return `${pack.specWeight}${pack.specUnit}`;
-    if (pack.packLabel) return pack.packLabel;
-    return '抄碼';
+  const sanitizeSkuText = useCallback((value?: string) => {
+    return (value || '')
+      .replace(/數據1原件/gi, '')
+      .replace(/\[[^\]]*\]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }, []);
+
+  const formatPackDescriptor = useCallback((pack: PackRow, ingredient?: Ingredient) => {
+    if (pack.pricingType === 'fixed_pack' && (pack.specWeight || 0) > 0) {
+      const unit = pack.specUnit === 'catty' ? '斤' : pack.specUnit;
+      return `${pack.specWeight}${unit}`;
+    }
+    const ingUnit = (ingredient?.unit || '').toLowerCase();
+    if (ingUnit === 'box' || ingUnit === 'pack') return `1 ${ingUnit}`;
+    return '1 unit';
   }, []);
 
   const buildSkuDisplayName = useCallback((row: SkuGridRow) => {
     const ingredient = ingredientMap.get(row.pack.ingredientId);
     const process = row.process || processMap.get(row.pack.processSpecId);
-    const materialName = ingredient?.name || '未命名母料';
-    const processName = process?.name || row.pack.name;
-    const size = formatPackDescriptor(row.pack);
+    const processMethod = (process?.methodId ? methods.find(m => m.id === process.methodId) : undefined) || methods.find(m => m.code === process?.code);
+    const materialName = sanitizeSkuText(ingredient?.name) || '未命名母料';
+    const processName = sanitizeSkuText(processMethod?.name || process?.name || row.pack.name) || '未命名加工';
+    const size = formatPackDescriptor(row.pack, ingredient);
     return `${materialName} - ${processName} (${size})`;
-  }, [ingredientMap, processMap, formatPackDescriptor]);
+  }, [ingredientMap, processMap, methods, sanitizeSkuText, formatPackDescriptor]);
 
   const skuPricingRows = useMemo(() => {
     const q = skuSearch.trim().toLowerCase();
@@ -1806,12 +1818,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
 
       {tab === 'sku' && (
         <div className="space-y-3">
-          <div className="bg-white border border-slate-100 rounded-2xl p-3 flex flex-wrap items-center gap-2">
-            <select value={newSku.packSpecId} onChange={e => setNewSku(v => ({ ...v, packSpecId: e.target.value }))} className="p-2 border border-slate-200 rounded-lg text-xs font-bold min-w-[260px]"><option value="">選擇包裝規格</option>{availablePackRows.map(p => <option key={p.id} value={p.id}>{p.name} · {p.pricingType === 'fixed_pack' ? '定額' : '抄碼'}</option>)}</select>
-            <input value={newSku.name} onChange={e => setNewSku(v => ({ ...v, name: e.target.value }))} placeholder="SKU 名稱" className="p-2 border border-slate-200 rounded-lg text-xs font-bold min-w-[180px]" />
-            <input value={newSku.alias} onChange={e => setNewSku(v => ({ ...v, alias: e.target.value }))} placeholder="Alias (選填)" className="p-2 border border-slate-200 rounded-lg text-xs font-bold min-w-[140px]" />
-            <button onClick={() => void addSku()} className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-black flex items-center gap-1"><Plus size={12} />新增 SKU</button>
-          </div>
           <div className="bg-white border border-slate-100 rounded-2xl p-3">
             <button onClick={() => setShowStoplightConfig(prev => !prev)} className="w-full flex items-center justify-between px-3 py-2 rounded-xl border border-slate-200 text-left">
               <span className="font-black text-sm text-slate-900">🚦 利潤燈號安全閾值設定</span>
