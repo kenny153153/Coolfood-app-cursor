@@ -128,11 +128,6 @@ interface PricingRowState {
   tiers: Record<PricingTierKey, PricingTierState>;
 }
 
-interface SkuSection {
-  key: string;
-  title: string;
-  rows: SkuGridRow[];
-}
 
 const round2 = (v: number) => Math.round(v * 100) / 100;
 const mkId = (prefix: string) => `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
@@ -164,7 +159,6 @@ const categoryBadge = (c: MethodCategory) => {
   return 'bg-slate-50 text-slate-700 border-slate-200';
 };
 
-const PROCESS_DEPTH_ORDER = ['WHOLE', 'STEAK', 'PREM_STEAK', 'DICED', 'STRIPS', 'SLICED_HP', 'SHREDDED'];
 const DEFAULT_MATERIAL_CATEGORIES = ['豬類', '牛類', '雞類', '家禽類', '海鮮類', '其他'] as const;
 
 const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }) => {
@@ -190,6 +184,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   const [skuSearch, setSkuSearch] = useState('');
   const [processMaterialSearch, setProcessMaterialSearch] = useState('');
   const [packMaterialSearch, setPackMaterialSearch] = useState('');
+  const [materialCategoryFilter, setMaterialCategoryFilter] = useState('all');
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>('all');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [selectedIngredientId, setSelectedIngredientId] = useState('');
@@ -201,7 +196,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   const [redThresholdPct, setRedThresholdPct] = useState(5);
   const [pricingDrafts, setPricingDrafts] = useState<Record<string, PricingRowState>>({});
   const [p123UnitMode, setP123UnitMode] = useState<'whole_pack' | 'per_lb'>('whole_pack');
-  const [expandedProteinSections, setExpandedProteinSections] = useState<Record<string, boolean>>({});
 
   const [newIngredient, setNewIngredient] = useState({ name: '', supplier: '', category: '豬類', unit: 'lb', cost: 0, netContentVolume: 0, netContentUnit: 'g' as WeightUnit });
   const [newMethod, setNewMethod] = useState({ code: '', name: '', category: 'original_or_cutting' as MethodCategory });
@@ -459,22 +453,25 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         (i.category || '').toLowerCase().includes(q) ||
         (i.unit || '').toLowerCase().includes(q)
       ))
+      .filter(i => materialCategoryFilter === 'all' ? true : (i.category || '未分類') === materialCategoryFilter)
       .sort((a, b) => ((a.category || '未分類').localeCompare((b.category || '未分類'), 'zh-Hant')) || a.name.localeCompare(b.name, 'zh-Hant'));
-  }, [ingredients, search]);
+  }, [ingredients, search, materialCategoryFilter]);
 
   const processMaterials = useMemo(() => {
     const q = processMaterialSearch.trim().toLowerCase();
     return ingredients
       .filter(i => !q || i.name.toLowerCase().includes(q) || (i.supplier || '').toLowerCase().includes(q) || (i.category || '').toLowerCase().includes(q))
+      .filter(i => materialCategoryFilter === 'all' ? true : (i.category || '未分類') === materialCategoryFilter)
       .sort((a, b) => ((a.category || '未分類').localeCompare((b.category || '未分類'), 'zh-Hant')) || a.name.localeCompare(b.name, 'zh-Hant'));
-  }, [ingredients, processMaterialSearch]);
+  }, [ingredients, processMaterialSearch, materialCategoryFilter]);
 
   const packMaterials = useMemo(() => {
     const q = packMaterialSearch.trim().toLowerCase();
     return ingredients
       .filter(i => !q || i.name.toLowerCase().includes(q) || (i.supplier || '').toLowerCase().includes(q) || (i.category || '').toLowerCase().includes(q))
+      .filter(i => materialCategoryFilter === 'all' ? true : (i.category || '未分類') === materialCategoryFilter)
       .sort((a, b) => ((a.category || '未分類').localeCompare((b.category || '未分類'), 'zh-Hant')) || a.name.localeCompare(b.name, 'zh-Hant'));
-  }, [ingredients, packMaterialSearch]);
+  }, [ingredients, packMaterialSearch, materialCategoryFilter]);
 
   const unitGuideRows = useMemo(() => {
     const units: WeightUnit[] = ['g', 'kg', 'lb', 'catty'];
@@ -502,6 +499,11 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     const q = search.trim().toLowerCase();
     return packRows
       .filter(p => p.isActive)
+      .filter(p => {
+        if (materialCategoryFilter === 'all') return true;
+        const ingredient = ingredientMap.get(p.ingredientId);
+        return (ingredient?.category || '未分類') === materialCategoryFilter;
+      })
       .filter(p => channelFilter === 'all' ? true : p.channel === channelFilter || p.channel === 'both')
       .filter(p => typeFilter === 'all' ? true : p.pricingType === typeFilter)
       .filter(p => {
@@ -528,7 +530,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
           sku,
         };
       });
-  }, [packRows, channelFilter, typeFilter, search, skuRows, processMap, ingredientMap]);
+  }, [packRows, channelFilter, typeFilter, search, skuRows, processMap, ingredientMap, materialCategoryFilter]);
 
   const skuRowKey = useCallback((row: SkuGridRow) => row.sku?.id || `PACK:${row.pack.id}`, []);
 
@@ -570,69 +572,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     });
   }, [skuGridRows, skuSearch, buildSkuDisplayName]);
 
-  const materialCategoryOf = useCallback((ingredient?: Ingredient) => {
-    const category = (ingredient?.category || '').toString().trim();
-    return category || '未分類';
-  }, []);
-
-  const sectionedSkuRows = useMemo<SkuSection[]>(() => {
-    const rows = [...skuPricingRows].sort((a, b) => {
-      const ingA = ingredientMap.get(a.pack.ingredientId);
-      const ingB = ingredientMap.get(b.pack.ingredientId);
-      const materialA = (ingA?.name || '').localeCompare(ingB?.name || '', 'zh-Hant');
-      if (materialA !== 0) return materialA;
-
-      const codeA = (a.process?.code || '').toUpperCase();
-      const codeB = (b.process?.code || '').toUpperCase();
-      const depthA = PROCESS_DEPTH_ORDER.indexOf(codeA);
-      const depthB = PROCESS_DEPTH_ORDER.indexOf(codeB);
-      const normalizedDepthA = depthA >= 0 ? depthA : 999;
-      const normalizedDepthB = depthB >= 0 ? depthB : 999;
-      if (normalizedDepthA !== normalizedDepthB) return normalizedDepthA - normalizedDepthB;
-
-      const weightA = a.pack.pricingType === 'by_piece'
-        ? 9999
-        : ((a.pack.packWeightLb || (a.pack.pricingType === 'fixed_pack' ? convertWeight(a.pack.specWeight || 0, a.pack.specUnit, 'lb') : 0)) || 0);
-      const weightB = b.pack.pricingType === 'by_piece'
-        ? 9999
-        : ((b.pack.packWeightLb || (b.pack.pricingType === 'fixed_pack' ? convertWeight(b.pack.specWeight || 0, b.pack.specUnit, 'lb') : 0)) || 0);
-      if (weightA !== weightB) return weightB - weightA;
-
-      return buildSkuDisplayName(a).localeCompare(buildSkuDisplayName(b), 'zh-Hant');
-    });
-
-    const categoryOrder = Array.from(new Set(rows.map(row => materialCategoryOf(ingredientMap.get(row.pack.ingredientId)))));
-    return categoryOrder.map((cat) => {
-      const sectionRows = rows.filter((row) => materialCategoryOf(ingredientMap.get(row.pack.ingredientId)) === cat);
-      return {
-        key: cat,
-        title: `📦 ${cat}庫存與控價中心`,
-        rows: sectionRows,
-      };
-    }).filter(section => section.rows.length > 0);
-  }, [skuPricingRows, ingredientMap, buildSkuDisplayName, materialCategoryOf]);
-
-  const skuRowIndexMap = useMemo(() => {
-    const map: Record<string, number> = {};
-    let index = 1;
-    sectionedSkuRows.forEach(section => {
-      section.rows.forEach(row => {
-        map[skuRowKey(row)] = index++;
-      });
-    });
-    return map;
-  }, [sectionedSkuRows, skuRowKey]);
-
-  useEffect(() => {
-    if (sectionedSkuRows.length === 0) return;
-    setExpandedProteinSections(prev => {
-      const next = { ...prev };
-      sectionedSkuRows.forEach(section => {
-        if (next[section.key] == null) next[section.key] = true;
-      });
-      return next;
-    });
-  }, [sectionedSkuRows]);
 
   const processedCostPerLb = useCallback((ingredientId: string, processId: string) => {
     const ing = ingredientMap.get(ingredientId);
@@ -1579,6 +1518,15 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="搜尋母料/SKU名稱..." className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 text-sm font-bold" />
         </div>
+        <select
+          value={materialCategoryFilter}
+          onChange={e => setMaterialCategoryFilter(e.target.value)}
+          className="px-3 py-2 rounded-lg border border-slate-200 text-[11px] font-black text-slate-700 bg-white"
+        >
+          <option value="all">全部分類</option>
+          {activeMaterialCategoryOptions.map(c => <option key={c} value={c}>{c}</option>)}
+          <option value="未分類">未分類</option>
+        </select>
         {(['all', 'wholesale', 'retail'] as ChannelFilter[]).map(v => <button key={v} onClick={() => setChannelFilter(v)} className={`px-3 py-2 rounded-lg text-[11px] font-black ${channelFilter === v ? 'bg-slate-900 text-white' : 'bg-slate-50 border border-slate-200 text-slate-500'}`}>{v === 'all' ? '全部' : v === 'wholesale' ? '批發' : '零售'}</button>)}
         {(['all', 'fixed_pack', 'by_piece'] as TypeFilter[]).map(v => <button key={v} onClick={() => setTypeFilter(v)} className={`px-3 py-2 rounded-lg text-[11px] font-black ${typeFilter === v ? 'bg-indigo-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-500'}`}>{v === 'all' ? '全部類型' : v === 'fixed_pack' ? '定額' : '抄碼'}</button>)}
         {tab === 'raw' && (
@@ -2134,104 +2082,90 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
             <table className="w-full text-xs">
               <thead><tr className="bg-slate-50 text-slate-500"><th className="px-2 py-2">#</th><th className="px-2 py-2 text-left">商品 SKU 名稱</th><th className="px-2 py-2 text-left">加工大類</th><th className="px-2 py-2 text-right">基準總成本</th><th className="px-2 py-2 text-right">成本手動覆蓋</th><th className="px-2 py-2 text-right">有效商品成本</th>{tierDefs.map(t => <th key={t.key} className="px-2 py-2 text-left min-w-[170px]">{t.key}</th>)}<th className="px-2 py-2 text-right">操作</th></tr></thead>
               <tbody>
-                {sectionedSkuRows.map(section => (
-                  <React.Fragment key={section.key}>
-                    <tr className="border-t-4 border-white">
-                      <td colSpan={11} className="px-0">
-                        <button
-                          onClick={() => setExpandedProteinSections(prev => ({ ...prev, [section.key]: !prev[section.key] }))}
-                          className="w-full px-3 py-2 bg-slate-900 text-white font-black text-sm text-left"
-                        >
-                          {section.title} {expandedProteinSections[section.key] ? '▾' : '▸'}
-                        </button>
-                      </td>
+                {skuPricingRows.map((row, idx) => {
+                  const s = row.sku;
+                  const pack = row.pack;
+                  const process = row.process;
+                  const baseCost = calcTotalCost(pack);
+                  const rowKey = skuRowKey(row);
+                  const draft = pricingDrafts[rowKey] || {
+                    costOverride: undefined,
+                    tiers: {
+                      P0: { price: round2(baseCost / Math.max(0.01, baseDenominator)), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator)), baseCost) },
+                      P1: { price: round2(baseCost / Math.max(0.01, baseDenominator - tierStep)), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - tierStep)), baseCost) },
+                      P2: { price: round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 2))), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 2))), baseCost) },
+                      P3: { price: round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 3))), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 3))), baseCost) },
+                    },
+                  };
+                  const effectiveCost = draft.costOverride != null && Number.isFinite(draft.costOverride) ? draft.costOverride : baseCost;
+                  const divisor = Math.max(0.0001, packSizeLb(pack));
+                  const effectiveCostPerLb = round2(effectiveCost / divisor);
+                  return (
+                    <tr key={rowKey} className="border-t border-slate-100">
+                      <td className="px-2 py-1.5 text-center">{idx + 1}</td>
+                      <td className="px-2 py-1.5"><div className="font-black">{buildSkuDisplayName(row)}</div><div className="text-[10px] text-slate-400">{s?.code || `${pack.code} · 待建立 SKU`}</div></td>
+                      <td className="px-2 py-1.5"><span className={`inline-block px-2 py-0.5 text-[10px] rounded-full border ${categoryBadge(process?.category || 'others')}`}>{categoryLabel(process?.category || 'others')}</span></td>
+                      <td className="px-2 py-1.5 text-right font-black text-amber-700">${baseCost.toFixed(2)}</td>
+                      <td className="px-2 py-1.5 text-right"><input value={draft.costOverride ?? ''} onChange={e => {
+                        const raw = e.target.value.trim();
+                        const override = raw === '' ? undefined : Number(raw);
+                        setPricingDrafts(prev => {
+                          const rowState = prev[rowKey] || draft;
+                          const nextCost = override == null || !Number.isFinite(override) ? baseCost : override;
+                          const nextTiers = Object.fromEntries(
+                            (Object.keys(rowState.tiers) as PricingTierKey[]).map(k => [k, { ...rowState.tiers[k], margin: computeMarginPct(rowState.tiers[k].price, nextCost) }])
+                          ) as Record<PricingTierKey, PricingTierState>;
+                          return { ...prev, [rowKey]: { ...rowState, costOverride: override, tiers: nextTiers } };
+                        });
+                      }} placeholder="留空=用基準" className="w-24 p-1 border border-slate-200 rounded text-right font-bold ml-auto block" /></td>
+                      <td className="px-2 py-1.5 text-right font-black text-slate-800">${effectiveCost.toFixed(2)}</td>
+                      {tierDefs.map(t => {
+                        const tier = draft.tiers[t.key];
+                        const isP123 = t.key !== 'P0';
+                        const usePerLb = isP123 && p123UnitMode === 'per_lb';
+                        const shownPrice = usePerLb ? round2(tier.price / divisor) : tier.price;
+                        const shownMargin = usePerLb ? computeMarginPct(shownPrice, effectiveCostPerLb) : tier.margin;
+                        return (
+                          <td key={t.key} className="px-2 py-1.5">
+                            <div className="space-y-1">
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={shownPrice}
+                                onChange={e => {
+                                  const input = Number(e.target.value) || 0;
+                                  const canonicalPrice = usePerLb ? round2(input * divisor) : input;
+                                  updatePriceInput(rowKey, t.key, canonicalPrice, effectiveCost);
+                                }}
+                                className="w-full p-1 border border-slate-200 rounded text-right font-bold"
+                              />
+                              <div className="flex items-center gap-1">
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  value={shownMargin}
+                                  onChange={e => {
+                                    const nextMargin = Number(e.target.value) || 0;
+                                    if (usePerLb) {
+                                      const pricePerLb = computePriceFromMargin(effectiveCostPerLb, nextMargin);
+                                      updatePriceInput(rowKey, t.key, round2(pricePerLb * divisor), effectiveCost);
+                                    } else {
+                                      updateMarginInput(rowKey, t.key, nextMargin, effectiveCost);
+                                    }
+                                  }}
+                                  className={`w-full p-1 border border-slate-200 rounded text-right font-bold ${marginTextClass(shownMargin)}`}
+                                />
+                                <span className={`text-[11px] font-black ${marginTextClass(shownMargin)}`}>%</span>
+                              </div>
+                              {usePerLb && <div className="text-[10px] font-bold text-slate-400">按磅價，整包={divisor.toFixed(2)} lb</div>}
+                            </div>
+                          </td>
+                        );
+                      })}
+                      <td className="px-2 py-1.5 text-right"><button onClick={() => void savePricingRow(row)} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">💾 儲存控價</button></td>
                     </tr>
-                    {expandedProteinSections[section.key] && section.rows.map((row) => {
-                      const s = row.sku;
-                      const pack = row.pack;
-                      const process = row.process;
-                      const baseCost = calcTotalCost(pack);
-                      const rowKey = skuRowKey(row);
-                      const draft = pricingDrafts[rowKey] || {
-                        costOverride: undefined,
-                        tiers: {
-                          P0: { price: round2(baseCost / Math.max(0.01, baseDenominator)), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator)), baseCost) },
-                          P1: { price: round2(baseCost / Math.max(0.01, baseDenominator - tierStep)), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - tierStep)), baseCost) },
-                          P2: { price: round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 2))), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 2))), baseCost) },
-                          P3: { price: round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 3))), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 3))), baseCost) },
-                        },
-                      };
-                      const effectiveCost = draft.costOverride != null && Number.isFinite(draft.costOverride) ? draft.costOverride : baseCost;
-                      const divisor = Math.max(0.0001, packSizeLb(pack));
-                      const effectiveCostPerLb = round2(effectiveCost / divisor);
-                      return (
-                        <tr key={rowKey} className="border-t border-slate-100">
-                          <td className="px-2 py-1.5 text-center">{skuRowIndexMap[rowKey] || 0}</td>
-                          <td className="px-2 py-1.5"><div className="font-black">{buildSkuDisplayName(row)}</div><div className="text-[10px] text-slate-400">{s?.code || `${pack.code} · 待建立 SKU`}</div></td>
-                          <td className="px-2 py-1.5"><span className={`inline-block px-2 py-0.5 text-[10px] rounded-full border ${categoryBadge(process?.category || 'others')}`}>{categoryLabel(process?.category || 'others')}</span></td>
-                          <td className="px-2 py-1.5 text-right font-black text-amber-700">${baseCost.toFixed(2)}</td>
-                          <td className="px-2 py-1.5 text-right"><input value={draft.costOverride ?? ''} onChange={e => {
-                            const raw = e.target.value.trim();
-                            const override = raw === '' ? undefined : Number(raw);
-                            setPricingDrafts(prev => {
-                              const rowState = prev[rowKey] || draft;
-                              const nextCost = override == null || !Number.isFinite(override) ? baseCost : override;
-                              const nextTiers = Object.fromEntries(
-                                (Object.keys(rowState.tiers) as PricingTierKey[]).map(k => [k, { ...rowState.tiers[k], margin: computeMarginPct(rowState.tiers[k].price, nextCost) }])
-                              ) as Record<PricingTierKey, PricingTierState>;
-                              return { ...prev, [rowKey]: { ...rowState, costOverride: override, tiers: nextTiers } };
-                            });
-                          }} placeholder="留空=用基準" className="w-24 p-1 border border-slate-200 rounded text-right font-bold ml-auto block" /></td>
-                          <td className="px-2 py-1.5 text-right font-black text-slate-800">${effectiveCost.toFixed(2)}</td>
-                          {tierDefs.map(t => {
-                            const tier = draft.tiers[t.key];
-                            const isP123 = t.key !== 'P0';
-                            const usePerLb = isP123 && p123UnitMode === 'per_lb';
-                            const shownPrice = usePerLb ? round2(tier.price / divisor) : tier.price;
-                            const shownMargin = usePerLb ? computeMarginPct(shownPrice, effectiveCostPerLb) : tier.margin;
-                            return (
-                              <td key={t.key} className="px-2 py-1.5">
-                                <div className="space-y-1">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    value={shownPrice}
-                                    onChange={e => {
-                                      const input = Number(e.target.value) || 0;
-                                      const canonicalPrice = usePerLb ? round2(input * divisor) : input;
-                                      updatePriceInput(rowKey, t.key, canonicalPrice, effectiveCost);
-                                    }}
-                                    className="w-full p-1 border border-slate-200 rounded text-right font-bold"
-                                  />
-                                  <div className="flex items-center gap-1">
-                                    <input
-                                      type="number"
-                                      step="0.1"
-                                      value={shownMargin}
-                                      onChange={e => {
-                                        const nextMargin = Number(e.target.value) || 0;
-                                        if (usePerLb) {
-                                          const pricePerLb = computePriceFromMargin(effectiveCostPerLb, nextMargin);
-                                          updatePriceInput(rowKey, t.key, round2(pricePerLb * divisor), effectiveCost);
-                                        } else {
-                                          updateMarginInput(rowKey, t.key, nextMargin, effectiveCost);
-                                        }
-                                      }}
-                                      className={`w-full p-1 border border-slate-200 rounded text-right font-bold ${marginTextClass(shownMargin)}`}
-                                    />
-                                    <span className={`text-[11px] font-black ${marginTextClass(shownMargin)}`}>%</span>
-                                  </div>
-                                  {usePerLb && <div className="text-[10px] font-bold text-slate-400">按磅價，整包={divisor.toFixed(2)} lb</div>}
-                                </div>
-                              </td>
-                            );
-                          })}
-                          <td className="px-2 py-1.5 text-right"><button onClick={() => void savePricingRow(row)} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">💾 儲存控價</button></td>
-                        </tr>
-                      );
-                    })}
-                  </React.Fragment>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
