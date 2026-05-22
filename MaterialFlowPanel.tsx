@@ -184,6 +184,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   const [skuSearch, setSkuSearch] = useState('');
   const [processMaterialSearch, setProcessMaterialSearch] = useState('');
   const [packMaterialSearch, setPackMaterialSearch] = useState('');
+  const [skuMaterialSearch, setSkuMaterialSearch] = useState('');
   const [materialCategoryFilter, setMaterialCategoryFilter] = useState('all');
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>('all');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
@@ -476,6 +477,15 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       .filter(i => materialCategoryFilter === 'all' ? true : (i.category || '未分類') === materialCategoryFilter)
       .sort((a, b) => (rank(a) - rank(b)) || ((a.category || '未分類').localeCompare((b.category || '未分類'), 'zh-Hant')) || a.name.localeCompare(b.name, 'zh-Hant'));
   }, [ingredients, packMaterialSearch, materialCategoryFilter]);
+
+  const skuMaterials = useMemo(() => {
+    const q = skuMaterialSearch.trim().toLowerCase();
+    const rank = (i: Ingredient) => (i.isActive === false ? 1 : 0);
+    return ingredients
+      .filter(i => !q || i.name.toLowerCase().includes(q) || (i.supplier || '').toLowerCase().includes(q) || (i.category || '').toLowerCase().includes(q))
+      .filter(i => materialCategoryFilter === 'all' ? true : (i.category || '未分類') === materialCategoryFilter)
+      .sort((a, b) => (rank(a) - rank(b)) || ((a.category || '未分類').localeCompare((b.category || '未分類'), 'zh-Hant')) || a.name.localeCompare(b.name, 'zh-Hant'));
+  }, [ingredients, skuMaterialSearch, materialCategoryFilter]);
 
   const unitGuideRows = useMemo(() => {
     const units: WeightUnit[] = ['g', 'kg', 'lb', 'catty'];
@@ -928,6 +938,10 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     [ingredients, selectedIngredientId]
   );
   const selectedIngredientInactive = selectedIngredient?.isActive === false;
+  const skuPricingRowsForSelected = useMemo(
+    () => skuPricingRows.filter(row => row.pack.ingredientId === selectedIngredientId),
+    [skuPricingRows, selectedIngredientId]
+  );
 
   const saveProcessRow = async (row: ProcessRow) => {
     const ing = ingredientMap.get(row.ingredientId);
@@ -2116,19 +2130,44 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       )}
 
       {tab === 'sku' && (
-        <div className="space-y-3">
-          <div className="bg-white border border-slate-100 rounded-2xl p-3 flex flex-wrap items-center gap-2">
-            <div className="relative flex-1 min-w-[260px]">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input value={skuSearch} onChange={e => setSkuSearch(e.target.value)} placeholder="搜尋 SKU 名稱..." className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 text-sm font-bold" />
+        <div className="grid grid-cols-1 xl:grid-cols-[30%_70%] gap-3">
+          <div className="bg-white border border-slate-100 rounded-2xl p-3">
+            <p className="text-[11px] text-slate-500 font-black mb-2">材料清單</p>
+            <div className="relative mb-2">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                value={skuMaterialSearch}
+                onChange={e => setSkuMaterialSearch(e.target.value)}
+                placeholder="搜尋材料..."
+                className="w-full pl-8 pr-2 py-1.5 rounded-lg border border-slate-200 text-xs font-bold"
+              />
             </div>
-            <p className="text-[11px] font-black text-slate-500">Tab 4 只處理 SKU 與最終成本，渠道定價改由零售/批發模組處理。</p>
+            <div className="space-y-1 max-h-[34rem] overflow-auto">
+              {skuMaterials.map(m => (
+                <button key={m.id} onClick={() => setSelectedIngredientId(m.id)} className={`w-full text-left px-3 py-2 rounded-lg text-sm font-bold ${selectedIngredientId === m.id ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-slate-50 border border-slate-200 text-slate-700'} ${m.isActive === false ? 'opacity-50' : ''}`}>
+                  <div>{m.name}</div>
+                  <div className="text-[10px] font-black text-slate-500 mt-0.5">{m.category || '未分類'}{m.isActive === false ? ' · 已停用' : ''}</div>
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="bg-white border border-slate-100 rounded-2xl p-3 overflow-auto">
-            <table className="w-full text-xs">
-              <thead><tr className="bg-slate-50 text-slate-500"><th className="px-2 py-2">#</th><th className="px-2 py-2 text-left">商品 SKU 名稱</th><th className="px-2 py-2 text-left">加工大類</th><th className="px-2 py-2 text-right">基準總成本</th><th className="px-2 py-2 text-right">成本手動覆蓋</th><th className="px-2 py-2 text-right">有效商品成本</th><th className="px-2 py-2 text-right">操作</th></tr></thead>
-              <tbody>
-                {skuPricingRows.map((row, idx) => {
+          <div className="bg-white border border-slate-100 rounded-2xl p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="font-black text-sm text-slate-900">{selectedIngredient?.name || '請先選母料'}</h4>
+              <span className={`text-[11px] font-black ${selectedIngredientInactive ? 'text-amber-600' : 'text-slate-500'}`}>{selectedIngredientInactive ? 'SKU 成本工作台（已停用）' : 'SKU 成本工作台'}</span>
+            </div>
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex flex-wrap items-center gap-2">
+              <div className="relative flex-1 min-w-[260px]">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input value={skuSearch} onChange={e => setSkuSearch(e.target.value)} placeholder="搜尋 SKU 名稱..." className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 text-sm font-bold bg-white" />
+              </div>
+              <p className="text-[11px] font-black text-slate-500">Tab 4 只處理 SKU 與最終成本，渠道定價改由零售/批發模組處理。</p>
+            </div>
+            <div className="overflow-auto max-h-[34rem] border border-slate-100 rounded-xl">
+              <table className="w-full text-xs">
+                <thead><tr className="bg-slate-50 text-slate-500"><th className="px-2 py-2">#</th><th className="px-2 py-2 text-left">商品 SKU 名稱</th><th className="px-2 py-2 text-left">加工大類</th><th className="px-2 py-2 text-right">基準總成本</th><th className="px-2 py-2 text-right">成本手動覆蓋</th><th className="px-2 py-2 text-right">有效商品成本</th><th className="px-2 py-2 text-right">操作</th></tr></thead>
+                <tbody>
+                {skuPricingRowsForSelected.map((row, idx) => {
                   const s = row.sku;
                   const pack = row.pack;
                   const process = row.process;
@@ -2165,8 +2204,14 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                     </tr>
                   );
                 })}
-              </tbody>
-            </table>
+                {skuPricingRowsForSelected.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-3 py-6 text-center text-slate-500 font-bold">此母料尚未有可用 SKU，請先在 Tab 2/3 建立加工與包裝。</td>
+                  </tr>
+                )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}

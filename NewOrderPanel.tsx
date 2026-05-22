@@ -186,9 +186,10 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [clientsRes, skuRes, productsRes, ingredientsRes, correctionsRes, unitsRes, ptRes, matrixRes] = await Promise.all([
+    const [clientsRes, skuRes, commercialSkuRes, productsRes, ingredientsRes, correctionsRes, unitsRes, ptRes, matrixRes] = await Promise.all([
       supabase.from('members').select('id, company_name, name, phone_number, delivery_address, wholesale_brand, wholesale_price_tier, route_id, client_code, is_wholesale_active').eq('member_type', 'wholesale').eq('wholesale_status', 'approved'),
       supabase.from('sellable_skus').select('id,name,alias,sale_channel,ingredient_id,product_id,is_active,sort_order').eq('is_active', true).order('sort_order'),
+      supabase.from('commercial_skus').select('id,canonical_sku_id,external_code,alias,sale_channel,is_active,sort_order').eq('is_active', true).order('sort_order'),
       supabase.from('products').select('id, name, name_en, price, weight, categories, sale_channel, product_type, processing_type_id, pack_size, ingredient_id, parent_ingredient_id, group_id, variant_label, pricing_mode'),
       supabase.from('ingredients').select('id,name'),
       supabase.from('parsing_corrections').select('original_text, corrected_product_name, corrected_qty, corrected_unit').order('created_at', { ascending: false }).limit(40),
@@ -207,24 +208,34 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
     }
     const productById = new Map<string, any>((productsRes.data || []).map((p: any) => [p.id, p]));
     const ingredientNameById = new Map<string, string>((ingredientsRes.data || []).map((i: any) => [i.id, i.name]));
+    const canonicalSkuById = new Map<string, any>(((skuRes.data || []) as any[]).map((s: any) => [s.id, s]));
     const groups = new Map<string, ProductGroupOption>();
     const skuProducts: ProductOption[] = [];
-    for (const sku of (skuRes.data || []) as any[]) {
+    const commercialRows = !commercialSkuRes.error ? ((commercialSkuRes.data || []) as any[]) : [];
+    const sourceRows = commercialRows.length > 0
+      ? commercialRows
+          .map((c: any) => ({ commercial: c, canonical: canonicalSkuById.get(c.canonical_sku_id) }))
+          .filter((x: any) => x.canonical)
+      : ((skuRes.data || []) as any[]).map((s: any) => ({ commercial: null, canonical: s }));
+
+    for (const source of sourceRows) {
+      const sku = source.canonical;
+      const commercial = source.commercial;
       const prod = productById.get(sku.product_id);
       if (!prod) continue;
-      const ch = sku.sale_channel || prod.sale_channel || 'retail';
+      const ch = commercial?.sale_channel || sku.sale_channel || prod.sale_channel || 'retail';
       if (ch !== 'wholesale' && ch !== 'both') continue;
       const ingredientId = sku.ingredient_id || prod.parent_ingredient_id || prod.ingredient_id || '';
-      const groupId = ingredientId || `_sku_group_${sku.id}`;
+      const groupId = ingredientId || `_sku_group_${commercial?.id || sku.id}`;
       const groupName = ingredientNameById.get(ingredientId) || 'SKU';
       if (!groups.has(groupId)) {
         groups.set(groupId, { id: groupId, name: groupName, classification: 'raw_material', ingredientId: ingredientId || undefined, specs: [] });
       }
       const option: ProductOption = {
         id: prod.id,
-        skuId: sku.id,
+        skuId: commercial?.id || sku.id,
         name: prod.name,
-        displayName: (sku.alias || sku.name || prod.name || '').trim(),
+        displayName: (commercial?.alias || sku.alias || sku.name || prod.name || '').trim(),
         nameEn: prod.name_en || undefined,
         price: prod.price,
         unit: '磅',
@@ -236,7 +247,7 @@ const NewOrderPanel: React.FC<Props> = ({ showToast }) => {
         ingredientId: prod.ingredient_id || undefined,
         parentIngredientId: prod.parent_ingredient_id || undefined,
         groupId,
-        variantLabel: (sku.alias || sku.name || prod.variant_label || prod.name || '').trim(),
+        variantLabel: (commercial?.alias || sku.alias || sku.name || prod.variant_label || prod.name || '').trim(),
         pricingMode: prod.pricing_mode || undefined,
       };
       skuProducts.push(option);

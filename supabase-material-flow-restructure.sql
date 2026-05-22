@@ -359,11 +359,53 @@ CREATE TABLE IF NOT EXISTS public.material_skus (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Downstream commercial SKU aliases (must attach to canonical sellable_skus)
+CREATE TABLE IF NOT EXISTS public.commercial_skus (
+  id TEXT PRIMARY KEY,
+  canonical_sku_id TEXT NOT NULL REFERENCES public.sellable_skus(id) ON DELETE CASCADE,
+  external_code TEXT NOT NULL,
+  alias TEXT,
+  sale_channel TEXT NOT NULL DEFAULT 'both' CHECK (sale_channel IN ('retail', 'wholesale', 'both')),
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (sale_channel, external_code)
+);
+
+-- Backfill one default commercial SKU per canonical SKU (idempotent)
+INSERT INTO public.commercial_skus (
+  id,
+  canonical_sku_id,
+  external_code,
+  alias,
+  sale_channel,
+  is_active,
+  sort_order
+)
+SELECT
+  'CS-' || s.id,
+  s.id,
+  s.code,
+  s.alias,
+  s.sale_channel,
+  s.is_active,
+  s.sort_order
+FROM public.sellable_skus s
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM public.commercial_skus c
+  WHERE c.canonical_sku_id = s.id
+    AND c.external_code = s.code
+    AND c.sale_channel = s.sale_channel
+);
+
 -- 4) RLS + permissive policies
 ALTER TABLE public.material_process_specs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.material_pack_specs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.sellable_skus ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.material_skus ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.commercial_skus ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.material_categories ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS material_process_specs_all ON public.material_process_specs;
@@ -380,6 +422,10 @@ FOR ALL USING (true) WITH CHECK (true);
 
 DROP POLICY IF EXISTS material_skus_all ON public.material_skus;
 CREATE POLICY material_skus_all ON public.material_skus
+FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS commercial_skus_all ON public.commercial_skus;
+CREATE POLICY commercial_skus_all ON public.commercial_skus
 FOR ALL USING (true) WITH CHECK (true);
 
 DROP POLICY IF EXISTS material_categories_all ON public.material_categories;
@@ -413,6 +459,11 @@ FOR EACH ROW EXECUTE FUNCTION public.touch_material_flow_updated_at();
 DROP TRIGGER IF EXISTS trg_material_skus_updated_at ON public.material_skus;
 CREATE TRIGGER trg_material_skus_updated_at
 BEFORE UPDATE ON public.material_skus
+FOR EACH ROW EXECUTE FUNCTION public.touch_material_flow_updated_at();
+
+DROP TRIGGER IF EXISTS trg_commercial_skus_updated_at ON public.commercial_skus;
+CREATE TRIGGER trg_commercial_skus_updated_at
+BEFORE UPDATE ON public.commercial_skus
 FOR EACH ROW EXECUTE FUNCTION public.touch_material_flow_updated_at();
 
 DROP TRIGGER IF EXISTS trg_material_categories_updated_at ON public.material_categories;
