@@ -691,7 +691,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       base_cost_per_lb: item.baseCostPerLb,
       net_content_volume: item.netContentVolume || null,
       net_content_unit: item.netContentVolume ? (item.netContentUnit || 'g') : null,
-      is_active: item.isActive !== false,
     }).eq('id', item.id);
     if (error) {
       setSaveErrorIngredientId(item.id);
