@@ -55,6 +55,8 @@ ALTER TABLE public.ingredients
 ALTER TABLE public.ingredients
   ADD COLUMN IF NOT EXISTS protein_category_id TEXT;
 ALTER TABLE public.ingredients
+  ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE public.ingredients
   DROP CONSTRAINT IF EXISTS ingredients_net_content_unit_check;
 ALTER TABLE public.ingredients
   ADD CONSTRAINT ingredients_net_content_unit_check

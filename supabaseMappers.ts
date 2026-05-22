@@ -149,6 +149,7 @@ export const mapIngredientRowToIngredient = (row: SupabaseIngredientRow): Ingred
   stockQty: row.stock_qty ?? 0,
   stockUnit: row.stock_unit ?? undefined,
   minStockAlert: row.min_stock_alert ?? undefined,
+  isActive: row.is_active !== false,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -173,6 +174,7 @@ export const mapIngredientToRow = (ing: Ingredient): SupabaseIngredientRow => ({
   stock_qty: ing.stockQty ?? 0,
   stock_unit: ing.stockUnit ?? null,
   min_stock_alert: ing.minStockAlert ?? null,
+  is_active: ing.isActive !== false,
 });
 
 /** Compute the per-lb cost of a product using the ingredient -> product formula.

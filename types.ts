@@ -198,6 +198,7 @@ export interface Ingredient {
   minStockAlert?: number;   // 低庫存警報
   committedQty?: number;    // 待出 — 已確認訂單但未出貨
   incomingQty?: number;     // 待入 — 已下 PO 但未收貨
+  isActive?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -231,6 +232,7 @@ export interface SupabaseIngredientRow {
   stock_qty?: number;
   stock_unit?: string | null;
   min_stock_alert?: number | null;
+  is_active?: boolean | null;
   created_at?: string;
   updated_at?: string;
 }

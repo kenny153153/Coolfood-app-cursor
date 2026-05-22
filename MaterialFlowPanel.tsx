@@ -323,7 +323,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
           .select('*, sellable_skus!left(id,code,name,alias,ingredient_id,process_spec_id,pack_spec_id,product_id,sale_channel,is_active,sort_order)')
           .order('sort_order')
           .order('name'),
-        supabase.from('site_config').select('id,value').in('id', ['cost_items', 'material_flow_price_overrides', 'packaging_items']),
+        supabase.from('site_config').select('id,value').in('id', ['cost_items', 'material_flow_price_overrides', 'material_flow_cost_overrides', 'packaging_items']),
       ]);
       if (ingRes.error || processRes.error || packRes.error || cfgRes.error) {
         throw (ingRes.error || processRes.error || packRes.error || cfgRes.error);
@@ -397,8 +397,9 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         }));
         setPackagingItems(fallback);
       }
-      if (cfgMap.get('material_flow_price_overrides') && typeof cfgMap.get('material_flow_price_overrides') === 'object') {
-        setPricingOverrides(cfgMap.get('material_flow_price_overrides') as Record<string, any>);
+      const loadedOverrides = cfgMap.get('material_flow_cost_overrides') || cfgMap.get('material_flow_price_overrides');
+      if (loadedOverrides && typeof loadedOverrides === 'object') {
+        setPricingOverrides(loadedOverrides as Record<string, any>);
       }
     } catch (error: any) {
       showToast(`載入失敗：${error?.message || '未知錯誤'}`, 'error');
@@ -446,6 +447,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
 
   const materials = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const rank = (i: Ingredient) => (i.isActive === false ? 1 : 0);
     return ingredients
       .filter(i => !q || (
         i.name.toLowerCase().includes(q) ||
@@ -454,23 +456,25 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         (i.unit || '').toLowerCase().includes(q)
       ))
       .filter(i => materialCategoryFilter === 'all' ? true : (i.category || '未分類') === materialCategoryFilter)
-      .sort((a, b) => ((a.category || '未分類').localeCompare((b.category || '未分類'), 'zh-Hant')) || a.name.localeCompare(b.name, 'zh-Hant'));
+      .sort((a, b) => (rank(a) - rank(b)) || ((a.category || '未分類').localeCompare((b.category || '未分類'), 'zh-Hant')) || a.name.localeCompare(b.name, 'zh-Hant'));
   }, [ingredients, search, materialCategoryFilter]);
 
   const processMaterials = useMemo(() => {
     const q = processMaterialSearch.trim().toLowerCase();
+    const rank = (i: Ingredient) => (i.isActive === false ? 1 : 0);
     return ingredients
       .filter(i => !q || i.name.toLowerCase().includes(q) || (i.supplier || '').toLowerCase().includes(q) || (i.category || '').toLowerCase().includes(q))
       .filter(i => materialCategoryFilter === 'all' ? true : (i.category || '未分類') === materialCategoryFilter)
-      .sort((a, b) => ((a.category || '未分類').localeCompare((b.category || '未分類'), 'zh-Hant')) || a.name.localeCompare(b.name, 'zh-Hant'));
+      .sort((a, b) => (rank(a) - rank(b)) || ((a.category || '未分類').localeCompare((b.category || '未分類'), 'zh-Hant')) || a.name.localeCompare(b.name, 'zh-Hant'));
   }, [ingredients, processMaterialSearch, materialCategoryFilter]);
 
   const packMaterials = useMemo(() => {
     const q = packMaterialSearch.trim().toLowerCase();
+    const rank = (i: Ingredient) => (i.isActive === false ? 1 : 0);
     return ingredients
       .filter(i => !q || i.name.toLowerCase().includes(q) || (i.supplier || '').toLowerCase().includes(q) || (i.category || '').toLowerCase().includes(q))
       .filter(i => materialCategoryFilter === 'all' ? true : (i.category || '未分類') === materialCategoryFilter)
-      .sort((a, b) => ((a.category || '未分類').localeCompare((b.category || '未分類'), 'zh-Hant')) || a.name.localeCompare(b.name, 'zh-Hant'));
+      .sort((a, b) => (rank(a) - rank(b)) || ((a.category || '未分類').localeCompare((b.category || '未分類'), 'zh-Hant')) || a.name.localeCompare(b.name, 'zh-Hant'));
   }, [ingredients, packMaterialSearch, materialCategoryFilter]);
 
   const unitGuideRows = useMemo(() => {
@@ -529,6 +533,16 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
           process,
           sku,
         };
+      })
+      .sort((a, b) => {
+        const ia = ingredientMap.get(a.pack.ingredientId);
+        const ib = ingredientMap.get(b.pack.ingredientId);
+        const ra = ia?.isActive === false ? 1 : 0;
+        const rb = ib?.isActive === false ? 1 : 0;
+        if (ra !== rb) return ra - rb;
+        const an = `${ia?.name || ''} ${a.process?.name || a.pack.name}`;
+        const bn = `${ib?.name || ''} ${b.process?.name || b.pack.name}`;
+        return an.localeCompare(bn, 'zh-Hant');
       });
   }, [packRows, channelFilter, typeFilter, search, skuRows, processMap, ingredientMap, materialCategoryFilter]);
 
@@ -640,6 +654,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       base_cost_per_lb: Number(newIngredient.cost) || 0,
       net_content_volume: newIngredient.netContentVolume > 0 ? Number(newIngredient.netContentVolume) : null,
       net_content_unit: newIngredient.netContentVolume > 0 ? newIngredient.netContentUnit : null,
+      is_active: true,
       material_type: 'meat',
     };
     const { data, error } = await supabase.from('ingredients').insert(row).select('*').single();
@@ -666,6 +681,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       base_cost_per_lb: item.baseCostPerLb,
       net_content_volume: item.netContentVolume || null,
       net_content_unit: item.netContentVolume ? (item.netContentUnit || 'g') : null,
+      is_active: item.isActive !== false,
     }).eq('id', item.id);
     if (error) {
       setSaveErrorIngredientId(item.id);
@@ -679,6 +695,43 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     savedIndicatorTimerRef.current = window.setTimeout(() => setSavedIngredientId(prev => (prev === item.id ? null : prev)), 1600);
     if (!options?.silentSuccess) showToast('母料已自動儲存', 'success');
     return true;
+  };
+
+  const toggleIngredientActive = async (item: Ingredient, nextActive: boolean) => {
+    const { error } = await supabase
+      .from('ingredients')
+      .update({ is_active: nextActive })
+      .eq('id', item.id);
+    if (error) return showToast(`更新母料狀態失敗：${error.message}`, 'error');
+    setIngredients(prev => prev.map(i => i.id === item.id ? { ...i, isActive: nextActive } : i));
+    showToast(nextActive ? '母料已啟用' : '母料已停用', 'success');
+  };
+
+  const deleteIngredient = async (item: Ingredient) => {
+    const used = processRows.some(r => r.ingredientId === item.id && r.isActive)
+      || packRows.some(r => r.ingredientId === item.id && r.isActive)
+      || skuRows.some(r => r.ingredientId === item.id && r.isActive);
+    const ok = window.confirm(used
+      ? `「${item.name}」已有加工/包裝/SKU 關聯，確定要刪除？`
+      : `確定刪除母料「${item.name}」？`);
+    if (!ok) return;
+
+    await supabase.from('material_skus').delete().eq('ingredient_id', item.id);
+    await supabase.from('sellable_skus').delete().eq('ingredient_id', item.id);
+    const { error } = await supabase.from('ingredients').delete().eq('id', item.id);
+    if (error) return showToast(`刪除母料失敗：${error.message}`, 'error');
+
+    setIngredients(prev => prev.filter(i => i.id !== item.id));
+    setProcessRows(prev => prev.filter(r => r.ingredientId !== item.id));
+    setPackRows(prev => prev.filter(r => r.ingredientId !== item.id));
+    setPackDraftRows(prev => prev.filter(r => r.ingredientId !== item.id));
+    setProcessDraftRows(prev => prev.filter(r => r.ingredientId !== item.id));
+    setSkuRows(prev => prev.filter(r => r.ingredientId !== item.id));
+    if (selectedIngredientId === item.id) {
+      const fallback = ingredients.find(i => i.id !== item.id && i.isActive !== false) || ingredients.find(i => i.id !== item.id);
+      setSelectedIngredientId(fallback?.id || '');
+    }
+    showToast('母料已刪除', 'success');
   };
 
   useEffect(() => () => {
@@ -804,6 +857,8 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
 
   const appendProcessDraftRow = useCallback(() => {
     if (!selectedIngredientId) return;
+    const selected = ingredients.find(i => i.id === selectedIngredientId);
+    if (selected?.isActive === false) return showToast('停用母料不能新增加工', 'error');
     const firstMethod = methods.find(m => m.isActive && m.code !== 'WHOLE') || methods.find(m => m.isActive);
     if (!firstMethod) return showToast('尚未設定可用加工方式', 'error');
     const suffix = Date.now().toString().slice(-4);
@@ -815,9 +870,11 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       category: firstMethod.category,
       yieldRate: 0.85,
     }]));
-  }, [methods, selectedIngredientId, showToast]);
+  }, [methods, selectedIngredientId, ingredients, showToast]);
 
   const saveDraftProcessRow = async (draft: ProcessDraftRow) => {
+    const ing = ingredientMap.get(draft.ingredientId);
+    if (ing?.isActive === false) return showToast('停用母料不能保存加工', 'error');
     if (!isYieldValid(draft.yieldRate)) {
       return showToast('Yield 必須介乎 0.5 至 1.0', 'error');
     }
@@ -866,7 +923,15 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     });
   }, [tab, selectedIngredientId, processRows, ensureWholeBaselineForIngredient]);
 
+  const selectedIngredient = useMemo(
+    () => ingredients.find(m => m.id === selectedIngredientId),
+    [ingredients, selectedIngredientId]
+  );
+  const selectedIngredientInactive = selectedIngredient?.isActive === false;
+
   const saveProcessRow = async (row: ProcessRow) => {
+    const ing = ingredientMap.get(row.ingredientId);
+    if (ing?.isActive === false) return showToast('停用母料不能保存加工', 'error');
     if (!isYieldValid(row.yieldRate, row.isDefaultPiece)) {
       return showToast('Yield 必須介乎 0.5 至 1.0', 'error');
     }
@@ -1004,6 +1069,8 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   };
 
   const addPackDraftRow = (process: ProcessRow) => {
+    const ing = ingredientMap.get(process.ingredientId);
+    if (ing?.isActive === false) return showToast('停用母料不能新增包裝規格', 'error');
     const defaultMode: PricingType = 'fixed_pack';
     setPackDraftRows(prev => [...prev, {
       tempId: mkId('TMP-PK'),
@@ -1020,6 +1087,8 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   };
 
   const savePackDraftRow = async (draft: PackDraftRow) => {
+    const ing = ingredientMap.get(draft.ingredientId);
+    if (ing?.isActive === false) return showToast('停用母料不能保存包裝', 'error');
     if (!draft.name.trim()) return showToast('請輸入規格名稱', 'error');
     if (draft.pricingType === 'fixed_pack' && (draft.specWeight || 0) <= 0) return showToast('定額規格需設定數量', 'error');
     const fee = packagingFeeByCodes(draft.packagingItemCodes);
@@ -1099,6 +1168,8 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   };
 
   const savePackRow = async (row: PackRow) => {
+    const ing = ingredientMap.get(row.ingredientId);
+    if (ing?.isActive === false) return showToast('停用母料不能保存包裝', 'error');
     const lb = row.pricingType === 'fixed_pack' ? convertWeight(row.specWeight || 0, row.specUnit, 'lb') : null;
     const fee = packagingFeeByCodes(row.packagingItemCodes || []);
     const updatePayload: any = {
@@ -1352,29 +1423,22 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     const draft = pricingDrafts[rowKey];
     if (!draft) return;
     const ingredient = ingredientMap.get(row.pack.ingredientId);
+    if (ingredient?.isActive === false) return showToast('停用母料不可儲存 SKU 成本', 'error');
     const process = row.process || processMap.get(row.pack.processSpecId);
     const materialCategory = (ingredient?.category || '').trim();
     const displayName = buildSkuDisplayName(row);
-    const p0Price = Number(draft.tiers.P0?.price) || 0;
-    const p1Price = Number(draft.tiers.P1?.price) || p0Price;
-    const p2Price = Number(draft.tiers.P2?.price) || p1Price;
-    const p3Price = Number(draft.tiers.P3?.price) || p2Price;
     const effectiveCost = Number.isFinite(Number(draft.costOverride)) ? Number(draft.costOverride) : calcTotalCost(row.pack);
     const productId = row.sku?.productId || mkId('P');
+    const existingProduct = products.find(p => p.id === productId);
     const skuId = row.sku?.id || mkId('SKU');
     const skuCode = row.sku?.code || `${displayName.toUpperCase().replace(/\s+/g, '_').replace(/[^A-Z0-9_]/g, '').slice(0, 28)}_${Date.now().toString().slice(-4)}`;
 
     const payload = {
       costOverride: draft.costOverride ?? null,
-      P0: draft.tiers.P0,
-      P1: draft.tiers.P1,
-      P2: draft.tiers.P2,
-      P3: draft.tiers.P3,
-      p123UnitMode,
     };
     const merged = { ...pricingOverrides, [rowKey]: payload };
-    const { error } = await supabase.from('site_config').upsert({ id: 'material_flow_price_overrides', value: merged });
-    if (error) return showToast(`保存控價失敗：${error.message}`, 'error');
+    const { error } = await supabase.from('site_config').upsert({ id: 'material_flow_cost_overrides', value: merged });
+    if (error) return showToast(`保存成本覆蓋失敗：${error.message}`, 'error');
 
     const materialSkuPayload = {
       id: skuId,
@@ -1384,11 +1448,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       product_id: productId,
       category_id: materialCategory || null,
       effective_cost: effectiveCost,
-      p0_price: p0Price,
-      p1_price: p1Price,
-      p2_price: p2Price,
-      p3_price: p3Price,
-      p123_unit_mode: p123UnitMode,
       pricing_payload: payload,
       is_active: true,
       updated_at: new Date().toISOString(),
@@ -1402,8 +1461,8 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       id: productId,
       name: displayName,
       categories: materialCategory ? [materialCategory] : [],
-      price: p0Price,
-      member_price: p1Price,
+      price: existingProduct?.price ?? 0,
+      member_price: existingProduct?.memberPrice ?? 0,
       cost_price: effectiveCost,
       stock: 0,
       track_inventory: true,
@@ -1449,12 +1508,13 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     }]));
     setProducts(prev => {
       const exists = prev.some(p => p.id === productId);
+      const current = prev.find(p => p.id === productId);
       const nextProduct = {
         id: productId,
         name: displayName,
         categories: materialCategory ? [materialCategory] : [],
-        price: p0Price,
-        memberPrice: p1Price,
+        price: current?.price ?? 0,
+        memberPrice: current?.memberPrice ?? 0,
         stock: 0,
         trackInventory: true,
         tags: ['sellable_sku', 'material_flow'],
@@ -1470,7 +1530,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     });
 
     setPricingOverrides(merged);
-    showToast('控價已儲存並同步產品清單', 'success');
+    showToast('SKU 與成本已儲存並同步產品清單', 'success');
   };
 
   const exportQuotePdf = () => {
@@ -1501,7 +1561,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         <div className="p-2 bg-slate-900 text-white rounded-xl"><Grid3X3 size={16} /></div>
         <div>
           <h3 className="font-black text-sm text-slate-900">4-Step Material Flow Workstation</h3>
-          <p className="text-[11px] font-bold text-slate-500">母料 → 加工 → 包裝 → SKU 控價（含分類與分裝欄位）</p>
+          <p className="text-[11px] font-bold text-slate-500">母料 → 加工 → 包裝 → SKU 成本（含分類與分裝欄位）</p>
         </div>
         <button onClick={() => void loadAll()} className="ml-auto px-3 py-2 rounded-xl border border-slate-200 text-xs font-black text-slate-600 flex items-center gap-1.5">{loading ? <RefreshCw size={12} className="animate-spin" /> : <Save size={12} />} Refresh</button>
       </div>
@@ -1510,7 +1570,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         <button onClick={() => setTab('raw')} className={`px-7 py-3.5 rounded-xl text-lg font-bold flex items-center gap-2 ${tab === 'raw' ? 'bg-blue-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Layers size={16} />1. 母料</button>
         <button onClick={() => setTab('process')} className={`px-7 py-3.5 rounded-xl text-lg font-bold flex items-center gap-2 ${tab === 'process' ? 'bg-violet-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Scissors size={16} />2. 加工</button>
         <button onClick={() => setTab('pack')} className={`px-7 py-3.5 rounded-xl text-lg font-bold flex items-center gap-2 ${tab === 'pack' ? 'bg-amber-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Package size={16} />3. 包裝</button>
-        <button onClick={() => setTab('sku')} className={`px-7 py-3.5 rounded-xl text-lg font-bold flex items-center gap-2 ${tab === 'sku' ? 'bg-emerald-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Grid3X3 size={16} />4. SKU 控價</button>
+        <button onClick={() => setTab('sku')} className={`px-7 py-3.5 rounded-xl text-lg font-bold flex items-center gap-2 ${tab === 'sku' ? 'bg-emerald-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Grid3X3 size={16} />4. SKU 成本</button>
       </div>
 
       <div className="bg-white border border-slate-100 rounded-2xl p-3 flex flex-wrap items-center gap-2">
@@ -1614,7 +1674,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                 </td>
               </tr>
               {materials.map(i => (
-                <tr key={i.id} className={`border-t border-slate-100 ${editingIngredientId === i.id ? 'bg-emerald-50/30' : ''}`} onDoubleClick={() => setEditingIngredientId(i.id)}>
+                <tr key={i.id} className={`border-t border-slate-100 ${editingIngredientId === i.id ? 'bg-emerald-50/30' : ''} ${i.isActive === false ? 'opacity-50 bg-slate-50' : ''}`} onDoubleClick={() => setEditingIngredientId(i.id)}>
                   <td className="px-2 py-1.5">
                     {editingIngredientId === i.id ? (
                       <input
@@ -1733,6 +1793,8 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                       ) : (
                         <button onClick={() => setEditingIngredientId(i.id)} className="px-2 py-1 rounded border border-slate-200 text-[10px] font-black text-slate-600 inline-flex items-center gap-1"><Pencil size={11} />編輯</button>
                       )}
+                      <button onClick={() => void toggleIngredientActive(i, i.isActive === false)} className={`px-2 py-1 rounded border text-[10px] font-black ${i.isActive === false ? 'border-emerald-200 text-emerald-600' : 'border-amber-200 text-amber-600'}`}>{i.isActive === false ? '▶ 啟用' : '⏸ 停用'}</button>
+                      <button onClick={() => void deleteIngredient(i)} className="px-2 py-1 rounded border border-rose-200 text-[10px] font-black text-rose-600">🗑️ 刪除</button>
                     </div>
                   </td>
                 </tr>
@@ -1757,17 +1819,17 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
             </div>
             <div className="space-y-1 max-h-[34rem] overflow-auto">
               {processMaterials.map(m => (
-                <button key={m.id} onClick={() => setSelectedIngredientId(m.id)} className={`w-full text-left px-3 py-2 rounded-lg text-sm font-bold ${selectedIngredientId === m.id ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-slate-50 border border-slate-200 text-slate-700'}`}>
+                <button key={m.id} onClick={() => setSelectedIngredientId(m.id)} className={`w-full text-left px-3 py-2 rounded-lg text-sm font-bold ${selectedIngredientId === m.id ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-slate-50 border border-slate-200 text-slate-700'} ${m.isActive === false ? 'opacity-50' : ''}`}>
                   <div>{m.name}</div>
-                  <div className="text-[10px] font-black text-slate-500 mt-0.5">{m.category || '未分類'}</div>
+                  <div className="text-[10px] font-black text-slate-500 mt-0.5">{m.category || '未分類'}{m.isActive === false ? ' · 已停用' : ''}</div>
                 </button>
               ))}
             </div>
           </div>
           <div className="bg-white border border-slate-100 rounded-2xl p-3">
             <div className="flex items-center justify-between mb-2">
-              <h4 className="font-black text-base text-slate-900">{ingredients.find(m => m.id === selectedIngredientId)?.name || '請先選材料'}</h4>
-              <span className="text-[11px] font-black text-slate-500">加工工作台</span>
+              <h4 className="font-black text-base text-slate-900">{selectedIngredient?.name || '請先選材料'}</h4>
+              <span className={`text-[11px] font-black ${selectedIngredientInactive ? 'text-amber-600' : 'text-slate-500'}`}>{selectedIngredientInactive ? '加工工作台（已停用）' : '加工工作台'}</span>
             </div>
             <div className="overflow-auto max-h-[34rem] border border-slate-100 rounded-xl">
               <table className="w-full text-xs">
@@ -1792,12 +1854,13 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                           ) : (
                             <select
                               value={r.methodId || ''}
+                              disabled={selectedIngredientInactive}
                               onChange={e => {
                                 const method = methods.find(m => m.id === e.target.value);
                                 if (!method) return;
                                 setProcessRows(prev => prev.map(x => x.id === r.id ? { ...x, methodId: method.id, code: method.code, name: method.name, category: method.category } : x));
                               }}
-                              className="w-full p-1 border border-slate-200 rounded font-bold"
+                              className="w-full p-1 border border-slate-200 rounded font-bold disabled:opacity-50"
                             >
                               {methods.filter(m => m.isActive).map(m => <option key={m.id} value={m.id}>{m.code} · {m.name}</option>)}
                             </select>
@@ -1808,7 +1871,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                         </td>
                         <td className="px-2 py-1.5">
                           <input
-                            disabled={r.isDefaultPiece}
+                            disabled={r.isDefaultPiece || selectedIngredientInactive}
                             type="number"
                             min="0.5"
                             max="1"
@@ -1823,7 +1886,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                           {r.isDefaultPiece ? (
                             <span className="text-[10px] font-black text-slate-400">基準列</span>
                           ) : (
-                            <button disabled={invalidYield} onClick={() => void saveProcessRow(r)} className={`px-2 py-1 rounded text-[10px] font-black ${invalidYield ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white'}`}>💾 確定儲存加工</button>
+                            <button disabled={invalidYield || selectedIngredientInactive} onClick={() => void saveProcessRow(r)} className={`px-2 py-1 rounded text-[10px] font-black ${invalidYield || selectedIngredientInactive ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white'}`}>💾 確定儲存加工</button>
                           )}
                         </td>
                       </tr>
@@ -1837,6 +1900,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                         <td className="px-2 py-1.5">
                           <select
                             value={d.methodId || ''}
+                            disabled={selectedIngredientInactive}
                             onChange={e => {
                               const method = methods.find(m => m.id === e.target.value);
                               if (!method) return;
@@ -1849,16 +1913,16 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                                 packUnit: method.category === 'repacking' ? (x.packUnit || 'g') : undefined,
                               } : x));
                             }}
-                            className="w-full p-1 border border-slate-200 rounded font-bold"
+                            className="w-full p-1 border border-slate-200 rounded font-bold disabled:opacity-50"
                           >
                             {methods.filter(m => m.isActive).map(m => <option key={m.id} value={m.id}>{m.code} · {m.name}</option>)}
                           </select>
                         </td>
                         <td className="px-2 py-1.5"><span className={`inline-block px-2 py-0.5 text-[10px] rounded-full border ${categoryBadge(d.category)}`}>{categoryLabel(d.category)}</span></td>
-                        <td className="px-2 py-1.5"><input type="number" min="0.5" max="1" step="0.01" value={d.yieldRate} onChange={e => setProcessDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, yieldRate: Number(e.target.value) || 0 } : x))} className={`w-24 p-1 border rounded text-right font-bold ml-auto block ${invalidYield ? 'border-rose-400 bg-rose-50 text-rose-700' : 'border-slate-200'}`} /></td>
+                        <td className="px-2 py-1.5"><input disabled={selectedIngredientInactive} type="number" min="0.5" max="1" step="0.01" value={d.yieldRate} onChange={e => setProcessDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, yieldRate: Number(e.target.value) || 0 } : x))} className={`w-24 p-1 border rounded text-right font-bold ml-auto block disabled:opacity-50 ${invalidYield ? 'border-rose-400 bg-rose-50 text-rose-700' : 'border-slate-200'}`} /></td>
                         <td className="px-2 py-1.5 text-right font-black text-amber-700">${previewCost.toFixed(2)}</td>
                         <td className="px-2 py-1.5 text-right">
-                          <button disabled={invalidYield} onClick={() => void saveDraftProcessRow(d)} className={`px-2 py-1 rounded text-[10px] font-black ${invalidYield ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white'}`}>💾 確定儲存加工</button>
+                          <button disabled={invalidYield || selectedIngredientInactive} onClick={() => void saveDraftProcessRow(d)} className={`px-2 py-1 rounded text-[10px] font-black ${invalidYield || selectedIngredientInactive ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white'}`}>💾 確定儲存加工</button>
                         </td>
                       </tr>
                     );
@@ -1866,7 +1930,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                 </tbody>
               </table>
             </div>
-            <button onClick={appendProcessDraftRow} className="mt-3 px-3 py-2 rounded-lg bg-violet-600 text-white text-xs font-black inline-flex items-center gap-1"><Plus size={12} />➕ 新增加工方式</button>
+            <button disabled={selectedIngredientInactive} onClick={appendProcessDraftRow} className={`mt-3 px-3 py-2 rounded-lg text-xs font-black inline-flex items-center gap-1 ${selectedIngredientInactive ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-violet-600 text-white'}`}><Plus size={12} />➕ 新增加工方式</button>
           </div>
         </div>
       )}
@@ -1885,13 +1949,13 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
               />
             </div>
             <div className="space-y-1 max-h-[34rem] overflow-auto">
-              {packMaterials.map(m => <button key={m.id} onClick={() => setSelectedIngredientId(m.id)} className={`w-full text-left px-3 py-2 rounded-lg text-sm font-bold ${selectedIngredientId === m.id ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-slate-50 border border-slate-200 text-slate-700'}`}><div>{m.name}</div><div className="text-[10px] font-black text-slate-500 mt-0.5">{m.category || '未分類'}</div></button>)}
+              {packMaterials.map(m => <button key={m.id} onClick={() => setSelectedIngredientId(m.id)} className={`w-full text-left px-3 py-2 rounded-lg text-sm font-bold ${selectedIngredientId === m.id ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-slate-50 border border-slate-200 text-slate-700'} ${m.isActive === false ? 'opacity-50' : ''}`}><div>{m.name}</div><div className="text-[10px] font-black text-slate-500 mt-0.5">{m.category || '未分類'}{m.isActive === false ? ' · 已停用' : ''}</div></button>)}
             </div>
           </div>
           <div className="bg-white border border-slate-100 rounded-2xl p-3">
             <div className="flex items-center justify-between mb-2">
-              <h4 className="font-black text-sm text-slate-900">{materials.find(m => m.id === selectedIngredientId)?.name || '請先選母料'}</h4>
-              <span className="text-[11px] font-black text-slate-500">包裝工作台</span>
+              <h4 className="font-black text-sm text-slate-900">{selectedIngredient?.name || '請先選母料'}</h4>
+              <span className={`text-[11px] font-black ${selectedIngredientInactive ? 'text-amber-600' : 'text-slate-500'}`}>{selectedIngredientInactive ? '包裝工作台（已停用）' : '包裝工作台'}</span>
             </div>
 
             <div className="space-y-3 max-h-[34rem] overflow-auto">
@@ -1902,13 +1966,13 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                 const rows = packRowsForMaterial.filter(r => r.processSpecId === proc.id);
                 const drafts = packDraftRowsForMaterial.filter(r => r.processSpecId === proc.id);
                 return (
-                  <div key={proc.id} className="border border-slate-100 rounded-xl bg-white">
+                  <div key={proc.id} className={`border border-slate-100 rounded-xl bg-white ${selectedIngredientInactive ? 'opacity-50' : ''}`}>
                     <div className="px-3 py-2 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
                       <div>
                         <p className="text-sm font-black text-slate-900">【加工工序: {method?.name || proc.name}】— 當前肉成本: ${costPerLb.toFixed(2)} / lb</p>
                         <span className={`inline-block mt-1 px-2 py-0.5 text-[10px] rounded-full border ${categoryBadge(method?.category || proc.category)}`}>{categoryLabel(method?.category || proc.category)}</span>
                       </div>
-                      <button onClick={() => addPackDraftRow(proc)} className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-black inline-flex items-center gap-1"><Plus size={12} />➕ 新增包裝規格</button>
+                      <button disabled={selectedIngredientInactive} onClick={() => addPackDraftRow(proc)} className={`px-3 py-1.5 rounded-lg text-xs font-black inline-flex items-center gap-1 ${selectedIngredientInactive ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-amber-600 text-white'}`}><Plus size={12} />➕ 新增包裝規格</button>
                     </div>
                     <div className="overflow-auto">
                       <table className="w-full text-xs">
@@ -1929,13 +1993,13 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                             const packCost = calcTotalCost({ ...r, packagingFee: fee });
                             return (
                               <tr key={r.id} className="border-t border-slate-100">
-                                <td className="px-2 py-1.5"><input value={r.name} onChange={e => setPackRows(prev => prev.map(x => x.id === r.id ? { ...x, name: e.target.value } : x))} className="w-full p-1 border border-slate-200 rounded font-bold" /></td>
-                                <td className="px-2 py-1.5"><select value={r.pricingType} onChange={e => setPackRows(prev => prev.map(x => x.id === r.id ? { ...x, pricingType: e.target.value as PricingType } : x))} className="p-1 border border-slate-200 rounded font-bold"><option value="fixed_pack">定額</option><option value="by_piece">抄碼</option></select></td>
+                                <td className="px-2 py-1.5"><input disabled={selectedIngredientInactive} value={r.name} onChange={e => setPackRows(prev => prev.map(x => x.id === r.id ? { ...x, name: e.target.value } : x))} className="w-full p-1 border border-slate-200 rounded font-bold disabled:opacity-50" /></td>
+                                <td className="px-2 py-1.5"><select disabled={selectedIngredientInactive} value={r.pricingType} onChange={e => setPackRows(prev => prev.map(x => x.id === r.id ? { ...x, pricingType: e.target.value as PricingType } : x))} className="p-1 border border-slate-200 rounded font-bold disabled:opacity-50"><option value="fixed_pack">定額</option><option value="by_piece">抄碼</option></select></td>
                                 <td className="px-2 py-1.5">
                                   {r.pricingType === 'fixed_pack' ? (
                                     <div className="flex gap-1">
-                                      <input type="number" value={r.specWeight} onChange={e => setPackRows(prev => prev.map(x => x.id === r.id ? { ...x, specWeight: Number(e.target.value) || 0 } : x))} className="w-20 p-1 border border-slate-200 rounded text-right font-bold" />
-                                      <select value={r.specUnit} onChange={e => setPackRows(prev => prev.map(x => x.id === r.id ? { ...x, specUnit: e.target.value as WeightUnit } : x))} className="p-1 border border-slate-200 rounded font-bold"><option value="g">g</option><option value="lb">lb</option><option value="kg">kg</option><option value="catty">斤</option></select>
+                                      <input disabled={selectedIngredientInactive} type="number" value={r.specWeight} onChange={e => setPackRows(prev => prev.map(x => x.id === r.id ? { ...x, specWeight: Number(e.target.value) || 0 } : x))} className="w-20 p-1 border border-slate-200 rounded text-right font-bold disabled:opacity-50" />
+                                      <select disabled={selectedIngredientInactive} value={r.specUnit} onChange={e => setPackRows(prev => prev.map(x => x.id === r.id ? { ...x, specUnit: e.target.value as WeightUnit } : x))} className="p-1 border border-slate-200 rounded font-bold disabled:opacity-50"><option value="g">g</option><option value="lb">lb</option><option value="kg">kg</option><option value="catty">斤</option></select>
                                     </div>
                                   ) : <span className="text-slate-300">-</span>}
                                 </td>
@@ -1947,6 +2011,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                                         <label key={item.code} className="inline-flex items-center gap-1 font-bold text-slate-700">
                                           <input
                                             type="checkbox"
+                                            disabled={selectedIngredientInactive}
                                             checked={checked}
                                             onChange={e => {
                                               const nextCodes = e.target.checked ? [...checkedCodes, item.code] : checkedCodes.filter(c => c !== item.code);
@@ -1963,7 +2028,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                                 <td className="px-2 py-1.5 text-right font-black text-amber-700">${packCost.toFixed(2)}</td>
                                 <td className="px-2 py-1.5 text-right">
                                   <div className="inline-flex items-center gap-1">
-                                    <button onClick={() => void savePackRow({ ...r, packagingFee: fee })} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">💾 儲存規格</button>
+                                    <button disabled={selectedIngredientInactive} onClick={() => void savePackRow({ ...r, packagingFee: fee })} className={`px-2 py-1 rounded text-[10px] font-black ${selectedIngredientInactive ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white'}`}>💾 儲存規格</button>
                                     {!isWholeProcess && (
                                       <button onClick={() => void deletePackRow(r.id)} className="px-2 py-1 rounded border border-rose-200 text-rose-600 text-[10px] font-black">🗑️ 刪除</button>
                                     )}
@@ -1992,13 +2057,13 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                             const packCost = calcTotalCost(draftPackLike);
                             return (
                               <tr key={d.tempId} className="border-t border-blue-100 bg-blue-50/40">
-                                <td className="px-2 py-1.5"><input value={d.name} onChange={e => setPackDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, name: e.target.value } : x))} className="w-full p-1 border border-slate-200 rounded font-bold" /></td>
-                                <td className="px-2 py-1.5"><select value={d.pricingType} onChange={e => setPackDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, pricingType: e.target.value as PricingType } : x))} className="p-1 border border-slate-200 rounded font-bold"><option value="fixed_pack">定額</option><option value="by_piece">抄碼</option></select></td>
+                                <td className="px-2 py-1.5"><input disabled={selectedIngredientInactive} value={d.name} onChange={e => setPackDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, name: e.target.value } : x))} className="w-full p-1 border border-slate-200 rounded font-bold disabled:opacity-50" /></td>
+                                <td className="px-2 py-1.5"><select disabled={selectedIngredientInactive} value={d.pricingType} onChange={e => setPackDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, pricingType: e.target.value as PricingType } : x))} className="p-1 border border-slate-200 rounded font-bold disabled:opacity-50"><option value="fixed_pack">定額</option><option value="by_piece">抄碼</option></select></td>
                                 <td className="px-2 py-1.5">
                                   {d.pricingType === 'fixed_pack' ? (
                                     <div className="flex gap-1">
-                                      <input type="number" value={d.specWeight} onChange={e => setPackDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, specWeight: Number(e.target.value) || 0 } : x))} className="w-20 p-1 border border-slate-200 rounded text-right font-bold" />
-                                      <select value={d.specUnit} onChange={e => setPackDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, specUnit: e.target.value as WeightUnit } : x))} className="p-1 border border-slate-200 rounded font-bold"><option value="g">g</option><option value="lb">lb</option><option value="kg">kg</option><option value="catty">斤</option></select>
+                                      <input disabled={selectedIngredientInactive} type="number" value={d.specWeight} onChange={e => setPackDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, specWeight: Number(e.target.value) || 0 } : x))} className="w-20 p-1 border border-slate-200 rounded text-right font-bold disabled:opacity-50" />
+                                      <select disabled={selectedIngredientInactive} value={d.specUnit} onChange={e => setPackDraftRows(prev => prev.map(x => x.tempId === d.tempId ? { ...x, specUnit: e.target.value as WeightUnit } : x))} className="p-1 border border-slate-200 rounded font-bold disabled:opacity-50"><option value="g">g</option><option value="lb">lb</option><option value="kg">kg</option><option value="catty">斤</option></select>
                                     </div>
                                   ) : <span className="text-slate-300">-</span>}
                                 </td>
@@ -2010,6 +2075,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                                         <label key={item.code} className="inline-flex items-center gap-1 font-bold text-slate-700">
                                           <input
                                             type="checkbox"
+                                            disabled={selectedIngredientInactive}
                                             checked={checked}
                                             onChange={e => {
                                               const nextCodes = e.target.checked ? [...d.packagingItemCodes, item.code] : d.packagingItemCodes.filter(c => c !== item.code);
@@ -2026,7 +2092,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                                 <td className="px-2 py-1.5 text-right font-black text-amber-700">${packCost.toFixed(2)}</td>
                                 <td className="px-2 py-1.5 text-right">
                                   <div className="inline-flex items-center gap-1">
-                                    <button onClick={() => void savePackDraftRow(d)} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">💾 儲存規格</button>
+                                    <button disabled={selectedIngredientInactive} onClick={() => void savePackDraftRow(d)} className={`px-2 py-1 rounded text-[10px] font-black ${selectedIngredientInactive ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white'}`}>💾 儲存規格</button>
                                     {!isWholeProcess && (
                                       <button onClick={() => setPackDraftRows(prev => prev.filter(x => x.tempId !== d.tempId))} className="px-2 py-1 rounded border border-rose-200 text-rose-600 text-[10px] font-black">🗑️ 刪除</button>
                                     )}
@@ -2051,41 +2117,23 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
 
       {tab === 'sku' && (
         <div className="space-y-3">
-          <div className="bg-white border border-slate-100 rounded-2xl p-3">
-            <button onClick={() => setShowStoplightConfig(prev => !prev)} className="w-full flex items-center justify-between px-3 py-2 rounded-xl border border-slate-200 text-left">
-              <span className="font-black text-sm text-slate-900">🚦 利潤燈號安全閾值設定</span>
-              <span className="text-xs font-black text-slate-500">{showStoplightConfig ? '收起' : '展開'}</span>
-            </button>
-            {showStoplightConfig && (
-              <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2">
-                <label className="text-xs font-black text-emerald-700">🟢 綠燈 (&gt;= %)<input type="number" value={greenThresholdPct} onChange={e => setGreenThresholdPct(Number(e.target.value) || 15)} className="mt-1 w-full p-2 border border-slate-200 rounded-lg text-sm font-bold text-slate-700" /></label>
-                <label className="text-xs font-black text-amber-700">🟡 橙燈 (介乎)<div className="mt-1 w-full p-2 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 bg-slate-50">{`${redThresholdPct}% ~ ${greenThresholdPct}%`}</div></label>
-                <label className="text-xs font-black text-rose-700">🔴 紅燈 (&lt; %)<input type="number" value={redThresholdPct} onChange={e => setRedThresholdPct(Number(e.target.value) || 5)} className="mt-1 w-full p-2 border border-slate-200 rounded-lg text-sm font-bold text-slate-700" /></label>
-              </div>
-            )}
-          </div>
-
           <div className="bg-white border border-slate-100 rounded-2xl p-3 flex flex-wrap items-center gap-2">
             <div className="relative flex-1 min-w-[260px]">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input value={skuSearch} onChange={e => setSkuSearch(e.target.value)} placeholder="搜尋 SKU 名稱..." className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 text-sm font-bold" />
             </div>
-            <div className="inline-flex items-center rounded-lg border border-slate-200 overflow-hidden">
-              <button onClick={() => setP123UnitMode('whole_pack')} className={`px-2.5 py-2 text-[11px] font-black ${p123UnitMode === 'whole_pack' ? 'bg-slate-900 text-white' : 'bg-white text-slate-600'}`}>整包計價</button>
-              <button onClick={() => setP123UnitMode('per_lb')} className={`px-2.5 py-2 text-[11px] font-black ${p123UnitMode === 'per_lb' ? 'bg-slate-900 text-white' : 'bg-white text-slate-600'}`}>➔ 按磅計價</button>
-            </div>
-            <label className="text-[11px] font-black text-slate-500">P0 基準分母</label><input type="number" step="0.01" value={baseDenominator} onChange={e => setBaseDenominator(Number(e.target.value) || 0.88)} className="w-24 p-2 border border-slate-200 rounded-lg text-xs font-black" />
-            <label className="text-[11px] font-black text-slate-500">級距</label><input type="number" step="0.005" value={tierStep} onChange={e => setTierStep(Number(e.target.value) || 0.01)} className="w-20 p-2 border border-slate-200 rounded-lg text-xs font-black" />
-            <button onClick={() => setShowTierModal(true)} className="ml-auto px-3 py-2 rounded-lg bg-slate-900 text-white text-xs font-black flex items-center gap-1"><FileDown size={12} />下載報價 PDF</button>
+            <p className="text-[11px] font-black text-slate-500">Tab 4 只處理 SKU 與最終成本，渠道定價改由零售/批發模組處理。</p>
           </div>
           <div className="bg-white border border-slate-100 rounded-2xl p-3 overflow-auto">
             <table className="w-full text-xs">
-              <thead><tr className="bg-slate-50 text-slate-500"><th className="px-2 py-2">#</th><th className="px-2 py-2 text-left">商品 SKU 名稱</th><th className="px-2 py-2 text-left">加工大類</th><th className="px-2 py-2 text-right">基準總成本</th><th className="px-2 py-2 text-right">成本手動覆蓋</th><th className="px-2 py-2 text-right">有效商品成本</th>{tierDefs.map(t => <th key={t.key} className="px-2 py-2 text-left min-w-[170px]">{t.key}</th>)}<th className="px-2 py-2 text-right">操作</th></tr></thead>
+              <thead><tr className="bg-slate-50 text-slate-500"><th className="px-2 py-2">#</th><th className="px-2 py-2 text-left">商品 SKU 名稱</th><th className="px-2 py-2 text-left">加工大類</th><th className="px-2 py-2 text-right">基準總成本</th><th className="px-2 py-2 text-right">成本手動覆蓋</th><th className="px-2 py-2 text-right">有效商品成本</th><th className="px-2 py-2 text-right">操作</th></tr></thead>
               <tbody>
                 {skuPricingRows.map((row, idx) => {
                   const s = row.sku;
                   const pack = row.pack;
                   const process = row.process;
+                  const ingredient = ingredientMap.get(pack.ingredientId);
+                  const inactive = ingredient?.isActive === false;
                   const baseCost = calcTotalCost(pack);
                   const rowKey = skuRowKey(row);
                   const draft = pricingDrafts[rowKey] || {
@@ -2098,71 +2146,22 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                     },
                   };
                   const effectiveCost = draft.costOverride != null && Number.isFinite(draft.costOverride) ? draft.costOverride : baseCost;
-                  const divisor = Math.max(0.0001, packSizeLb(pack));
-                  const effectiveCostPerLb = round2(effectiveCost / divisor);
                   return (
-                    <tr key={rowKey} className="border-t border-slate-100">
+                    <tr key={rowKey} className={`border-t border-slate-100 ${inactive ? 'bg-slate-50 opacity-50' : ''}`}>
                       <td className="px-2 py-1.5 text-center">{idx + 1}</td>
                       <td className="px-2 py-1.5"><div className="font-black">{buildSkuDisplayName(row)}</div><div className="text-[10px] text-slate-400">{s?.code || `${pack.code} · 待建立 SKU`}</div></td>
                       <td className="px-2 py-1.5"><span className={`inline-block px-2 py-0.5 text-[10px] rounded-full border ${categoryBadge(process?.category || 'others')}`}>{categoryLabel(process?.category || 'others')}</span></td>
                       <td className="px-2 py-1.5 text-right font-black text-amber-700">${baseCost.toFixed(2)}</td>
-                      <td className="px-2 py-1.5 text-right"><input value={draft.costOverride ?? ''} onChange={e => {
+                      <td className="px-2 py-1.5 text-right"><input disabled={inactive} value={draft.costOverride ?? ''} onChange={e => {
                         const raw = e.target.value.trim();
                         const override = raw === '' ? undefined : Number(raw);
                         setPricingDrafts(prev => {
                           const rowState = prev[rowKey] || draft;
-                          const nextCost = override == null || !Number.isFinite(override) ? baseCost : override;
-                          const nextTiers = Object.fromEntries(
-                            (Object.keys(rowState.tiers) as PricingTierKey[]).map(k => [k, { ...rowState.tiers[k], margin: computeMarginPct(rowState.tiers[k].price, nextCost) }])
-                          ) as Record<PricingTierKey, PricingTierState>;
-                          return { ...prev, [rowKey]: { ...rowState, costOverride: override, tiers: nextTiers } };
+                          return { ...prev, [rowKey]: { ...rowState, costOverride: override } };
                         });
-                      }} placeholder="留空=用基準" className="w-24 p-1 border border-slate-200 rounded text-right font-bold ml-auto block" /></td>
+                      }} placeholder="留空=用基準" className="w-24 p-1 border border-slate-200 rounded text-right font-bold ml-auto block disabled:opacity-50" /></td>
                       <td className="px-2 py-1.5 text-right font-black text-slate-800">${effectiveCost.toFixed(2)}</td>
-                      {tierDefs.map(t => {
-                        const tier = draft.tiers[t.key];
-                        const isP123 = t.key !== 'P0';
-                        const usePerLb = isP123 && p123UnitMode === 'per_lb';
-                        const shownPrice = usePerLb ? round2(tier.price / divisor) : tier.price;
-                        const shownMargin = usePerLb ? computeMarginPct(shownPrice, effectiveCostPerLb) : tier.margin;
-                        return (
-                          <td key={t.key} className="px-2 py-1.5">
-                            <div className="space-y-1">
-                              <input
-                                type="number"
-                                step="0.01"
-                                value={shownPrice}
-                                onChange={e => {
-                                  const input = Number(e.target.value) || 0;
-                                  const canonicalPrice = usePerLb ? round2(input * divisor) : input;
-                                  updatePriceInput(rowKey, t.key, canonicalPrice, effectiveCost);
-                                }}
-                                className="w-full p-1 border border-slate-200 rounded text-right font-bold"
-                              />
-                              <div className="flex items-center gap-1">
-                                <input
-                                  type="number"
-                                  step="0.1"
-                                  value={shownMargin}
-                                  onChange={e => {
-                                    const nextMargin = Number(e.target.value) || 0;
-                                    if (usePerLb) {
-                                      const pricePerLb = computePriceFromMargin(effectiveCostPerLb, nextMargin);
-                                      updatePriceInput(rowKey, t.key, round2(pricePerLb * divisor), effectiveCost);
-                                    } else {
-                                      updateMarginInput(rowKey, t.key, nextMargin, effectiveCost);
-                                    }
-                                  }}
-                                  className={`w-full p-1 border border-slate-200 rounded text-right font-bold ${marginTextClass(shownMargin)}`}
-                                />
-                                <span className={`text-[11px] font-black ${marginTextClass(shownMargin)}`}>%</span>
-                              </div>
-                              {usePerLb && <div className="text-[10px] font-bold text-slate-400">按磅價，整包={divisor.toFixed(2)} lb</div>}
-                            </div>
-                          </td>
-                        );
-                      })}
-                      <td className="px-2 py-1.5 text-right"><button onClick={() => void savePricingRow(row)} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">💾 儲存控價</button></td>
+                      <td className="px-2 py-1.5 text-right"><button disabled={inactive} onClick={() => void savePricingRow(row)} className={`px-2 py-1 rounded text-[10px] font-black ${inactive ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white'}`}>💾 儲存 SKU 與成本</button></td>
                     </tr>
                   );
                 })}
@@ -2334,15 +2333,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         </div>
       )}
 
-      {showTierModal && (
-        <div className="fixed inset-0 bg-slate-900/35 z-50 flex items-center justify-center">
-          <div className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 p-4">
-            <h4 className="font-black text-slate-900">請選擇導出的價格梯度 (P0 至 P3)</h4>
-            <div className="grid grid-cols-4 gap-1 mt-3">{tierDefs.map(t => <button key={t.key} onClick={() => setSelectedTierForPdf(t.key)} className={`px-2 py-2 rounded-lg text-xs font-black ${selectedTierForPdf === t.key ? 'bg-slate-900 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600'}`}>{t.key}</button>)}</div>
-            <div className="mt-3 flex justify-end gap-2"><button onClick={() => setShowTierModal(false)} className="px-3 py-2 rounded-lg border border-slate-200 text-xs font-black text-slate-600">取消</button><button onClick={() => { setShowTierModal(false); exportQuotePdf(); }} className="px-3 py-2 rounded-lg bg-slate-900 text-white text-xs font-black">產生 PDF</button></div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
