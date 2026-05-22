@@ -160,6 +160,8 @@ const categoryBadge = (c: MethodCategory) => {
 };
 
 const DEFAULT_MATERIAL_CATEGORIES = ['豬類', '牛類', '雞類', '家禽類', '海鮮類', '其他'] as const;
+const INGREDIENT_ACTIVITY_CFG_ID = 'material_flow_ingredient_activity';
+const INGREDIENT_DELETED_CFG_ID = 'material_flow_deleted_ingredient_ids';
 
 const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }) => {
   const [tab, setTab] = useState<StepTab>('raw');
@@ -324,7 +326,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
           .select('*, sellable_skus!left(id,code,name,alias,ingredient_id,process_spec_id,pack_spec_id,product_id,sale_channel,is_active,sort_order)')
           .order('sort_order')
           .order('name'),
-        supabase.from('site_config').select('id,value').in('id', ['cost_items', 'material_flow_price_overrides', 'material_flow_cost_overrides', 'packaging_items']),
+        supabase.from('site_config').select('id,value').in('id', ['cost_items', 'material_flow_price_overrides', 'material_flow_cost_overrides', 'packaging_items', INGREDIENT_ACTIVITY_CFG_ID, INGREDIENT_DELETED_CFG_ID]),
       ]);
       if (ingRes.error || processRes.error || packRes.error || cfgRes.error) {
         throw (ingRes.error || processRes.error || packRes.error || cfgRes.error);
@@ -333,7 +335,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       await loadPackagingItems();
       await loadMaterialCategories();
 
-      setIngredients((ingRes.data || []).map(mapIngredientRowToIngredient));
+      const rawIngredients = (ingRes.data || []).map(mapIngredientRowToIngredient);
       setProcessRows(uniqueById((processRes.data || []).map((r: any) => ({
         id: r.id,
         ingredientId: r.ingredient_id,
@@ -380,6 +382,17 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       }))));
 
       const cfgMap = new Map((cfgRes.data || []).map((r: any) => [r.id, r.value]));
+      const activityMap = (cfgMap.get(INGREDIENT_ACTIVITY_CFG_ID) && typeof cfgMap.get(INGREDIENT_ACTIVITY_CFG_ID) === 'object')
+        ? (cfgMap.get(INGREDIENT_ACTIVITY_CFG_ID) as Record<string, boolean>)
+        : {};
+      const deletedIds = Array.isArray(cfgMap.get(INGREDIENT_DELETED_CFG_ID))
+        ? new Set((cfgMap.get(INGREDIENT_DELETED_CFG_ID) as any[]).map(v => String(v)))
+        : new Set<string>();
+      setIngredients(
+        rawIngredients
+          .filter(i => !deletedIds.has(i.id))
+          .map(i => ({ ...i, isActive: activityMap[i.id] ?? (i.isActive !== false) }))
+      );
       if (Array.isArray(cfgMap.get('cost_items'))) setCostItems(cfgMap.get('cost_items') as CostItem[]);
       if (packagingItems.length === 0 && Array.isArray(cfgMap.get('packaging_items'))) {
         const rows = (cfgMap.get('packaging_items') as any[]).map((item: any) => ({
@@ -706,12 +719,62 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     return true;
   };
 
+  const persistIngredientActivityFallback = async (ingredientId: string, nextActive: boolean) => {
+    const cfg = await supabase
+      .from('site_config')
+      .select('value')
+      .eq('id', INGREDIENT_ACTIVITY_CFG_ID)
+      .maybeSingle();
+    const prev = (!cfg.error && cfg.data?.value && typeof cfg.data.value === 'object')
+      ? (cfg.data.value as Record<string, boolean>)
+      : {};
+    const next = { ...prev, [ingredientId]: nextActive };
+    const upsert = await supabase.from('site_config').upsert({ id: INGREDIENT_ACTIVITY_CFG_ID, value: next });
+    return !upsert.error;
+  };
+
+  const hideIngredientFallback = async (ingredientId: string) => {
+    const cfg = await supabase
+      .from('site_config')
+      .select('value')
+      .eq('id', INGREDIENT_DELETED_CFG_ID)
+      .maybeSingle();
+    const prev = (!cfg.error && Array.isArray(cfg.data?.value))
+      ? (cfg.data!.value as any[]).map(v => String(v))
+      : [];
+    const next = Array.from(new Set([...prev, ingredientId]));
+    const upsert = await supabase.from('site_config').upsert({ id: INGREDIENT_DELETED_CFG_ID, value: next });
+    return !upsert.error;
+  };
+
+  const removeIngredientLocally = (ingredientId: string) => {
+    setIngredients(prev => prev.filter(i => i.id !== ingredientId));
+    setProcessRows(prev => prev.filter(r => r.ingredientId !== ingredientId));
+    setPackRows(prev => prev.filter(r => r.ingredientId !== ingredientId));
+    setPackDraftRows(prev => prev.filter(r => r.ingredientId !== ingredientId));
+    setProcessDraftRows(prev => prev.filter(r => r.ingredientId !== ingredientId));
+    setSkuRows(prev => prev.filter(r => r.ingredientId !== ingredientId));
+    if (selectedIngredientId === ingredientId) {
+      const fallback = ingredients.find(i => i.id !== ingredientId && i.isActive !== false) || ingredients.find(i => i.id !== ingredientId);
+      setSelectedIngredientId(fallback?.id || '');
+    }
+  };
+
   const toggleIngredientActive = async (item: Ingredient, nextActive: boolean) => {
     const { error } = await supabase
       .from('ingredients')
       .update({ is_active: nextActive })
       .eq('id', item.id);
-    if (error) return showToast(`更新母料狀態失敗：${error.message}`, 'error');
+    if (error) {
+      const msg = String(error.message || '').toLowerCase();
+      const canFallback = error.code === '42703' || error.code === '42501' || msg.includes('is_active') || msg.includes('row-level security');
+      if (!canFallback) return showToast(`更新母料狀態失敗：${error.message}`, 'error');
+      const ok = await persistIngredientActivityFallback(item.id, nextActive);
+      if (!ok) return showToast(`更新母料狀態失敗：${error.message}`, 'error');
+      setIngredients(prev => prev.map(i => i.id === item.id ? { ...i, isActive: nextActive } : i));
+      showToast(nextActive ? '母料已啟用（兼容模式）' : '母料已停用（兼容模式）', 'success');
+      return;
+    }
     setIngredients(prev => prev.map(i => i.id === item.id ? { ...i, isActive: nextActive } : i));
     showToast(nextActive ? '母料已啟用' : '母料已停用', 'success');
   };
@@ -725,21 +788,37 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       : `確定刪除母料「${item.name}」？`);
     if (!ok) return;
 
-    await supabase.from('material_skus').delete().eq('ingredient_id', item.id);
-    await supabase.from('sellable_skus').delete().eq('ingredient_id', item.id);
-    const { error } = await supabase.from('ingredients').delete().eq('id', item.id);
-    if (error) return showToast(`刪除母料失敗：${error.message}`, 'error');
+    const skuIds = skuRows.filter(s => s.ingredientId === item.id).map(s => s.id);
+    const productIds = skuRows.filter(s => s.ingredientId === item.id).map(s => s.productId).filter(Boolean);
 
-    setIngredients(prev => prev.filter(i => i.id !== item.id));
-    setProcessRows(prev => prev.filter(r => r.ingredientId !== item.id));
-    setPackRows(prev => prev.filter(r => r.ingredientId !== item.id));
-    setPackDraftRows(prev => prev.filter(r => r.ingredientId !== item.id));
-    setProcessDraftRows(prev => prev.filter(r => r.ingredientId !== item.id));
-    setSkuRows(prev => prev.filter(r => r.ingredientId !== item.id));
-    if (selectedIngredientId === item.id) {
-      const fallback = ingredients.find(i => i.id !== item.id && i.isActive !== false) || ingredients.find(i => i.id !== item.id);
-      setSelectedIngredientId(fallback?.id || '');
+    if (skuIds.length > 0) {
+      const delCommercial = await supabase.from('commercial_skus').delete().in('canonical_sku_id', skuIds);
+      if (delCommercial.error && delCommercial.error.code !== '42P01' && delCommercial.error.code !== 'PGRST205') {
+        return showToast(`刪除商業 SKU 失敗：${delCommercial.error.message}`, 'error');
+      }
     }
+    const delMaterialSku = await supabase.from('material_skus').delete().eq('ingredient_id', item.id);
+    if (delMaterialSku.error && delMaterialSku.error.code !== '42P01' && delMaterialSku.error.code !== 'PGRST205') {
+      return showToast(`刪除關聯 material_skus 失敗：${delMaterialSku.error.message}`, 'error');
+    }
+    const delSellable = await supabase.from('sellable_skus').delete().eq('ingredient_id', item.id);
+    if (delSellable.error) return showToast(`刪除關聯 sellable_skus 失敗：${delSellable.error.message}`, 'error');
+    if (productIds.length > 0) {
+      const delProducts = await supabase.from('products').delete().in('id', productIds);
+      if (delProducts.error) return showToast(`刪除關聯 products 失敗：${delProducts.error.message}`, 'error');
+    }
+    const { error } = await supabase.from('ingredients').delete().eq('id', item.id);
+    if (error) {
+      // Fallback: hide locally + persist hidden/deactivated IDs for environments blocked by FK/RLS.
+      const hideOk = await hideIngredientFallback(item.id);
+      const activeOk = await persistIngredientActivityFallback(item.id, false);
+      if (!hideOk || !activeOk) return showToast(`刪除母料失敗：${error.message}`, 'error');
+      removeIngredientLocally(item.id);
+      showToast('母料無法硬刪除，已改為隱藏處理', 'success');
+      return;
+    }
+
+    removeIngredientLocally(item.id);
     showToast('母料已刪除', 'success');
   };
 
