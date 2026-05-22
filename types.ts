@@ -188,6 +188,8 @@ export interface Ingredient {
   marketBenchmark?: number; // 市場參考價
   unit: string;             // 'lb' | 'kg' | 'pc' etc.
   category?: string;        // 類別（如 牛肉、豬肉、海鮮）
+  proteinCategory?: 'PORK' | 'BEEF' | 'CHICKEN' | 'POULTRY' | 'SEAFOOD' | 'OTHERS';
+  proteinCategoryId?: string;
   materialType?: MaterialType; // 原材料分類: meat=肉類原材料, third_party=第三方產品
   saleChannel?: SaleChannel; // @deprecated — 渠道由產品規格決定
   notes?: string;
@@ -221,6 +223,8 @@ export interface SupabaseIngredientRow {
   market_benchmark?: number | null;
   unit: string;
   category?: string | null;
+  protein_category?: string | null;
+  protein_category_id?: string | null;
   material_type?: string | null;
   sale_channel?: string | null;
   notes?: string | null;
@@ -271,6 +275,8 @@ export interface Product {
   variantLabel?: string;      // 規格標籤 e.g. '原件', '切粒', '1kg'
   pricingMode?: PricingMode;  // 'fixed_pack' | 'by_piece' (抄碼)
   processingSpec?: string;    // 選中的加工規格 e.g. '2MM', '500g'
+  proteinCategory?: 'PORK' | 'BEEF' | 'CHICKEN' | 'POULTRY' | 'SEAFOOD' | 'OTHERS';
+  categoryId?: string;
 }
 
 export interface CartItem extends Product {
@@ -447,6 +453,8 @@ export interface SupabaseProductRow {
   variant_label?: string | null;
   pricing_mode?: string | null;
   processing_spec?: string | null;
+  protein_category?: string | null;
+  category_id?: string | null;
 }
 
 /** Supabase public.categories table – column names must match (snake_case). */

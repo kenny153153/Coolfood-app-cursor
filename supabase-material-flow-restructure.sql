@@ -51,10 +51,44 @@ ALTER TABLE public.ingredients
 ALTER TABLE public.ingredients
   ADD COLUMN IF NOT EXISTS net_content_unit TEXT;
 ALTER TABLE public.ingredients
+  ADD COLUMN IF NOT EXISTS protein_category TEXT;
+ALTER TABLE public.ingredients
+  ADD COLUMN IF NOT EXISTS protein_category_id TEXT;
+ALTER TABLE public.ingredients
   DROP CONSTRAINT IF EXISTS ingredients_net_content_unit_check;
 ALTER TABLE public.ingredients
   ADD CONSTRAINT ingredients_net_content_unit_check
   CHECK (net_content_unit IS NULL OR net_content_unit IN ('g', 'kg', 'lb', 'catty'));
+ALTER TABLE public.ingredients
+  DROP CONSTRAINT IF EXISTS ingredients_protein_category_check;
+ALTER TABLE public.ingredients
+  ADD CONSTRAINT ingredients_protein_category_check
+  CHECK (protein_category IS NULL OR protein_category IN ('PORK', 'BEEF', 'CHICKEN', 'POULTRY', 'SEAFOOD', 'OTHERS'));
+
+ALTER TABLE public.products
+  ADD COLUMN IF NOT EXISTS protein_category TEXT;
+ALTER TABLE public.products
+  ADD COLUMN IF NOT EXISTS category_id TEXT;
+ALTER TABLE public.products
+  DROP CONSTRAINT IF EXISTS products_protein_category_check;
+ALTER TABLE public.products
+  ADD CONSTRAINT products_protein_category_check
+  CHECK (protein_category IS NULL OR protein_category IN ('PORK', 'BEEF', 'CHICKEN', 'POULTRY', 'SEAFOOD', 'OTHERS'));
+
+-- Unified category dictionary for product catalog + material flow
+CREATE TABLE IF NOT EXISTS public.categories (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  icon TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+CREATE OR REPLACE VIEW public.product_categories AS
+SELECT
+  id,
+  name,
+  icon,
+  COALESCE(sort_order, 0) AS sort_order
+FROM public.categories;
 
 -- 2) Pack layer (physical spec matrix)
 CREATE TABLE IF NOT EXISTS public.material_pack_specs (
@@ -182,6 +216,56 @@ ALTER TABLE public.material_process_specs
 UPDATE public.material_process_specs
 SET processing_category = 'original_or_cutting'
 WHERE processing_category = 'cutting';
+
+-- Protein category backfill (global taxonomy foundation)
+UPDATE public.ingredients
+SET protein_category = CASE
+  WHEN upper(coalesce(name, '')) LIKE '%豬%' OR upper(coalesce(name, '')) LIKE '%PORK%' THEN 'PORK'
+  WHEN upper(coalesce(name, '')) LIKE '%牛%' OR upper(coalesce(name, '')) LIKE '%BEEF%' THEN 'BEEF'
+  WHEN upper(coalesce(name, '')) LIKE '%雞%' OR upper(coalesce(name, '')) LIKE '%CHICKEN%' THEN 'CHICKEN'
+  WHEN upper(coalesce(name, '')) LIKE '%鴨%' OR upper(coalesce(name, '')) LIKE '%鵝%' OR upper(coalesce(name, '')) LIKE '%DUCK%' OR upper(coalesce(name, '')) LIKE '%GOOSE%' OR upper(coalesce(name, '')) LIKE '%TURKEY%' OR upper(coalesce(name, '')) LIKE '%POULTRY%' THEN 'POULTRY'
+  WHEN upper(coalesce(name, '')) LIKE '%魚%' OR upper(coalesce(name, '')) LIKE '%蝦%' OR upper(coalesce(name, '')) LIKE '%蟹%' OR upper(coalesce(name, '')) LIKE '%SEAFOOD%' OR upper(coalesce(name, '')) LIKE '%FISH%' OR upper(coalesce(name, '')) LIKE '%SHRIMP%' OR upper(coalesce(name, '')) LIKE '%CRAB%' THEN 'SEAFOOD'
+  ELSE coalesce(protein_category, 'OTHERS')
+END
+WHERE coalesce(protein_category, '') = '';
+
+UPDATE public.products p
+SET protein_category = i.protein_category
+FROM public.ingredients i
+WHERE p.parent_ingredient_id = i.id
+  AND (p.protein_category IS NULL OR p.protein_category = '');
+
+UPDATE public.products p
+SET protein_category = i.protein_category
+FROM public.ingredients i
+WHERE p.ingredient_id = i.id
+  AND (p.protein_category IS NULL OR p.protein_category = '');
+
+-- Backfill category_id from unified product_categories dictionary
+UPDATE public.ingredients i
+SET protein_category_id = c.id
+FROM public.product_categories c
+WHERE (i.protein_category_id IS NULL OR i.protein_category_id = '')
+  AND (
+    (i.protein_category = 'PORK' AND (upper(c.id) LIKE '%PORK%' OR c.name LIKE '%豬%')) OR
+    (i.protein_category = 'BEEF' AND (upper(c.id) LIKE '%BEEF%' OR c.name LIKE '%牛%')) OR
+    (i.protein_category = 'CHICKEN' AND (upper(c.id) LIKE '%CHICKEN%' OR c.name LIKE '%雞%')) OR
+    (i.protein_category = 'POULTRY' AND (upper(c.id) LIKE '%POULTRY%' OR c.name LIKE '%禽%' OR c.name LIKE '%鴨%' OR c.name LIKE '%鵝%')) OR
+    (i.protein_category = 'SEAFOOD' AND (upper(c.id) LIKE '%SEAFOOD%' OR c.name LIKE '%海鮮%' OR c.name LIKE '%魚%' OR c.name LIKE '%蝦%' OR c.name LIKE '%蟹%')) OR
+    (i.protein_category = 'OTHERS' AND (upper(c.id) LIKE '%OTHER%' OR c.name LIKE '%其他%'))
+  );
+
+UPDATE public.products p
+SET category_id = i.protein_category_id
+FROM public.ingredients i
+WHERE p.parent_ingredient_id = i.id
+  AND (p.category_id IS NULL OR p.category_id = '');
+
+UPDATE public.products p
+SET category_id = i.protein_category_id
+FROM public.ingredients i
+WHERE p.ingredient_id = i.id
+  AND (p.category_id IS NULL OR p.category_id = '');
 ALTER TABLE public.material_process_specs
   ADD CONSTRAINT material_process_specs_processing_category_check CHECK (processing_category IN ('original_or_cutting', 'repacking', 'marinating', 'others'));
 ALTER TABLE public.material_process_specs
@@ -245,10 +329,30 @@ CREATE TABLE IF NOT EXISTS public.sellable_skus (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS public.material_skus (
+  id TEXT PRIMARY KEY,
+  ingredient_id TEXT NOT NULL REFERENCES public.ingredients(id) ON DELETE CASCADE,
+  process_spec_id TEXT NOT NULL REFERENCES public.material_process_specs(id) ON DELETE CASCADE,
+  pack_spec_id TEXT NOT NULL REFERENCES public.material_pack_specs(id) ON DELETE CASCADE,
+  product_id TEXT NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+  category_id TEXT,
+  effective_cost NUMERIC(10,2) NOT NULL DEFAULT 0,
+  p0_price NUMERIC(10,2) NOT NULL DEFAULT 0,
+  p1_price NUMERIC(10,2) NOT NULL DEFAULT 0,
+  p2_price NUMERIC(10,2) NOT NULL DEFAULT 0,
+  p3_price NUMERIC(10,2) NOT NULL DEFAULT 0,
+  p123_unit_mode TEXT NOT NULL DEFAULT 'whole_pack' CHECK (p123_unit_mode IN ('whole_pack', 'per_lb')),
+  pricing_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- 4) RLS + permissive policies
 ALTER TABLE public.material_process_specs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.material_pack_specs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.sellable_skus ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.material_skus ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS material_process_specs_all ON public.material_process_specs;
 CREATE POLICY material_process_specs_all ON public.material_process_specs
@@ -260,6 +364,10 @@ FOR ALL USING (true) WITH CHECK (true);
 
 DROP POLICY IF EXISTS sellable_skus_all ON public.sellable_skus;
 CREATE POLICY sellable_skus_all ON public.sellable_skus
+FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS material_skus_all ON public.material_skus;
+CREATE POLICY material_skus_all ON public.material_skus
 FOR ALL USING (true) WITH CHECK (true);
 
 -- 5) updated_at trigger helper
@@ -284,6 +392,11 @@ FOR EACH ROW EXECUTE FUNCTION public.touch_material_flow_updated_at();
 DROP TRIGGER IF EXISTS trg_sellable_skus_updated_at ON public.sellable_skus;
 CREATE TRIGGER trg_sellable_skus_updated_at
 BEFORE UPDATE ON public.sellable_skus
+FOR EACH ROW EXECUTE FUNCTION public.touch_material_flow_updated_at();
+
+DROP TRIGGER IF EXISTS trg_material_skus_updated_at ON public.material_skus;
+CREATE TRIGGER trg_material_skus_updated_at
+BEFORE UPDATE ON public.material_skus
 FOR EACH ROW EXECUTE FUNCTION public.touch_material_flow_updated_at();
 
 DROP TRIGGER IF EXISTS trg_processing_methods_updated_at ON public.processing_methods;

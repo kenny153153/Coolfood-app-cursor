@@ -41,7 +41,7 @@ const WholesalePricingPanel: React.FC<Props> = ({ showToast }) => {
       .upsert({
         brand: wholesaleBrand,
         target_margin_factor: targetMarginFactor,
-        price_tiers: priceTiers,
+        // Keep legacy page as P0-only controller. P1/P2/P3 are managed in Material Flow Tab 4.
         updated_at: new Date().toISOString(),
       });
     if (error) showToast(`儲存失敗：${error.message}`, 'error');
@@ -139,12 +139,13 @@ const WholesalePricingPanel: React.FC<Props> = ({ showToast }) => {
           <div>
             <h3 className="text-lg font-black text-slate-900">批發客等級 (P-Tier)</h3>
             <p className="text-sm text-slate-400 font-bold mt-1">
-              P0 為最低價（自取/VIP），其他等級在 P0 基礎上加成
+              P1/P2/P3 已由材料工作台 Tab 4 鎖定管理，此區僅作歷史參考。
             </p>
           </div>
           <button
+            disabled
             onClick={addTier}
-            className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-black hover:bg-slate-800 transition-colors"
+            className="flex items-center gap-2 px-4 py-2.5 bg-slate-200 text-slate-500 rounded-xl text-xs font-black cursor-not-allowed"
           >
             <Plus size={14} /> 新增等級
           </button>
@@ -176,6 +177,7 @@ const WholesalePricingPanel: React.FC<Props> = ({ showToast }) => {
                 <input
                   value={tier.name}
                   onChange={e => updateTier(idx, 'name', e.target.value)}
+                  disabled
                   className="w-20 text-center text-sm font-black bg-white border border-slate-200 rounded-lg py-2"
                   placeholder="P3"
                 />
@@ -188,6 +190,7 @@ const WholesalePricingPanel: React.FC<Props> = ({ showToast }) => {
                     max="1.00"
                     value={tier.factor}
                     onChange={e => updateTier(idx, 'factor', +e.target.value)}
+                    disabled
                     className="w-20 text-center text-sm font-bold bg-white border border-slate-200 rounded-lg py-2"
                   />
                   <span className="text-xs text-slate-400 font-bold">≈ +{markupPercent}%</span>
@@ -195,12 +198,14 @@ const WholesalePricingPanel: React.FC<Props> = ({ showToast }) => {
                 <input
                   value={tier.description || ''}
                   onChange={e => updateTier(idx, 'description', e.target.value)}
+                  disabled
                   className="w-40 text-xs font-bold bg-white border border-slate-200 rounded-lg py-2 px-3"
                   placeholder="備註"
                 />
                 <button
+                  disabled
                   onClick={() => removeTier(idx)}
-                  className="p-2 text-slate-300 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100"
+                  className="p-2 text-slate-300 opacity-30 cursor-not-allowed"
                 >
                   <Trash2 size={16} />
                 </button>

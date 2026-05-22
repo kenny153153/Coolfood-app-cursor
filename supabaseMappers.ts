@@ -81,6 +81,8 @@ export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
   variantLabel: row.variant_label ?? undefined,
   pricingMode: (['fixed_pack', 'by_piece'].includes(row.pricing_mode ?? '') ? row.pricing_mode as PricingMode : undefined),
   processingSpec: row.processing_spec ?? undefined,
+  proteinCategory: (['PORK', 'BEEF', 'CHICKEN', 'POULTRY', 'SEAFOOD', 'OTHERS'].includes(row.protein_category ?? '') ? row.protein_category as Product['proteinCategory'] : undefined),
+  categoryId: row.category_id ?? undefined,
 });
 
 export const mapProductToRow = (product: Product): SupabaseProductRow => ({
@@ -123,6 +125,8 @@ export const mapProductToRow = (product: Product): SupabaseProductRow => ({
   variant_label: product.variantLabel ?? null,
   pricing_mode: product.pricingMode ?? null,
   processing_spec: product.processingSpec ?? null,
+  protein_category: product.proteinCategory ?? null,
+  category_id: product.categoryId ?? null,
 });
 
 export const mapIngredientRowToIngredient = (row: SupabaseIngredientRow): Ingredient => ({
@@ -137,6 +141,8 @@ export const mapIngredientRowToIngredient = (row: SupabaseIngredientRow): Ingred
   marketBenchmark: row.market_benchmark ?? undefined,
   unit: row.unit || 'lb',
   category: row.category ?? undefined,
+  proteinCategory: (['PORK', 'BEEF', 'CHICKEN', 'POULTRY', 'SEAFOOD', 'OTHERS'].includes(row.protein_category ?? '') ? row.protein_category as Ingredient['proteinCategory'] : undefined),
+  proteinCategoryId: row.protein_category_id ?? undefined,
   materialType: (['meat', 'third_party'].includes(row.material_type ?? '') ? row.material_type as MaterialType : 'meat'),
   saleChannel: (['retail', 'wholesale', 'both'].includes(row.sale_channel ?? '') ? row.sale_channel as SaleChannel : undefined),
   notes: row.notes ?? undefined,
@@ -159,6 +165,8 @@ export const mapIngredientToRow = (ing: Ingredient): SupabaseIngredientRow => ({
   market_benchmark: ing.marketBenchmark ?? null,
   unit: ing.unit || 'lb',
   category: ing.category ?? null,
+  protein_category: ing.proteinCategory ?? null,
+  protein_category_id: ing.proteinCategoryId ?? null,
   material_type: ing.materialType ?? 'meat',
   sale_channel: ing.saleChannel ?? null,
   notes: ing.notes ?? null,

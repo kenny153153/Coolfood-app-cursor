@@ -16,6 +16,7 @@ type PricingType = 'fixed_pack' | 'by_piece';
 type MethodCategory = 'original_or_cutting' | 'repacking' | 'marinating' | 'others';
 type ChannelFilter = 'all' | 'wholesale' | 'retail';
 type TypeFilter = 'all' | 'fixed_pack' | 'by_piece';
+type ProteinCategory = 'PORK' | 'BEEF' | 'CHICKEN' | 'POULTRY' | 'SEAFOOD' | 'OTHERS';
 
 interface GlobalMethod {
   id: string;
@@ -121,6 +122,19 @@ interface PricingRowState {
   tiers: Record<PricingTierKey, PricingTierState>;
 }
 
+interface ProductCategoryDictItem {
+  id: string;
+  name: string;
+  icon?: string;
+  sortOrder: number;
+}
+
+interface SkuSection {
+  key: string;
+  title: string;
+  rows: SkuGridRow[];
+}
+
 const round2 = (v: number) => Math.round(v * 100) / 100;
 const mkId = (prefix: string) => `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 const QUOTE_SUFFIX: Record<string, string> = { P0: 'A0', P1: 'B1', P2: 'B2', P3: 'C3', 'P-1': 'Y1', 'P-2': 'Z2' };
@@ -149,6 +163,28 @@ const categoryBadge = (c: MethodCategory) => {
   if (c === 'repacking') return 'bg-violet-50 text-violet-700 border-violet-200';
   if (c === 'marinating') return 'bg-emerald-50 text-emerald-700 border-emerald-200';
   return 'bg-slate-50 text-slate-700 border-slate-200';
+};
+
+const PROTEIN_CATEGORY_ORDER: ProteinCategory[] = ['PORK', 'BEEF', 'CHICKEN', 'POULTRY', 'SEAFOOD', 'OTHERS'];
+const PROCESS_DEPTH_ORDER = ['WHOLE', 'STEAK', 'PREM_STEAK', 'DICED', 'STRIPS', 'SLICED_HP', 'SHREDDED'];
+
+const proteinCategoryMeta = (category: ProteinCategory) => {
+  if (category === 'PORK') return { label: '豬類', icon: '🐖' };
+  if (category === 'BEEF') return { label: '牛類', icon: '🐂' };
+  if (category === 'CHICKEN') return { label: '雞類', icon: '🐔' };
+  if (category === 'POULTRY') return { label: '家禽類', icon: '🦆' };
+  if (category === 'SEAFOOD') return { label: '海鮮類', icon: '🐟' };
+  return { label: '其他類', icon: '📦' };
+};
+
+const normalizedProteinKeyFromText = (value?: string): ProteinCategory => {
+  const raw = (value || '').toString().toUpperCase();
+  if (['PORK', '豬'].some(t => raw.includes(t))) return 'PORK';
+  if (['BEEF', '牛'].some(t => raw.includes(t))) return 'BEEF';
+  if (['CHICKEN', '雞'].some(t => raw.includes(t))) return 'CHICKEN';
+  if (['POULTRY', '家禽', '鴨', '鵝'].some(t => raw.includes(t))) return 'POULTRY';
+  if (['SEAFOOD', '海鮮', '魚', '蝦', '蟹'].some(t => raw.includes(t))) return 'SEAFOOD';
+  return 'OTHERS';
 };
 
 const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }) => {
@@ -182,6 +218,9 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   const [greenThresholdPct, setGreenThresholdPct] = useState(15);
   const [redThresholdPct, setRedThresholdPct] = useState(5);
   const [pricingDrafts, setPricingDrafts] = useState<Record<string, PricingRowState>>({});
+  const [p123UnitMode, setP123UnitMode] = useState<'whole_pack' | 'per_lb'>('whole_pack');
+  const [expandedProteinSections, setExpandedProteinSections] = useState<Record<string, boolean>>({});
+  const [productCategories, setProductCategories] = useState<ProductCategoryDictItem[]>([]);
 
   const [newIngredient, setNewIngredient] = useState({ name: '', supplier: '', unit: 'lb', cost: 0, netContentVolume: 0, netContentUnit: 'g' as WeightUnit });
   const [newMethod, setNewMethod] = useState({ code: '', name: '', category: 'original_or_cutting' as MethodCategory });
@@ -268,6 +307,39 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     }
   }, []);
 
+  const loadProductCategories = useCallback(async () => {
+    const fromProductCategories = await supabase
+      .from('product_categories')
+      .select('id,name,icon,sort_order')
+      .order('sort_order')
+      .order('name');
+    if (!fromProductCategories.error) {
+      const rows = (fromProductCategories.data || []).map((r: any) => ({
+        id: String(r.id),
+        name: String(r.name || ''),
+        icon: r.icon || undefined,
+        sortOrder: Number(r.sort_order) || 0,
+      })).filter((r: ProductCategoryDictItem) => r.id && r.name);
+      setProductCategories(rows);
+      return;
+    }
+
+    const fallback = await supabase
+      .from('categories')
+      .select('id,name,icon,sort_order')
+      .order('sort_order')
+      .order('name');
+    if (!fallback.error) {
+      const rows = (fallback.data || []).map((r: any) => ({
+        id: String(r.id),
+        name: String(r.name || ''),
+        icon: r.icon || undefined,
+        sortOrder: Number(r.sort_order) || 0,
+      })).filter((r: ProductCategoryDictItem) => r.id && r.name);
+      setProductCategories(rows);
+    }
+  }, []);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
@@ -286,6 +358,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       }
       await loadMethods();
       await loadPackagingItems();
+      await loadProductCategories();
 
       setIngredients((ingRes.data || []).map(mapIngredientRowToIngredient));
       setProcessRows(uniqueById((processRes.data || []).map((r: any) => ({
@@ -360,7 +433,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     } finally {
       setLoading(false);
     }
-  }, [loadMethods, loadPackagingItems, packagingItems.length, showToast]);
+  }, [loadMethods, loadPackagingItems, loadProductCategories, packagingItems.length, showToast]);
 
   const reloadProcessRowsForIngredient = useCallback(async (ingredientId: string) => {
     if (!ingredientId) return;
@@ -517,6 +590,78 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       return display.includes(q) || skuCode.includes(q);
     });
   }, [skuGridRows, skuSearch, buildSkuDisplayName]);
+
+  const detectProteinCategory = useCallback((ingredient?: Ingredient): ProteinCategory => {
+    const raw = (((ingredient as any)?.proteinCategory || ingredient?.category || ingredient?.name || '').toString());
+    return normalizedProteinKeyFromText(raw);
+  }, []);
+
+  const sectionedSkuRows = useMemo<SkuSection[]>(() => {
+    const rows = [...skuPricingRows].sort((a, b) => {
+      const ingA = ingredientMap.get(a.pack.ingredientId);
+      const ingB = ingredientMap.get(b.pack.ingredientId);
+      const materialA = (ingA?.name || '').localeCompare(ingB?.name || '', 'zh-Hant');
+      if (materialA !== 0) return materialA;
+
+      const codeA = (a.process?.code || '').toUpperCase();
+      const codeB = (b.process?.code || '').toUpperCase();
+      const depthA = PROCESS_DEPTH_ORDER.indexOf(codeA);
+      const depthB = PROCESS_DEPTH_ORDER.indexOf(codeB);
+      const normalizedDepthA = depthA >= 0 ? depthA : 999;
+      const normalizedDepthB = depthB >= 0 ? depthB : 999;
+      if (normalizedDepthA !== normalizedDepthB) return normalizedDepthA - normalizedDepthB;
+
+      const weightA = a.pack.pricingType === 'by_piece'
+        ? 9999
+        : ((a.pack.packWeightLb || (a.pack.pricingType === 'fixed_pack' ? convertWeight(a.pack.specWeight || 0, a.pack.specUnit, 'lb') : 0)) || 0);
+      const weightB = b.pack.pricingType === 'by_piece'
+        ? 9999
+        : ((b.pack.packWeightLb || (b.pack.pricingType === 'fixed_pack' ? convertWeight(b.pack.specWeight || 0, b.pack.specUnit, 'lb') : 0)) || 0);
+      if (weightA !== weightB) return weightB - weightA;
+
+      return buildSkuDisplayName(a).localeCompare(buildSkuDisplayName(b), 'zh-Hant');
+    });
+
+    const dictionary = productCategories.length > 0
+      ? [...productCategories].sort((a, b) => (a.sortOrder - b.sortOrder) || a.name.localeCompare(b.name, 'zh-Hant'))
+      : PROTEIN_CATEGORY_ORDER.map((k, idx) => {
+        const meta = proteinCategoryMeta(k);
+        return { id: k, name: meta.label, icon: meta.icon, sortOrder: idx };
+      });
+
+    return dictionary.map((dict) => {
+      const normalizedKey = normalizedProteinKeyFromText(dict.id || dict.name);
+      const icon = dict.icon || proteinCategoryMeta(normalizedKey).icon;
+      const sectionRows = rows.filter((row) => detectProteinCategory(ingredientMap.get(row.pack.ingredientId)) === normalizedKey);
+      return {
+        key: dict.id,
+        title: `${icon} ${dict.name}庫存與控價中心`,
+        rows: sectionRows,
+      };
+    }).filter(section => section.rows.length > 0);
+  }, [skuPricingRows, ingredientMap, detectProteinCategory, buildSkuDisplayName, productCategories]);
+
+  const skuRowIndexMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    let index = 1;
+    sectionedSkuRows.forEach(section => {
+      section.rows.forEach(row => {
+        map[skuRowKey(row)] = index++;
+      });
+    });
+    return map;
+  }, [sectionedSkuRows, skuRowKey]);
+
+  useEffect(() => {
+    if (sectionedSkuRows.length === 0) return;
+    setExpandedProteinSections(prev => {
+      const next = { ...prev };
+      sectionedSkuRows.forEach(section => {
+        if (next[section.key] == null) next[section.key] = true;
+      });
+      return next;
+    });
+  }, [sectionedSkuRows]);
 
   const processedCostPerLb = useCallback((ingredientId: string, processId: string) => {
     const ing = ingredientMap.get(ingredientId);
@@ -1102,6 +1247,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       variant_label: variantLabel,
       pricing_mode: pack.pricingType,
       processing_spec: process.name,
+      protein_category: (ingredient as any).proteinCategory || null,
     });
     if (productError) return showToast(`新增商品失敗：${productError.message}`, 'error');
 
@@ -1158,6 +1304,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       pricingMode: pack.pricingType,
       processingSpec: process.name,
       processingTypeId: process.methodId,
+      proteinCategory: (ingredient as any).proteinCategory || undefined,
     }]);
 
     setNewSku({ packSpecId: '', name: '', alias: '' });
@@ -1205,6 +1352,19 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     return 'text-amber-600';
   }, [greenThresholdPct, redThresholdPct]);
 
+  const packSizeLb = useCallback((pack: PackRow) => {
+    if ((pack.packWeightLb || 0) > 0) return Number(pack.packWeightLb);
+    if (pack.pricingType === 'fixed_pack' && (pack.specWeight || 0) > 0) return convertWeight(pack.specWeight || 0, pack.specUnit, 'lb');
+    return 1;
+  }, []);
+
+  const resolveCategoryForIngredient = useCallback((ingredient?: Ingredient) => {
+    if (!ingredient) return undefined;
+    const proteinKey = detectProteinCategory(ingredient);
+    const matched = productCategories.find(c => normalizedProteinKeyFromText(`${c.id} ${c.name}`) === proteinKey);
+    return matched;
+  }, [detectProteinCategory, productCategories]);
+
   const updatePriceInput = (rowKey: string, tier: PricingTierKey, nextPrice: number, effectiveCost: number) => {
     setPricingDrafts(prev => {
       const row = prev[rowKey];
@@ -1247,29 +1407,128 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     const rowKey = skuRowKey(row);
     const draft = pricingDrafts[rowKey];
     if (!draft) return;
+    const ingredient = ingredientMap.get(row.pack.ingredientId);
+    const process = row.process || processMap.get(row.pack.processSpecId);
+    const productCategory = resolveCategoryForIngredient(ingredient);
+    const displayName = buildSkuDisplayName(row);
+    const p0Price = Number(draft.tiers.P0?.price) || 0;
+    const p1Price = Number(draft.tiers.P1?.price) || p0Price;
+    const p2Price = Number(draft.tiers.P2?.price) || p1Price;
+    const p3Price = Number(draft.tiers.P3?.price) || p2Price;
+    const effectiveCost = Number.isFinite(Number(draft.costOverride)) ? Number(draft.costOverride) : calcTotalCost(row.pack);
+    const productId = row.sku?.productId || mkId('P');
+    const skuId = row.sku?.id || mkId('SKU');
+    const skuCode = row.sku?.code || `${displayName.toUpperCase().replace(/\s+/g, '_').replace(/[^A-Z0-9_]/g, '').slice(0, 28)}_${Date.now().toString().slice(-4)}`;
+
     const payload = {
       costOverride: draft.costOverride ?? null,
       P0: draft.tiers.P0,
       P1: draft.tiers.P1,
       P2: draft.tiers.P2,
       P3: draft.tiers.P3,
+      p123UnitMode,
     };
     const merged = { ...pricingOverrides, [rowKey]: payload };
     const { error } = await supabase.from('site_config').upsert({ id: 'material_flow_price_overrides', value: merged });
     if (error) return showToast(`保存控價失敗：${error.message}`, 'error');
 
-    if (row.sku?.productId) {
-      const p0Price = Number(payload.P0?.price) || 0;
-      const p1Price = Number(payload.P1?.price) || p0Price;
-      await supabase
-        .from('products')
-        .update({ price: p0Price, member_price: p1Price })
-        .eq('id', row.sku.productId);
-      setProducts(prev => prev.map(p => p.id === row.sku?.productId ? { ...p, price: p0Price, memberPrice: p1Price } : p));
+    const materialSkuPayload = {
+      id: skuId,
+      ingredient_id: row.pack.ingredientId,
+      process_spec_id: row.pack.processSpecId,
+      pack_spec_id: row.pack.id,
+      product_id: productId,
+      category_id: productCategory?.id || null,
+      effective_cost: effectiveCost,
+      p0_price: p0Price,
+      p1_price: p1Price,
+      p2_price: p2Price,
+      p3_price: p3Price,
+      p123_unit_mode: p123UnitMode,
+      pricing_payload: payload,
+      is_active: true,
+      updated_at: new Date().toISOString(),
+    } as any;
+    const skuWrite = await supabase.from('material_skus').upsert(materialSkuPayload, { onConflict: 'id' });
+    if (skuWrite.error && skuWrite.error.code !== '42P01' && skuWrite.error.code !== 'PGRST205') {
+      return showToast(`保存 material_skus 失敗：${skuWrite.error.message}`, 'error');
     }
 
+    const productPayload = {
+      id: productId,
+      name: displayName,
+      categories: productCategory?.id ? [productCategory.id] : [],
+      category_id: productCategory?.id || null,
+      price: p0Price,
+      member_price: p1Price,
+      cost_price: effectiveCost,
+      stock: 0,
+      track_inventory: true,
+      tags: ['sellable_sku', 'material_flow'],
+      image: '📦',
+      ingredient_id: row.pack.ingredientId,
+      parent_ingredient_id: row.pack.ingredientId,
+      processing_type_id: process?.methodId || null,
+      pricing_mode: row.pack.pricingType,
+      processing_spec: process?.name || row.pack.name,
+      protein_category: detectProteinCategory(ingredient),
+      updated_at: new Date().toISOString(),
+    } as any;
+    const productWrite = await supabase.from('products').upsert(productPayload, { onConflict: 'id' });
+    if (productWrite.error) return showToast(`同步產品清單失敗：${productWrite.error.message}`, 'error');
+
+    const sellablePayload = {
+      id: skuId,
+      code: skuCode,
+      name: displayName,
+      alias: row.sku?.alias || null,
+      ingredient_id: row.pack.ingredientId,
+      process_spec_id: row.pack.processSpecId,
+      pack_spec_id: row.pack.id,
+      product_id: productId,
+      sale_channel: row.sku?.saleChannel || row.pack.channel || 'both',
+      sort_order: 0,
+      is_active: true,
+    };
+    const skuUpsert = await supabase.from('sellable_skus').upsert(sellablePayload, { onConflict: 'id' }).select('*').single();
+    if (skuUpsert.error) return showToast(`同步 SKU 失敗：${skuUpsert.error.message}`, 'error');
+    const skuData = skuUpsert.data as any;
+    setSkuRows(prev => uniqueById([...prev.filter(s => s.id !== skuId), {
+      id: skuData.id,
+      code: skuData.code,
+      name: skuData.name,
+      alias: skuData.alias || undefined,
+      ingredientId: skuData.ingredient_id,
+      processSpecId: skuData.process_spec_id,
+      packSpecId: skuData.pack_spec_id,
+      productId: skuData.product_id,
+      saleChannel: (['retail', 'wholesale', 'both'].includes(skuData.sale_channel) ? skuData.sale_channel : 'both') as SaleChannel,
+      isActive: skuData.is_active !== false,
+    }]));
+    setProducts(prev => {
+      const exists = prev.some(p => p.id === productId);
+      const nextProduct = {
+        id: productId,
+        name: displayName,
+        categories: productCategory?.id ? [productCategory.id] : [],
+        price: p0Price,
+        memberPrice: p1Price,
+        stock: 0,
+        trackInventory: true,
+        tags: ['sellable_sku', 'material_flow'],
+        image: '📦',
+        costPrice: effectiveCost,
+        ingredientId: row.pack.ingredientId,
+        parentIngredientId: row.pack.ingredientId,
+        pricingMode: row.pack.pricingType,
+        processingSpec: process?.name || row.pack.name,
+      } as Product;
+      if (exists) return prev.map(p => p.id === productId ? { ...p, ...nextProduct } : p);
+      return [...prev, nextProduct];
+    });
+
     setPricingOverrides(merged);
-    showToast('控價已儲存', 'success');
+    showToast('控價已儲存並同步產品清單', 'success');
   };
 
   const exportQuotePdf = () => {
@@ -1837,6 +2096,10 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input value={skuSearch} onChange={e => setSkuSearch(e.target.value)} placeholder="搜尋 SKU 名稱..." className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 text-sm font-bold" />
             </div>
+            <div className="inline-flex items-center rounded-lg border border-slate-200 overflow-hidden">
+              <button onClick={() => setP123UnitMode('whole_pack')} className={`px-2.5 py-2 text-[11px] font-black ${p123UnitMode === 'whole_pack' ? 'bg-slate-900 text-white' : 'bg-white text-slate-600'}`}>整包計價</button>
+              <button onClick={() => setP123UnitMode('per_lb')} className={`px-2.5 py-2 text-[11px] font-black ${p123UnitMode === 'per_lb' ? 'bg-slate-900 text-white' : 'bg-white text-slate-600'}`}>➔ 按磅計價</button>
+            </div>
             <label className="text-[11px] font-black text-slate-500">P0 基準分母</label><input type="number" step="0.01" value={baseDenominator} onChange={e => setBaseDenominator(Number(e.target.value) || 0.88)} className="w-24 p-2 border border-slate-200 rounded-lg text-xs font-black" />
             <label className="text-[11px] font-black text-slate-500">級距</label><input type="number" step="0.005" value={tierStep} onChange={e => setTierStep(Number(e.target.value) || 0.01)} className="w-20 p-2 border border-slate-200 rounded-lg text-xs font-black" />
             <button onClick={() => setShowTierModal(true)} className="ml-auto px-3 py-2 rounded-lg bg-slate-900 text-white text-xs font-black flex items-center gap-1"><FileDown size={12} />下載報價 PDF</button>
@@ -1845,59 +2108,104 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
             <table className="w-full text-xs">
               <thead><tr className="bg-slate-50 text-slate-500"><th className="px-2 py-2">#</th><th className="px-2 py-2 text-left">商品 SKU 名稱</th><th className="px-2 py-2 text-left">加工大類</th><th className="px-2 py-2 text-right">基準總成本</th><th className="px-2 py-2 text-right">成本手動覆蓋</th><th className="px-2 py-2 text-right">有效商品成本</th>{tierDefs.map(t => <th key={t.key} className="px-2 py-2 text-left min-w-[170px]">{t.key}</th>)}<th className="px-2 py-2 text-right">操作</th></tr></thead>
               <tbody>
-                {skuPricingRows.map((row, idx) => {
-                  const s = row.sku;
-                  const pack = row.pack;
-                  const process = row.process;
-                  const baseCost = calcTotalCost(pack);
-                  const rowKey = skuRowKey(row);
-                  const draft = pricingDrafts[rowKey] || {
-                    costOverride: undefined,
-                    tiers: {
-                      P0: { price: round2(baseCost / Math.max(0.01, baseDenominator)), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator)), baseCost) },
-                      P1: { price: round2(baseCost / Math.max(0.01, baseDenominator - tierStep)), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - tierStep)), baseCost) },
-                      P2: { price: round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 2))), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 2))), baseCost) },
-                      P3: { price: round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 3))), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 3))), baseCost) },
-                    },
-                  };
-                  const effectiveCost = draft.costOverride != null && Number.isFinite(draft.costOverride) ? draft.costOverride : baseCost;
-                  return (
-                    <tr key={rowKey} className="border-t border-slate-100">
-                      <td className="px-2 py-1.5 text-center">{idx + 1}</td>
-                      <td className="px-2 py-1.5"><div className="font-black">{buildSkuDisplayName(row)}</div><div className="text-[10px] text-slate-400">{s?.code || `${pack.code} · 待建立 SKU`}</div></td>
-                      <td className="px-2 py-1.5"><span className={`inline-block px-2 py-0.5 text-[10px] rounded-full border ${categoryBadge(process?.category || 'others')}`}>{categoryLabel(process?.category || 'others')}</span></td>
-                      <td className="px-2 py-1.5 text-right font-black text-amber-700">${baseCost.toFixed(2)}</td>
-                      <td className="px-2 py-1.5 text-right"><input value={draft.costOverride ?? ''} onChange={e => {
-                        const raw = e.target.value.trim();
-                        const override = raw === '' ? undefined : Number(raw);
-                        setPricingDrafts(prev => {
-                          const rowState = prev[rowKey] || draft;
-                          const nextCost = override == null || !Number.isFinite(override) ? baseCost : override;
-                          const nextTiers = Object.fromEntries(
-                            (Object.keys(rowState.tiers) as PricingTierKey[]).map(k => [k, { ...rowState.tiers[k], margin: computeMarginPct(rowState.tiers[k].price, nextCost) }])
-                          ) as Record<PricingTierKey, PricingTierState>;
-                          return { ...prev, [rowKey]: { ...rowState, costOverride: override, tiers: nextTiers } };
-                        });
-                      }} placeholder="留空=用基準" className="w-24 p-1 border border-slate-200 rounded text-right font-bold ml-auto block" /></td>
-                      <td className="px-2 py-1.5 text-right font-black text-slate-800">${effectiveCost.toFixed(2)}</td>
-                      {tierDefs.map(t => {
-                        const tier = draft.tiers[t.key];
-                        return (
-                          <td key={t.key} className="px-2 py-1.5">
-                            <div className="space-y-1">
-                              <input type="number" step="0.01" value={tier.price} onChange={e => updatePriceInput(rowKey, t.key, Number(e.target.value) || 0, effectiveCost)} className="w-full p-1 border border-slate-200 rounded text-right font-bold" />
-                              <div className="flex items-center gap-1">
-                                <input type="number" step="0.1" value={tier.margin} onChange={e => updateMarginInput(rowKey, t.key, Number(e.target.value) || 0, effectiveCost)} className={`w-full p-1 border border-slate-200 rounded text-right font-bold ${marginTextClass(tier.margin)}`} />
-                                <span className={`text-[11px] font-black ${marginTextClass(tier.margin)}`}>%</span>
-                              </div>
-                            </div>
-                          </td>
-                        );
-                      })}
-                      <td className="px-2 py-1.5 text-right"><button onClick={() => void savePricingRow(row)} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">💾 儲存控價</button></td>
+                {sectionedSkuRows.map(section => (
+                  <React.Fragment key={section.key}>
+                    <tr className="border-t-4 border-white">
+                      <td colSpan={11} className="px-0">
+                        <button
+                          onClick={() => setExpandedProteinSections(prev => ({ ...prev, [section.key]: !prev[section.key] }))}
+                          className="w-full px-3 py-2 bg-slate-900 text-white font-black text-sm text-left"
+                        >
+                          {section.title} {expandedProteinSections[section.key] ? '▾' : '▸'}
+                        </button>
+                      </td>
                     </tr>
-                  );
-                })}
+                    {expandedProteinSections[section.key] && section.rows.map((row) => {
+                      const s = row.sku;
+                      const pack = row.pack;
+                      const process = row.process;
+                      const baseCost = calcTotalCost(pack);
+                      const rowKey = skuRowKey(row);
+                      const draft = pricingDrafts[rowKey] || {
+                        costOverride: undefined,
+                        tiers: {
+                          P0: { price: round2(baseCost / Math.max(0.01, baseDenominator)), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator)), baseCost) },
+                          P1: { price: round2(baseCost / Math.max(0.01, baseDenominator - tierStep)), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - tierStep)), baseCost) },
+                          P2: { price: round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 2))), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 2))), baseCost) },
+                          P3: { price: round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 3))), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 3))), baseCost) },
+                        },
+                      };
+                      const effectiveCost = draft.costOverride != null && Number.isFinite(draft.costOverride) ? draft.costOverride : baseCost;
+                      const divisor = Math.max(0.0001, packSizeLb(pack));
+                      const effectiveCostPerLb = round2(effectiveCost / divisor);
+                      return (
+                        <tr key={rowKey} className="border-t border-slate-100">
+                          <td className="px-2 py-1.5 text-center">{skuRowIndexMap[rowKey] || 0}</td>
+                          <td className="px-2 py-1.5"><div className="font-black">{buildSkuDisplayName(row)}</div><div className="text-[10px] text-slate-400">{s?.code || `${pack.code} · 待建立 SKU`}</div></td>
+                          <td className="px-2 py-1.5"><span className={`inline-block px-2 py-0.5 text-[10px] rounded-full border ${categoryBadge(process?.category || 'others')}`}>{categoryLabel(process?.category || 'others')}</span></td>
+                          <td className="px-2 py-1.5 text-right font-black text-amber-700">${baseCost.toFixed(2)}</td>
+                          <td className="px-2 py-1.5 text-right"><input value={draft.costOverride ?? ''} onChange={e => {
+                            const raw = e.target.value.trim();
+                            const override = raw === '' ? undefined : Number(raw);
+                            setPricingDrafts(prev => {
+                              const rowState = prev[rowKey] || draft;
+                              const nextCost = override == null || !Number.isFinite(override) ? baseCost : override;
+                              const nextTiers = Object.fromEntries(
+                                (Object.keys(rowState.tiers) as PricingTierKey[]).map(k => [k, { ...rowState.tiers[k], margin: computeMarginPct(rowState.tiers[k].price, nextCost) }])
+                              ) as Record<PricingTierKey, PricingTierState>;
+                              return { ...prev, [rowKey]: { ...rowState, costOverride: override, tiers: nextTiers } };
+                            });
+                          }} placeholder="留空=用基準" className="w-24 p-1 border border-slate-200 rounded text-right font-bold ml-auto block" /></td>
+                          <td className="px-2 py-1.5 text-right font-black text-slate-800">${effectiveCost.toFixed(2)}</td>
+                          {tierDefs.map(t => {
+                            const tier = draft.tiers[t.key];
+                            const isP123 = t.key !== 'P0';
+                            const usePerLb = isP123 && p123UnitMode === 'per_lb';
+                            const shownPrice = usePerLb ? round2(tier.price / divisor) : tier.price;
+                            const shownMargin = usePerLb ? computeMarginPct(shownPrice, effectiveCostPerLb) : tier.margin;
+                            return (
+                              <td key={t.key} className="px-2 py-1.5">
+                                <div className="space-y-1">
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={shownPrice}
+                                    onChange={e => {
+                                      const input = Number(e.target.value) || 0;
+                                      const canonicalPrice = usePerLb ? round2(input * divisor) : input;
+                                      updatePriceInput(rowKey, t.key, canonicalPrice, effectiveCost);
+                                    }}
+                                    className="w-full p-1 border border-slate-200 rounded text-right font-bold"
+                                  />
+                                  <div className="flex items-center gap-1">
+                                    <input
+                                      type="number"
+                                      step="0.1"
+                                      value={shownMargin}
+                                      onChange={e => {
+                                        const nextMargin = Number(e.target.value) || 0;
+                                        if (usePerLb) {
+                                          const pricePerLb = computePriceFromMargin(effectiveCostPerLb, nextMargin);
+                                          updatePriceInput(rowKey, t.key, round2(pricePerLb * divisor), effectiveCost);
+                                        } else {
+                                          updateMarginInput(rowKey, t.key, nextMargin, effectiveCost);
+                                        }
+                                      }}
+                                      className={`w-full p-1 border border-slate-200 rounded text-right font-bold ${marginTextClass(shownMargin)}`}
+                                    />
+                                    <span className={`text-[11px] font-black ${marginTextClass(shownMargin)}`}>%</span>
+                                  </div>
+                                  {usePerLb && <div className="text-[10px] font-bold text-slate-400">按磅價，整包={divisor.toFixed(2)} lb</div>}
+                                </div>
+                              </td>
+                            );
+                          })}
+                          <td className="px-2 py-1.5 text-right"><button onClick={() => void savePricingRow(row)} className="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-black">💾 儲存控價</button></td>
+                        </tr>
+                      );
+                    })}
+                  </React.Fragment>
+                ))}
               </tbody>
             </table>
           </div>
