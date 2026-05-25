@@ -333,6 +333,8 @@ CREATE TABLE IF NOT EXISTS public.sellable_skus (
   process_spec_id TEXT NOT NULL REFERENCES public.material_process_specs(id) ON DELETE RESTRICT,
   pack_spec_id TEXT NOT NULL REFERENCES public.material_pack_specs(id) ON DELETE RESTRICT,
   product_id TEXT NOT NULL REFERENCES public.products(id) ON DELETE RESTRICT,
+  catalog_target TEXT CHECK (catalog_target IN ('ghfoods_wholesale', 'coolfood_wholesale', 'coolfood_retail')),
+  legacy_sku_filter TEXT,
   sale_channel TEXT NOT NULL DEFAULT 'wholesale',
   sort_order INTEGER NOT NULL DEFAULT 0,
   is_active BOOLEAN NOT NULL DEFAULT true,
@@ -346,6 +348,10 @@ CREATE TABLE IF NOT EXISTS public.material_skus (
   process_spec_id TEXT NOT NULL REFERENCES public.material_process_specs(id) ON DELETE CASCADE,
   pack_spec_id TEXT NOT NULL REFERENCES public.material_pack_specs(id) ON DELETE CASCADE,
   product_id TEXT NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+  catalog_target TEXT CHECK (catalog_target IN ('ghfoods_wholesale', 'coolfood_wholesale', 'coolfood_retail')),
+  legacy_sku_filter TEXT,
+  commercial_name TEXT,
+  canonical_sku_id TEXT,
   category_id TEXT,
   effective_cost NUMERIC(10,2) NOT NULL DEFAULT 0,
   p0_price NUMERIC(10,2) NOT NULL DEFAULT 0,
@@ -358,6 +364,34 @@ CREATE TABLE IF NOT EXISTS public.material_skus (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE public.sellable_skus
+  ADD COLUMN IF NOT EXISTS catalog_target TEXT;
+ALTER TABLE public.sellable_skus
+  ADD COLUMN IF NOT EXISTS legacy_sku_filter TEXT;
+ALTER TABLE public.sellable_skus
+  DROP CONSTRAINT IF EXISTS sellable_skus_catalog_target_check;
+ALTER TABLE public.sellable_skus
+  ADD CONSTRAINT sellable_skus_catalog_target_check
+  CHECK (catalog_target IS NULL OR catalog_target IN ('ghfoods_wholesale', 'coolfood_wholesale', 'coolfood_retail'));
+
+ALTER TABLE public.material_skus
+  ADD COLUMN IF NOT EXISTS catalog_target TEXT;
+ALTER TABLE public.material_skus
+  ADD COLUMN IF NOT EXISTS legacy_sku_filter TEXT;
+ALTER TABLE public.material_skus
+  ADD COLUMN IF NOT EXISTS commercial_name TEXT;
+ALTER TABLE public.material_skus
+  ADD COLUMN IF NOT EXISTS canonical_sku_id TEXT;
+ALTER TABLE public.material_skus
+  DROP CONSTRAINT IF EXISTS material_skus_catalog_target_check;
+ALTER TABLE public.material_skus
+  ADD CONSTRAINT material_skus_catalog_target_check
+  CHECK (catalog_target IS NULL OR catalog_target IN ('ghfoods_wholesale', 'coolfood_wholesale', 'coolfood_retail'));
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_material_skus_pack_target
+ON public.material_skus (pack_spec_id, catalog_target)
+WHERE catalog_target IS NOT NULL;
 
 -- Downstream commercial SKU aliases (must attach to canonical sellable_skus)
 CREATE TABLE IF NOT EXISTS public.commercial_skus (

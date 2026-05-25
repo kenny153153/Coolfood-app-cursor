@@ -42,7 +42,19 @@ DO $$ BEGIN
   ALTER TABLE public.products ADD COLUMN IF NOT EXISTS misc_cost NUMERIC NOT NULL DEFAULT 0;
   ALTER TABLE public.products ADD COLUMN IF NOT EXISTS legacy_id TEXT;
   ALTER TABLE public.products ADD COLUMN IF NOT EXISTS sale_channel TEXT NOT NULL DEFAULT 'both';
+  ALTER TABLE public.products ADD COLUMN IF NOT EXISTS catalog_target TEXT;
+  ALTER TABLE public.products ADD COLUMN IF NOT EXISTS legacy_sku_filter TEXT;
+  ALTER TABLE public.products ADD COLUMN IF NOT EXISTS source_sellable_sku_id TEXT;
 END $$;
+
+ALTER TABLE public.products
+  DROP CONSTRAINT IF EXISTS products_catalog_target_check;
+ALTER TABLE public.products
+  ADD CONSTRAINT products_catalog_target_check
+  CHECK (
+    catalog_target IS NULL
+    OR catalog_target IN ('ghfoods_wholesale', 'coolfood_wholesale', 'coolfood_retail')
+  );
 
 ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
 

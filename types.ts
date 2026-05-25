@@ -78,6 +78,7 @@ export interface SupabaseRecipeProductLinkRow {
 }
 
 export type SaleChannel = 'retail' | 'wholesale' | 'both';
+export type CatalogTarget = 'ghfoods_wholesale' | 'coolfood_wholesale' | 'coolfood_retail';
 
 export type MaterialType = 'meat' | 'third_party';
 
@@ -267,6 +268,9 @@ export interface Product {
   packagingCost?: number;   // 包裝費 (Skin Pack, 真空袋, etc.)
   miscCost?: number;        // 稅費 / 其他
   saleChannel?: SaleChannel; // 銷售渠道：retail / wholesale / both
+  catalogTarget?: CatalogTarget; // 單一通路目標（進興批發 / Coolfood批發 / Coolfood零售）
+  legacySkuFilter?: string; // 舊系統 SKU 文字（只作過濾/查找）
+  sourceSellableSkuId?: string; // 對應 sellable_skus.id
   purchaseLimit?: number;   // 每位客人每單限購數量，null = 不限
   productType?: ProductType; // standalone / processed / raw_material / in_house
   processingTypeId?: string; // FK → processing_types.id
@@ -445,6 +449,9 @@ export interface SupabaseProductRow {
   misc_cost?: number | null;
   legacy_id?: string | null;
   sale_channel?: string | null;
+  catalog_target?: string | null;
+  legacy_sku_filter?: string | null;
+  source_sellable_sku_id?: string | null;
   purchase_limit?: number | null;
   product_type?: string | null;
   processing_type_id?: string | null;

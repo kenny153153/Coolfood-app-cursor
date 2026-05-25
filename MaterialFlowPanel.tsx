@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, FileDown, Grid3X3, Layers, Package, Pencil, Plus, RefreshCw, Save, Scissors, Search, Settings2, Trash2, Upload } from 'lucide-react';
+import { Check, Grid3X3, Layers, Package, Pencil, Plus, RefreshCw, Save, Scissors, Search, Settings2, Trash2, Upload } from 'lucide-react';
 import { supabase } from './supabaseClient';
-import type { CostItem, Ingredient, Product, SaleChannel } from './types';
+import type { CatalogTarget, CostItem, Ingredient, Product, SaleChannel } from './types';
 import { mapIngredientRowToIngredient } from './supabaseMappers';
 import { convertCost, convertWeight, normalizeWeightUnit, type WeightUnit } from './utils/unitConverter';
 
@@ -106,6 +106,8 @@ interface SkuRow {
   packSpecId: string;
   productId: string;
   saleChannel: SaleChannel;
+  catalogTarget?: CatalogTarget;
+  legacySkuFilter?: string;
   isActive: boolean;
 }
 
@@ -116,22 +118,15 @@ interface SkuGridRow {
   sku?: SkuRow;
 }
 
-type PricingTierKey = 'P0' | 'P1' | 'P2' | 'P3';
-
-interface PricingTierState {
-  price: number;
-  margin: number;
-}
-
-interface PricingRowState {
+interface RouterDraftRowState {
   costOverride?: number;
-  tiers: Record<PricingTierKey, PricingTierState>;
+  legacySkuFilter: string;
+  commercialName: string;
 }
 
 
 const round2 = (v: number) => Math.round(v * 100) / 100;
 const mkId = (prefix: string) => `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-const QUOTE_SUFFIX: Record<string, string> = { P0: 'A0', P1: 'B1', P2: 'B2', P3: 'C3', 'P-1': 'Y1', 'P-2': 'Z2' };
 const RAW_UNIT_OPTIONS = ['lb', 'kg', 'g', 'catty', 'pack', 'box'] as const;
 const needsNetContent = (unit?: string) => ['pack', 'box'].includes((unit || '').trim().toLowerCase());
 const isMissingPackagingItemCodesError = (error: any) => {
@@ -162,12 +157,16 @@ const categoryBadge = (c: MethodCategory) => {
 const DEFAULT_MATERIAL_CATEGORIES = ['豬類', '牛類', '雞類', '家禽類', '海鮮類', '其他'] as const;
 const INGREDIENT_ACTIVITY_CFG_ID = 'material_flow_ingredient_activity';
 const INGREDIENT_DELETED_CFG_ID = 'material_flow_deleted_ingredient_ids';
+const CATALOG_TARGET_OPTIONS: { target: CatalogTarget; label: string; saleChannel: SaleChannel; skuPrefix: string }[] = [
+  { target: 'ghfoods_wholesale', label: '進興批發', saleChannel: 'wholesale', skuPrefix: 'GHW' },
+  { target: 'coolfood_wholesale', label: 'Coolfood批發', saleChannel: 'wholesale', skuPrefix: 'CFW' },
+  { target: 'coolfood_retail', label: 'Coolfood零售', saleChannel: 'retail', skuPrefix: 'CFR' },
+];
 
 const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }) => {
   const [tab, setTab] = useState<StepTab>('raw');
   const [loading, setLoading] = useState(false);
   const [showMethodModal, setShowMethodModal] = useState(false);
-  const [showTierModal, setShowTierModal] = useState(false);
   const [showUnitGuide, setShowUnitGuide] = useState(false);
   const [showPackagingDrawer, setShowPackagingDrawer] = useState(false);
   const [showMaterialCategoryDrawer, setShowMaterialCategoryDrawer] = useState(false);
@@ -191,18 +190,11 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>('all');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [selectedIngredientId, setSelectedIngredientId] = useState('');
-  const [selectedTierForPdf, setSelectedTierForPdf] = useState('P0');
-  const [baseDenominator, setBaseDenominator] = useState(0.88);
-  const [tierStep, setTierStep] = useState(0.01);
-  const [showStoplightConfig, setShowStoplightConfig] = useState(false);
-  const [greenThresholdPct, setGreenThresholdPct] = useState(15);
-  const [redThresholdPct, setRedThresholdPct] = useState(5);
-  const [pricingDrafts, setPricingDrafts] = useState<Record<string, PricingRowState>>({});
-  const [p123UnitMode, setP123UnitMode] = useState<'whole_pack' | 'per_lb'>('whole_pack');
+  const [routerSelections, setRouterSelections] = useState<Record<string, CatalogTarget[]>>({});
+  const [routerDraftRows, setRouterDraftRows] = useState<Record<string, RouterDraftRowState>>({});
 
   const [newIngredient, setNewIngredient] = useState({ name: '', supplier: '', category: '豬類', unit: 'lb', cost: 0, netContentVolume: 0, netContentUnit: 'g' as WeightUnit });
   const [newMethod, setNewMethod] = useState({ code: '', name: '', category: 'original_or_cutting' as MethodCategory });
-  const [newSku, setNewSku] = useState({ packSpecId: '', name: '', alias: '' });
   const [processDraftRows, setProcessDraftRows] = useState<ProcessDraftRow[]>([]);
   const [packDraftRows, setPackDraftRows] = useState<PackDraftRow[]>([]);
   const [editingMethodId, setEditingMethodId] = useState<string | null>(null);
@@ -220,8 +212,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
 
   const ingredientMap = useMemo(() => new Map(ingredients.map(i => [i.id, i])), [ingredients]);
   const processMap = useMemo(() => new Map(processRows.map(r => [r.id, r])), [processRows]);
-  const packMap = useMemo(() => new Map(packRows.map(r => [r.id, r])), [packRows]);
-  const tierDefs = useMemo(() => ([{ key: 'P0', level: 0 }, { key: 'P1', level: 1 }, { key: 'P2', level: 2 }, { key: 'P3', level: 3 }] as { key: PricingTierKey; level: number }[]), []);
   const activeMaterialCategoryOptions = useMemo(() => {
     const dynamic = materialCategories
       .filter(c => c.isActive !== false)
@@ -323,7 +313,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         supabase.from('material_process_specs').select('*').order('sort_order').order('name'),
         supabase
           .from('material_pack_specs')
-          .select('*, sellable_skus!left(id,code,name,alias,ingredient_id,process_spec_id,pack_spec_id,product_id,sale_channel,is_active,sort_order)')
+          .select('*, sellable_skus!left(id,code,name,alias,ingredient_id,process_spec_id,pack_spec_id,product_id,sale_channel,catalog_target,legacy_sku_filter,is_active,sort_order)')
           .order('sort_order')
           .order('name'),
         supabase.from('site_config').select('id,value').in('id', ['cost_items', 'material_flow_price_overrides', 'material_flow_cost_overrides', 'packaging_items', INGREDIENT_ACTIVITY_CFG_ID, INGREDIENT_DELETED_CFG_ID]),
@@ -378,6 +368,8 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         packSpecId: r.pack_spec_id,
         productId: r.product_id,
         saleChannel: (['retail', 'wholesale', 'both'].includes(r.sale_channel) ? r.sale_channel : 'wholesale') as SaleChannel,
+        catalogTarget: (['ghfoods_wholesale', 'coolfood_wholesale', 'coolfood_retail'].includes(r.catalog_target) ? r.catalog_target : undefined) as CatalogTarget | undefined,
+        legacySkuFilter: r.legacy_sku_filter || undefined,
         isActive: r.is_active !== false,
       }))));
 
@@ -569,8 +561,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       });
   }, [packRows, channelFilter, typeFilter, search, skuRows, processMap, ingredientMap, materialCategoryFilter]);
 
-  const skuRowKey = useCallback((row: SkuGridRow) => row.sku?.id || `PACK:${row.pack.id}`, []);
-
   const sanitizeSkuText = useCallback((value?: string) => {
     return (value || '')
       .replace(/數據1原件/gi, '')
@@ -651,17 +641,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     const costPerG = convertCost(processedLb, 'lb', 'g');
     return round2((costPerG * weightG) + (pack.packagingFee || 0));
   }, [processedCostPerLb]);
-
-  const computeMarginPct = useCallback((price: number, cost: number) => {
-    if (price <= 0) return 0;
-    return round2(((price - cost) / price) * 100);
-  }, []);
-
-  const computePriceFromMargin = useCallback((cost: number, marginPct: number) => {
-    const ratio = 1 - (marginPct / 100);
-    if (ratio <= 0.001) return 0;
-    return round2(cost / ratio);
-  }, []);
 
   const addIngredient = async () => {
     if (!newIngredient.name.trim()) return showToast('請輸入母料名稱', 'error');
@@ -1317,220 +1296,103 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     showToast('包裝規格已刪除', 'success');
   };
 
-  const addSku = async () => {
-    const pack = packMap.get(newSku.packSpecId);
-    if (!pack) return showToast('請先選擇包裝規格', 'error');
-    const process = processMap.get(pack.processSpecId);
-    const ingredient = ingredientMap.get(pack.ingredientId);
-    if (!process || !ingredient) return showToast('關聯資料不完整', 'error');
-    if (!newSku.name.trim()) return showToast('請輸入 SKU 名稱', 'error');
+  const defaultTargetsFromChannel = useCallback((channel: SaleChannel): CatalogTarget[] => {
+    if (channel === 'retail') return ['coolfood_retail'];
+    if (channel === 'wholesale') return ['ghfoods_wholesale', 'coolfood_wholesale'];
+    return ['ghfoods_wholesale', 'coolfood_wholesale', 'coolfood_retail'];
+  }, []);
 
-    const suffix = process.category === 'repacking' && (process.packQuantity || pack.packQuantity)
-      ? ` - 分裝 ${process.packQuantity || pack.packQuantity}${process.packUnit || pack.packUnit || 'g'}`
-      : '';
-    const finalName = `${newSku.name.trim()}${suffix}`;
+  const subRowKey = useCallback((packId: string, target: CatalogTarget) => `${packId}::${target}`, []);
 
-    const totalCost = calcTotalCost(pack);
-    const p0 = baseDenominator > 0 ? round2(totalCost / baseDenominator) : totalCost;
-    const productId = mkId('P');
-    const packLb = convertWeight(pack.specWeight || 0, pack.specUnit, 'lb');
-    const packagingCostPerLb = pack.pricingType === 'fixed_pack' && packLb > 0 ? round2(pack.packagingFee / packLb) : 0;
-    const variantLabel = `${process.name}${suffix}`.trim();
+  const skuByPackTarget = useMemo(() => {
+    const map = new Map<string, SkuRow>();
+    skuRows
+      .filter(s => s.isActive)
+      .forEach((s) => {
+        if (!s.catalogTarget) return;
+        map.set(subRowKey(s.packSpecId, s.catalogTarget), s);
+      });
+    return map;
+  }, [skuRows, subRowKey]);
 
-    const { error: productError } = await supabase.from('products').insert({
-      id: productId,
-      name: finalName,
-      categories: [],
-      price: p0,
-      member_price: p0,
-      stock: 0,
-      track_inventory: true,
-      tags: ['sellable_sku'],
-      image: '📦',
-      ingredient_id: ingredient.id,
-      parent_ingredient_id: ingredient.id,
-      processing_type_id: process.methodId || null,
-      yield_rate: process.yieldRate,
-      processing_cost: 0,
-      packaging_cost: packagingCostPerLb,
-      misc_cost: 0,
-      sale_channel: pack.channel,
-      product_type: 'processed',
-      pack_size: pack.packLabel || null,
-      pack_weight_lb: pack.pricingType === 'fixed_pack' ? packLb : null,
-      group_id: null,
-      variant_label: variantLabel,
-      pricing_mode: pack.pricingType,
-      processing_spec: process.name,
-    });
-    if (productError) return showToast(`新增商品失敗：${productError.message}`, 'error');
-
-    const skuPayload = {
-      id: mkId('SKU'),
-      code: `${finalName.toUpperCase().replace(/\s+/g, '_').slice(0, 28)}_${Date.now().toString().slice(-4)}`,
-      name: finalName,
-      alias: newSku.alias.trim() || null,
-      ingredient_id: ingredient.id,
-      process_spec_id: process.id,
-      pack_spec_id: pack.id,
-      product_id: productId,
-      sale_channel: pack.channel,
-      sort_order: skuRows.length,
-      is_active: true,
-    };
-    const { data, error } = await supabase.from('sellable_skus').insert(skuPayload).select('*').single();
-    if (error) return showToast(`新增 SKU 失敗：${error.message}`, 'error');
-
-    setSkuRows(prev => uniqueById([...prev, {
-      id: data.id,
-      code: data.code,
-      name: data.name,
-      alias: data.alias || undefined,
-      ingredientId: data.ingredient_id,
-      processSpecId: data.process_spec_id,
-      packSpecId: data.pack_spec_id,
-      productId: data.product_id,
-      saleChannel: data.sale_channel,
-      isActive: data.is_active !== false,
-    }]));
-
-    setProducts(prev => [...prev, {
-      id: productId,
-      name: finalName,
-      categories: [],
-      price: p0,
-      memberPrice: p0,
-      stock: 0,
-      trackInventory: true,
-      tags: ['sellable_sku'],
-      image: '📦',
-      ingredientId: ingredient.id,
-      parentIngredientId: ingredient.id,
-      yieldRate: process.yieldRate,
-      processingCost: 0,
-      packagingCost: packagingCostPerLb,
-      miscCost: 0,
-      saleChannel: pack.channel,
-      productType: 'processed',
-      packSize: pack.packLabel,
-      packWeightLb: pack.pricingType === 'fixed_pack' ? packLb : undefined,
-      variantLabel,
-      pricingMode: pack.pricingType,
-      processingSpec: process.name,
-      processingTypeId: process.methodId,
-      categoryId: ingredient.category || undefined,
-    }]);
-
-    setNewSku({ packSpecId: '', name: '', alias: '' });
-  };
+  const buildInternalSkuId = useCallback((packId: string, target: CatalogTarget, existingId?: string) => {
+    if (existingId) return existingId;
+    const opt = CATALOG_TARGET_OPTIONS.find(x => x.target === target);
+    const suffix = packId.replace(/[^A-Z0-9]/ig, '').slice(-8).toUpperCase() || Date.now().toString().slice(-8);
+    return `SKU_${opt?.skuPrefix || 'ROW'}_${suffix}`;
+  }, []);
 
   useEffect(() => {
     if (tab !== 'sku') return;
-    setPricingDrafts(prev => {
-      const next: Record<string, PricingRowState> = {};
-      skuGridRows.forEach((row) => {
-        const rowKey = skuRowKey(row);
-        const baseCost = calcTotalCost(row.pack);
-        const saved = pricingOverrides[rowKey];
-        const fallbackByLevel = (level: number) => {
-          const denom = baseDenominator - (level * tierStep);
-          if (denom <= 0.01) return 0;
-          return round2(baseCost / denom);
-        };
-        const fromSaved = (tier: PricingTierKey, level: number): PricingTierState => {
-          const savedTier = saved && typeof saved === 'object' ? saved[tier] : null;
-          const price = Number(savedTier?.price);
-          const validPrice = Number.isFinite(price) && price > 0 ? price : fallbackByLevel(level);
-          const margin = Number(savedTier?.margin);
-          const validMargin = Number.isFinite(margin) ? margin : computeMarginPct(validPrice, Number(saved?.costOverride ?? baseCost) || baseCost);
-          return { price: round2(validPrice), margin: round2(validMargin) };
-        };
-        const baseRowState: PricingRowState = {
-          costOverride: Number.isFinite(Number(saved?.costOverride)) ? Number(saved.costOverride) : undefined,
-          tiers: {
-            P0: fromSaved('P0', 0),
-            P1: fromSaved('P1', 1),
-            P2: fromSaved('P2', 2),
-            P3: fromSaved('P3', 3),
-          },
-        };
-        next[rowKey] = prev[rowKey] || baseRowState;
+    setRouterSelections(prev => {
+      const next = { ...prev };
+      skuPricingRows.forEach((row) => {
+        const pid = row.pack.id;
+        if (next[pid]?.length) return;
+        const existingTargets = skuRows
+          .filter(s => s.packSpecId === pid && s.isActive && !!s.catalogTarget)
+          .map(s => s.catalogTarget as CatalogTarget);
+        next[pid] = existingTargets.length > 0 ? Array.from(new Set(existingTargets)) : defaultTargetsFromChannel(row.pack.channel);
       });
       return next;
     });
-  }, [tab, skuGridRows, pricingOverrides, baseDenominator, tierStep, calcTotalCost, skuRowKey, computeMarginPct]);
+  }, [tab, skuPricingRows, skuRows, defaultTargetsFromChannel]);
 
-  const marginTextClass = useCallback((margin: number) => {
-    if (margin >= greenThresholdPct) return 'text-emerald-600';
-    if (margin < redThresholdPct) return 'text-rose-600';
-    return 'text-amber-600';
-  }, [greenThresholdPct, redThresholdPct]);
+  useEffect(() => {
+    if (tab !== 'sku') return;
+    setRouterDraftRows(prev => {
+      const next = { ...prev };
+      skuPricingRows.forEach((row) => {
+        const baseName = buildSkuDisplayName(row);
+        CATALOG_TARGET_OPTIONS.forEach(({ target }) => {
+          const key = subRowKey(row.pack.id, target);
+          if (next[key]) return;
+          const existingSku = skuByPackTarget.get(key);
+          const existingProduct = existingSku ? products.find(p => p.id === existingSku.productId) : undefined;
+          const saved = pricingOverrides[key];
+          next[key] = {
+            costOverride: Number.isFinite(Number(saved?.costOverride)) ? Number(saved.costOverride) : undefined,
+            legacySkuFilter: existingSku?.legacySkuFilter || existingProduct?.legacySkuFilter || '',
+            commercialName: existingProduct?.name || existingSku?.name || baseName,
+          };
+        });
+      });
+      return next;
+    });
+  }, [tab, skuPricingRows, skuByPackTarget, products, pricingOverrides, subRowKey, buildSkuDisplayName]);
 
-  const packSizeLb = useCallback((pack: PackRow) => {
-    if ((pack.packWeightLb || 0) > 0) return Number(pack.packWeightLb);
-    if (pack.pricingType === 'fixed_pack' && (pack.specWeight || 0) > 0) return convertWeight(pack.specWeight || 0, pack.specUnit, 'lb');
-    return 1;
+  const toggleRouterTarget = useCallback((packId: string, target: CatalogTarget) => {
+    setRouterSelections(prev => {
+      const current = prev[packId] || [];
+      if (current.includes(target)) return { ...prev, [packId]: current.filter(x => x !== target) };
+      return { ...prev, [packId]: [...current, target] };
+    });
   }, []);
 
-  const updatePriceInput = (rowKey: string, tier: PricingTierKey, nextPrice: number, effectiveCost: number) => {
-    setPricingDrafts(prev => {
-      const row = prev[rowKey];
-      if (!row) return prev;
-      const price = Number.isFinite(nextPrice) ? nextPrice : 0;
-      const margin = computeMarginPct(price, effectiveCost);
-      return {
-        ...prev,
-        [rowKey]: {
-          ...row,
-          tiers: {
-            ...row.tiers,
-            [tier]: { price, margin },
-          },
-        },
-      };
-    });
-  };
-
-  const updateMarginInput = (rowKey: string, tier: PricingTierKey, nextMargin: number, effectiveCost: number) => {
-    setPricingDrafts(prev => {
-      const row = prev[rowKey];
-      if (!row) return prev;
-      const margin = Number.isFinite(nextMargin) ? nextMargin : 0;
-      const price = computePriceFromMargin(effectiveCost, margin);
-      return {
-        ...prev,
-        [rowKey]: {
-          ...row,
-          tiers: {
-            ...row.tiers,
-            [tier]: { price, margin },
-          },
-        },
-      };
-    });
-  };
-
-  const savePricingRow = async (row: SkuGridRow) => {
-    const rowKey = skuRowKey(row);
-    const draft = pricingDrafts[rowKey];
-    if (!draft) return;
+  const saveRouterSubRow = async (row: SkuGridRow, target: CatalogTarget) => {
     const ingredient = ingredientMap.get(row.pack.ingredientId);
     if (ingredient?.isActive === false) return showToast('停用母料不可儲存 SKU 成本', 'error');
     const process = row.process || processMap.get(row.pack.processSpecId);
     const materialCategory = (ingredient?.category || '').trim();
-    const displayName = buildSkuDisplayName(row);
-    const effectiveCost = Number.isFinite(Number(draft.costOverride)) ? Number(draft.costOverride) : calcTotalCost(row.pack);
-    const productId = row.sku?.productId || mkId('P');
-    const existingProduct = products.find(p => p.id === productId);
-    const skuId = row.sku?.id || mkId('SKU');
-    const skuCode = row.sku?.code || `${displayName.toUpperCase().replace(/\s+/g, '_').replace(/[^A-Z0-9_]/g, '').slice(0, 28)}_${Date.now().toString().slice(-4)}`;
+    const key = subRowKey(row.pack.id, target);
+    const draft = routerDraftRows[key];
+    if (!draft) return;
+    const opt = CATALOG_TARGET_OPTIONS.find(x => x.target === target);
+    if (!opt) return;
 
-    const payload = {
-      costOverride: draft.costOverride ?? null,
-    };
-    const merged = { ...pricingOverrides, [rowKey]: payload };
-    const { error } = await supabase.from('site_config').upsert({ id: 'material_flow_cost_overrides', value: merged });
-    if (error) return showToast(`保存成本覆蓋失敗：${error.message}`, 'error');
+    const existingSku = skuByPackTarget.get(key);
+    const baseCost = calcTotalCost(row.pack);
+    const effectiveCost = Number.isFinite(Number(draft.costOverride)) ? Number(draft.costOverride) : baseCost;
+    const displayName = (draft.commercialName || buildSkuDisplayName(row)).trim();
+    const skuId = existingSku?.id || mkId('SKU');
+    const productId = existingSku?.productId || mkId('P');
+    const existingProduct = products.find(p => p.id === productId);
+    const skuCode = existingSku?.code || `${opt.skuPrefix}_${displayName.toUpperCase().replace(/[^A-Z0-9]/g, '_').slice(0, 24)}_${Date.now().toString().slice(-4)}`;
+    const payload = { costOverride: draft.costOverride ?? null, target };
+    const merged = { ...pricingOverrides, [key]: payload };
+
+    const cfgWrite = await supabase.from('site_config').upsert({ id: 'material_flow_cost_overrides', value: merged });
+    if (cfgWrite.error) return showToast(`保存成本覆蓋失敗：${cfgWrite.error.message}`, 'error');
 
     const materialSkuPayload = {
       id: skuId,
@@ -1539,15 +1401,38 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       pack_spec_id: row.pack.id,
       product_id: productId,
       category_id: materialCategory || null,
+      catalog_target: target,
+      commercial_name: displayName,
+      legacy_sku_filter: draft.legacySkuFilter || null,
+      canonical_sku_id: skuId,
       effective_cost: effectiveCost,
       pricing_payload: payload,
       is_active: true,
       updated_at: new Date().toISOString(),
     } as any;
-    const skuWrite = await supabase.from('material_skus').upsert(materialSkuPayload, { onConflict: 'id' });
-    if (skuWrite.error && skuWrite.error.code !== '42P01' && skuWrite.error.code !== 'PGRST205') {
-      return showToast(`保存 material_skus 失敗：${skuWrite.error.message}`, 'error');
+    const materialWrite = await supabase.from('material_skus').upsert(materialSkuPayload, { onConflict: 'id' });
+    if (materialWrite.error && materialWrite.error.code !== '42P01' && materialWrite.error.code !== 'PGRST205') {
+      return showToast(`保存 material_skus 失敗：${materialWrite.error.message}`, 'error');
     }
+
+    const sellablePayload = {
+      id: skuId,
+      code: skuCode,
+      name: displayName,
+      alias: existingSku?.alias || null,
+      ingredient_id: row.pack.ingredientId,
+      process_spec_id: row.pack.processSpecId,
+      pack_spec_id: row.pack.id,
+      product_id: productId,
+      sale_channel: opt.saleChannel,
+      catalog_target: target,
+      legacy_sku_filter: draft.legacySkuFilter || null,
+      sort_order: existingSku?.isActive ? 0 : skuRows.length,
+      is_active: true,
+    };
+    const skuUpsert = await supabase.from('sellable_skus').upsert(sellablePayload, { onConflict: 'id' }).select('*').single();
+    if (skuUpsert.error) return showToast(`同步 SKU 失敗：${skuUpsert.error.message}`, 'error');
+    const skuData = skuUpsert.data as any;
 
     const productPayload = {
       id: productId,
@@ -1558,34 +1443,23 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       cost_price: effectiveCost,
       stock: 0,
       track_inventory: true,
-      tags: ['sellable_sku', 'material_flow'],
-      image: '📦',
+      tags: ['sellable_sku', 'material_flow', target],
+      image: existingProduct?.image || '📦',
       ingredient_id: row.pack.ingredientId,
       parent_ingredient_id: row.pack.ingredientId,
       processing_type_id: process?.methodId || null,
       pricing_mode: row.pack.pricingType,
       processing_spec: process?.name || row.pack.name,
+      product_type: 'processed',
+      sale_channel: opt.saleChannel,
+      catalog_target: target,
+      legacy_sku_filter: draft.legacySkuFilter || null,
+      source_sellable_sku_id: skuId,
       updated_at: new Date().toISOString(),
     } as any;
     const productWrite = await supabase.from('products').upsert(productPayload, { onConflict: 'id' });
     if (productWrite.error) return showToast(`同步產品清單失敗：${productWrite.error.message}`, 'error');
 
-    const sellablePayload = {
-      id: skuId,
-      code: skuCode,
-      name: displayName,
-      alias: row.sku?.alias || null,
-      ingredient_id: row.pack.ingredientId,
-      process_spec_id: row.pack.processSpecId,
-      pack_spec_id: row.pack.id,
-      product_id: productId,
-      sale_channel: row.sku?.saleChannel || row.pack.channel || 'both',
-      sort_order: 0,
-      is_active: true,
-    };
-    const skuUpsert = await supabase.from('sellable_skus').upsert(sellablePayload, { onConflict: 'id' }).select('*').single();
-    if (skuUpsert.error) return showToast(`同步 SKU 失敗：${skuUpsert.error.message}`, 'error');
-    const skuData = skuUpsert.data as any;
     setSkuRows(prev => uniqueById([...prev.filter(s => s.id !== skuId), {
       id: skuData.id,
       code: skuData.code,
@@ -1595,56 +1469,41 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       processSpecId: skuData.process_spec_id,
       packSpecId: skuData.pack_spec_id,
       productId: skuData.product_id,
-      saleChannel: (['retail', 'wholesale', 'both'].includes(skuData.sale_channel) ? skuData.sale_channel : 'both') as SaleChannel,
+      saleChannel: (['retail', 'wholesale', 'both'].includes(skuData.sale_channel) ? skuData.sale_channel : opt.saleChannel) as SaleChannel,
+      catalogTarget: (['ghfoods_wholesale', 'coolfood_wholesale', 'coolfood_retail'].includes(skuData.catalog_target) ? skuData.catalog_target : target) as CatalogTarget,
+      legacySkuFilter: skuData.legacy_sku_filter || draft.legacySkuFilter || undefined,
       isActive: skuData.is_active !== false,
     }]));
+
     setProducts(prev => {
       const exists = prev.some(p => p.id === productId);
-      const current = prev.find(p => p.id === productId);
-      const nextProduct = {
+      const base: Product = {
         id: productId,
         name: displayName,
         categories: materialCategory ? [materialCategory] : [],
-        price: current?.price ?? 0,
-        memberPrice: current?.memberPrice ?? 0,
-        stock: 0,
+        price: existingProduct?.price ?? 0,
+        memberPrice: existingProduct?.memberPrice ?? 0,
+        stock: existingProduct?.stock ?? 0,
         trackInventory: true,
-        tags: ['sellable_sku', 'material_flow'],
-        image: '📦',
+        tags: ['sellable_sku', 'material_flow', target],
+        image: existingProduct?.image || '📦',
         costPrice: effectiveCost,
         ingredientId: row.pack.ingredientId,
         parentIngredientId: row.pack.ingredientId,
+        saleChannel: opt.saleChannel,
+        catalogTarget: target,
+        legacySkuFilter: draft.legacySkuFilter || undefined,
+        sourceSellableSkuId: skuId,
         pricingMode: row.pack.pricingType,
         processingSpec: process?.name || row.pack.name,
-      } as Product;
-      if (exists) return prev.map(p => p.id === productId ? { ...p, ...nextProduct } : p);
-      return [...prev, nextProduct];
+        productType: 'processed',
+      };
+      if (exists) return prev.map(p => p.id === productId ? { ...p, ...base } : p);
+      return [...prev, base];
     });
 
     setPricingOverrides(merged);
-    showToast('SKU 與成本已儲存並同步產品清單', 'success');
-  };
-
-  const exportQuotePdf = () => {
-    const chosen = skuPricingRows.filter(r => r.sku);
-    if (chosen.length === 0) return showToast('目前沒有可導出的 SKU', 'error');
-    const tier = tierDefs.find(t => t.key === (selectedTierForPdf as PricingTierKey));
-    if (!tier) return;
-    const refNo = `QT-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(Date.now()).slice(-4)}-${QUOTE_SUFFIX[selectedTierForPdf] || 'A0'}`;
-    const rows = chosen.map((row, i) => {
-      const rowKey = skuRowKey(row);
-      const draft = pricingDrafts[rowKey];
-      const displayName = buildSkuDisplayName(row);
-      const price = draft?.tiers?.[tier.key]?.price ?? 0;
-      return `<tr><td style="padding:10px;border-bottom:1px solid #e2e8f0">${i + 1}</td><td style="padding:10px;border-bottom:1px solid #e2e8f0">${displayName}</td><td style="padding:10px;border-bottom:1px solid #e2e8f0;text-align:right">$${price.toFixed(2)}</td></tr>`;
-    }).join('');
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Quotation</title></head><body style="font-family:Inter,Arial,sans-serif;padding:32px;color:#0f172a"><div style="display:flex;justify-content:space-between;border-bottom:2px solid #0f172a;padding-bottom:12px"><div><h1 style="margin:0;font-size:24px">Quotation</h1><div style="font-size:12px;color:#64748b">Material Flow Pricing</div></div><div style="text-align:right"><div style="font-size:12px;color:#64748b">Ref No.</div><div style="font-weight:800">${refNo}</div></div></div><table style="width:100%;border-collapse:collapse;margin-top:16px"><thead><tr style="background:#f8fafc"><th style="padding:10px;text-align:left">#</th><th style="padding:10px;text-align:left">Item</th><th style="padding:10px;text-align:right">Price</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
-    const w = window.open('', '_blank', 'width=980,height=760');
-    if (!w) return showToast('瀏覽器阻擋彈窗', 'error');
-    w.document.write(html);
-    w.document.close();
-    w.focus();
-    w.print();
+    showToast(`已推送到 ${opt.label} 產品/分類`, 'success');
   };
 
   return (
@@ -2239,52 +2098,131 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input value={skuSearch} onChange={e => setSkuSearch(e.target.value)} placeholder="搜尋 SKU 名稱..." className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 text-sm font-bold bg-white" />
               </div>
-              <p className="text-[11px] font-black text-slate-500">Tab 4 只處理 SKU 與最終成本，渠道定價改由零售/批發模組處理。</p>
+              <p className="text-[11px] font-black text-slate-500">Tab 4 只處理成本、通路分流與商用名。售價統一交由「產品/分類」處理。</p>
             </div>
             <div className="overflow-auto max-h-[34rem] border border-slate-100 rounded-xl">
               <table className="w-full text-xs">
-                <thead><tr className="bg-slate-50 text-slate-500"><th className="px-2 py-2">#</th><th className="px-2 py-2 text-left">商品 SKU 名稱</th><th className="px-2 py-2 text-left">加工大類</th><th className="px-2 py-2 text-right">基準總成本</th><th className="px-2 py-2 text-right">成本手動覆蓋</th><th className="px-2 py-2 text-right">有效商品成本</th><th className="px-2 py-2 text-right">操作</th></tr></thead>
+                <thead>
+                  <tr className="bg-slate-50 text-slate-500">
+                    <th className="px-2 py-2 text-center">#</th>
+                    <th className="px-2 py-2 text-left">核心規格</th>
+                    <th className="px-2 py-2 text-left">加工大類</th>
+                    <th className="px-2 py-2 text-right">基準總成本</th>
+                    <th className="px-2 py-2 text-left">通路選擇</th>
+                  </tr>
+                </thead>
                 <tbody>
                 {skuPricingRowsForSelected.map((row, idx) => {
-                  const s = row.sku;
                   const pack = row.pack;
                   const process = row.process;
                   const ingredient = ingredientMap.get(pack.ingredientId);
                   const inactive = ingredient?.isActive === false;
                   const baseCost = calcTotalCost(pack);
-                  const rowKey = skuRowKey(row);
-                  const draft = pricingDrafts[rowKey] || {
-                    costOverride: undefined,
-                    tiers: {
-                      P0: { price: round2(baseCost / Math.max(0.01, baseDenominator)), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator)), baseCost) },
-                      P1: { price: round2(baseCost / Math.max(0.01, baseDenominator - tierStep)), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - tierStep)), baseCost) },
-                      P2: { price: round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 2))), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 2))), baseCost) },
-                      P3: { price: round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 3))), margin: computeMarginPct(round2(baseCost / Math.max(0.01, baseDenominator - (tierStep * 3))), baseCost) },
-                    },
-                  };
-                  const effectiveCost = draft.costOverride != null && Number.isFinite(draft.costOverride) ? draft.costOverride : baseCost;
+                  const selectedTargets = routerSelections[pack.id] || defaultTargetsFromChannel(pack.channel);
                   return (
-                    <tr key={rowKey} className={`border-t border-slate-100 ${inactive ? 'bg-slate-50 opacity-50' : ''}`}>
+                    <React.Fragment key={pack.id}>
+                    <tr className={`border-t border-slate-100 ${inactive ? 'bg-slate-50 opacity-50' : ''}`}>
                       <td className="px-2 py-1.5 text-center">{idx + 1}</td>
-                      <td className="px-2 py-1.5"><div className="font-black">{buildSkuDisplayName(row)}</div><div className="text-[10px] text-slate-400">{s?.code || `${pack.code} · 待建立 SKU`}</div></td>
+                      <td className="px-2 py-1.5">
+                        <div className="font-black">{buildSkuDisplayName(row)}</div>
+                        <div className="text-[10px] text-slate-400">{pack.code} · {pack.packLabel || `${pack.specWeight}${pack.specUnit}`}</div>
+                      </td>
                       <td className="px-2 py-1.5"><span className={`inline-block px-2 py-0.5 text-[10px] rounded-full border ${categoryBadge(process?.category || 'others')}`}>{categoryLabel(process?.category || 'others')}</span></td>
                       <td className="px-2 py-1.5 text-right font-black text-amber-700">${baseCost.toFixed(2)}</td>
-                      <td className="px-2 py-1.5 text-right"><input disabled={inactive} value={draft.costOverride ?? ''} onChange={e => {
-                        const raw = e.target.value.trim();
-                        const override = raw === '' ? undefined : Number(raw);
-                        setPricingDrafts(prev => {
-                          const rowState = prev[rowKey] || draft;
-                          return { ...prev, [rowKey]: { ...rowState, costOverride: override } };
-                        });
-                      }} placeholder="留空=用基準" className="w-24 p-1 border border-slate-200 rounded text-right font-bold ml-auto block disabled:opacity-50" /></td>
-                      <td className="px-2 py-1.5 text-right font-black text-slate-800">${effectiveCost.toFixed(2)}</td>
-                      <td className="px-2 py-1.5 text-right"><button disabled={inactive} onClick={() => void savePricingRow(row)} className={`px-2 py-1 rounded text-[10px] font-black ${inactive ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white'}`}>💾 儲存 SKU 與成本</button></td>
+                      <td className="px-2 py-1.5">
+                        <div className="flex flex-wrap gap-2">
+                          {CATALOG_TARGET_OPTIONS.map(opt => (
+                            <label key={opt.target} className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[10px] font-black ${selectedTargets.includes(opt.target) ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-600'}`}>
+                              <input
+                                type="checkbox"
+                                disabled={inactive}
+                                checked={selectedTargets.includes(opt.target)}
+                                onChange={() => toggleRouterTarget(pack.id, opt.target)}
+                              />
+                              <span>{opt.label}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </td>
                     </tr>
+                    {selectedTargets.map(target => {
+                      const key = subRowKey(pack.id, target);
+                      const draft = routerDraftRows[key] || { costOverride: undefined, legacySkuFilter: '', commercialName: buildSkuDisplayName(row) };
+                      const existingSku = skuByPackTarget.get(key);
+                      const effectiveCost = draft.costOverride != null && Number.isFinite(draft.costOverride) ? draft.costOverride : baseCost;
+                      const opt = CATALOG_TARGET_OPTIONS.find(x => x.target === target)!;
+                      return (
+                        <tr key={key} className={`bg-slate-50/60 border-t border-slate-100 ${inactive ? 'opacity-50' : ''}`}>
+                          <td className="px-2 py-2 text-center text-[10px] font-black text-slate-400">↳</td>
+                          <td className="px-2 py-2">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              <div>
+                                <div className="text-[9px] font-black text-slate-400 uppercase">內部系統 SKU ID</div>
+                                <div className="font-mono text-[11px] font-black text-slate-700">{buildInternalSkuId(pack.id, target, existingSku?.id)}</div>
+                              </div>
+                              <div>
+                                <div className="text-[9px] font-black text-slate-400 uppercase">通路目標</div>
+                                <div className="text-[11px] font-black text-blue-700">{opt.label}</div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-2 py-2">
+                            <span className={`inline-block px-2 py-0.5 text-[10px] rounded-full border ${categoryBadge(process?.category || 'others')}`}>{categoryLabel(process?.category || 'others')}</span>
+                          </td>
+                          <td className="px-2 py-2">
+                            <div className="text-right font-black text-amber-700">${baseCost.toFixed(2)}</div>
+                            <div className="mt-1">
+                              <div className="text-[9px] font-black text-slate-400 uppercase text-right">成本手動覆蓋</div>
+                              <input
+                                disabled={inactive}
+                                value={draft.costOverride ?? ''}
+                                onChange={e => {
+                                  const raw = e.target.value.trim();
+                                  const override = raw === '' ? undefined : Number(raw);
+                                  setRouterDraftRows(prev => ({ ...prev, [key]: { ...draft, costOverride: Number.isFinite(override as number) ? override : undefined } }));
+                                }}
+                                placeholder="留空=用基準"
+                                className="w-24 p-1 border border-slate-200 rounded text-right font-bold ml-auto block disabled:opacity-50"
+                              />
+                            </div>
+                            <div className="text-[11px] font-black text-right text-slate-700 mt-1">有效商品成本: ${effectiveCost.toFixed(2)}</div>
+                          </td>
+                          <td className="px-2 py-2">
+                            <div className="space-y-1">
+                              <div>
+                                <div className="text-[9px] font-black text-slate-400 uppercase">沿用舊系統 SKU (Filter)</div>
+                                <input
+                                  disabled={inactive}
+                                  value={draft.legacySkuFilter}
+                                  onChange={e => setRouterDraftRows(prev => ({ ...prev, [key]: { ...draft, legacySkuFilter: e.target.value } }))}
+                                  placeholder="例如: OLD-SKU-8899"
+                                  className="w-full p-1 border border-slate-200 rounded font-bold disabled:opacity-50"
+                                />
+                              </div>
+                              <div>
+                                <div className="text-[9px] font-black text-slate-400 uppercase">對外商用名</div>
+                                <input
+                                  disabled={inactive}
+                                  value={draft.commercialName}
+                                  onChange={e => setRouterDraftRows(prev => ({ ...prev, [key]: { ...draft, commercialName: e.target.value } }))}
+                                  placeholder="輸入對外顯示名稱"
+                                  className="w-full p-1 border border-slate-200 rounded font-bold disabled:opacity-50"
+                                />
+                              </div>
+                              <div className="text-right">
+                                <button disabled={inactive} onClick={() => void saveRouterSubRow(row, target)} className={`px-2 py-1 rounded text-[10px] font-black ${inactive ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white'}`}>💾 儲存並分流推送</button>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    </React.Fragment>
                   );
                 })}
                 {skuPricingRowsForSelected.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-3 py-6 text-center text-slate-500 font-bold">此母料尚未有可用 SKU，請先在 Tab 2/3 建立加工與包裝。</td>
+                    <td colSpan={5} className="px-3 py-6 text-center text-slate-500 font-bold">此母料尚未有可用 SKU，請先在 Tab 2/3 建立加工與包裝。</td>
                   </tr>
                 )}
                 </tbody>

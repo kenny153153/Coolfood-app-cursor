@@ -4095,18 +4095,48 @@ const App: React.FC = () => {
   const effectiveInventoryChannel: 'all' | 'retail' | 'wholesale' = moduleWorkspace === 'COOLFOOD_RETAIL' ? 'retail' : moduleWorkspace === 'WHOLESALE' ? 'wholesale' : inventoryChannelFilter;
 
   const filteredAdminProducts = useMemo(() => {
+    const matchesWorkspaceTarget = (p: Product) => {
+      const target = p.catalogTarget;
+      const ch = p.saleChannel || 'retail';
+      if (moduleWorkspace === 'COOLFOOD_RETAIL') {
+        if (target) return target === 'coolfood_retail';
+        return ch === 'retail' || ch === 'both';
+      }
+      if (moduleWorkspace === 'WHOLESALE') {
+        if (target) {
+          return adminWholesaleBrand === 'GHFOODS'
+            ? target === 'ghfoods_wholesale'
+            : target === 'coolfood_wholesale';
+        }
+        return ch === 'wholesale' || ch === 'both';
+      }
+      return true;
+    };
+
+    const matchesChannelFilter = (p: Product) => {
+      const target = p.catalogTarget;
+      const ch = p.saleChannel || 'retail';
+      if (effectiveInventoryChannel === 'retail') {
+        if (target) return target === 'coolfood_retail';
+        return ch === 'retail' || ch === 'both';
+      }
+      if (effectiveInventoryChannel === 'wholesale') {
+        if (target) return target === 'ghfoods_wholesale' || target === 'coolfood_wholesale';
+        return ch === 'wholesale' || ch === 'both';
+      }
+      return true;
+    };
+
     return products.filter(p => {
       const q = adminProductSearch.toLowerCase();
       const matchSearch = p.name.toLowerCase().includes(q) ||
         p.id.toLowerCase().includes(q) ||
         (p.legacyId?.toLowerCase() ?? '').includes(q);
       if (!matchSearch) return false;
-      const ch = p.saleChannel || 'retail';
-      if (effectiveInventoryChannel === 'retail') return ch === 'retail' || ch === 'both';
-      if (effectiveInventoryChannel === 'wholesale') return ch === 'wholesale' || ch === 'both';
-      return true;
+      if (!matchesWorkspaceTarget(p)) return false;
+      return matchesChannelFilter(p);
     });
-  }, [products, adminProductSearch, effectiveInventoryChannel]);
+  }, [products, adminProductSearch, effectiveInventoryChannel, moduleWorkspace, adminWholesaleBrand]);
 
   const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
 
