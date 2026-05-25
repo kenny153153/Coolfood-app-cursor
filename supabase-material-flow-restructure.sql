@@ -616,7 +616,22 @@ WHERE ps.code = 'WHOLE'
     WHERE pk.process_spec_id = ps.id AND pk.code = 'BULK'
   );
 
--- 7) Post-check queries
+-- 7) One-time repair: backfill products.cost_price from material_skus.effective_cost
+UPDATE public.products p
+SET cost_price = src.effective_cost
+FROM (
+  SELECT DISTINCT ON (product_id)
+    product_id,
+    effective_cost
+  FROM public.material_skus
+  WHERE product_id IS NOT NULL
+  ORDER BY product_id, updated_at DESC, created_at DESC
+) src
+WHERE p.id = src.product_id
+  AND COALESCE(p.cost_price, 0) = 0
+  AND COALESCE(src.effective_cost, 0) > 0;
+
+-- 8) Post-check queries
 -- SELECT COUNT(*) FROM public.material_process_specs;
 -- SELECT COUNT(*) FROM public.material_pack_specs;
 -- SELECT COUNT(*) FROM public.sellable_skus;

@@ -1381,21 +1381,89 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     if (!opt) return;
 
     const existingSku = skuByPackTarget.get(key);
+    const [dbSellableRes, dbMaterialRes] = await Promise.all([
+      supabase
+        .from('sellable_skus')
+        .select('id,code,name,alias,ingredient_id,process_spec_id,pack_spec_id,product_id,sale_channel,catalog_target,legacy_sku_filter,is_active')
+        .eq('pack_spec_id', row.pack.id)
+        .eq('catalog_target', target)
+        .maybeSingle(),
+      supabase
+        .from('material_skus')
+        .select('id,product_id,canonical_sku_id,effective_cost,catalog_target,legacy_sku_filter,commercial_name')
+        .eq('pack_spec_id', row.pack.id)
+        .eq('catalog_target', target)
+        .maybeSingle(),
+    ]);
+    if (dbSellableRes.error && dbSellableRes.error.code !== '42P01' && dbSellableRes.error.code !== 'PGRST205') {
+      return showToast(`讀取既有 sellable_skus 失敗：${dbSellableRes.error.message}`, 'error');
+    }
+    if (dbMaterialRes.error && dbMaterialRes.error.code !== '42P01' && dbMaterialRes.error.code !== 'PGRST205') {
+      return showToast(`讀取既有 material_skus 失敗：${dbMaterialRes.error.message}`, 'error');
+    }
+    const dbSellable = dbSellableRes.data as any;
+    const dbMaterial = dbMaterialRes.data as any;
     const baseCost = calcTotalCost(row.pack);
     const effectiveCost = Number.isFinite(Number(draft.costOverride)) ? Number(draft.costOverride) : baseCost;
     const displayName = (draft.commercialName || buildSkuDisplayName(row)).trim();
-    const skuId = existingSku?.id || mkId('SKU');
-    const productId = existingSku?.productId || mkId('P');
+    const skuId = existingSku?.id || dbSellable?.id || dbMaterial?.canonical_sku_id || dbMaterial?.id || mkId('SKU');
+    const productId = existingSku?.productId || dbSellable?.product_id || dbMaterial?.product_id || mkId('P');
     const existingProduct = products.find(p => p.id === productId);
-    const skuCode = existingSku?.code || `${opt.skuPrefix}_${displayName.toUpperCase().replace(/[^A-Z0-9]/g, '_').slice(0, 24)}_${Date.now().toString().slice(-4)}`;
+    const skuCode = existingSku?.code || dbSellable?.code || `${opt.skuPrefix}_${displayName.toUpperCase().replace(/[^A-Z0-9]/g, '_').slice(0, 24)}_${Date.now().toString().slice(-4)}`;
     const payload = { costOverride: draft.costOverride ?? null, target };
     const merged = { ...pricingOverrides, [key]: payload };
 
     const cfgWrite = await supabase.from('site_config').upsert({ id: 'material_flow_cost_overrides', value: merged });
     if (cfgWrite.error) return showToast(`保存成本覆蓋失敗：${cfgWrite.error.message}`, 'error');
 
-    const materialSkuPayload = {
+    const productPayload = {
+      id: productId,
+      name: displayName,
+      categories: materialCategory ? [materialCategory] : [],
+      price: existingProduct?.price ?? 0,
+      member_price: existingProduct?.memberPrice ?? 0,
+      cost_price: effectiveCost,
+      stock: 0,
+      track_inventory: true,
+      tags: ['sellable_sku', 'material_flow', target],
+      image: existingProduct?.image || '📦',
+      images: (existingProduct?.images && existingProduct.images.length > 0) ? existingProduct.images : (existingProduct?.image ? [existingProduct.image] : []),
+      ingredient_id: row.pack.ingredientId,
+      parent_ingredient_id: row.pack.ingredientId,
+      processing_type_id: process?.methodId || null,
+      pricing_mode: row.pack.pricingType,
+      processing_spec: process?.name || row.pack.name,
+      product_type: 'processed',
+      sale_channel: opt.saleChannel,
+      catalog_target: target,
+      legacy_sku_filter: draft.legacySkuFilter || null,
+      source_sellable_sku_id: skuId,
+      updated_at: new Date().toISOString(),
+    } as any;
+    const productWrite = await supabase.from('products').upsert(productPayload, { onConflict: 'id' });
+    if (productWrite.error) return showToast(`同步產品清單失敗：${productWrite.error.message}`, 'error');
+
+    const sellablePayload = {
       id: skuId,
+      code: skuCode,
+      name: displayName,
+      alias: existingSku?.alias || dbSellable?.alias || null,
+      ingredient_id: row.pack.ingredientId,
+      process_spec_id: row.pack.processSpecId,
+      pack_spec_id: row.pack.id,
+      product_id: productId,
+      sale_channel: opt.saleChannel,
+      catalog_target: target,
+      legacy_sku_filter: draft.legacySkuFilter || null,
+      sort_order: existingSku?.isActive || dbSellable?.is_active ? 0 : skuRows.length,
+      is_active: true,
+    };
+    const skuUpsert = await supabase.from('sellable_skus').upsert(sellablePayload, { onConflict: 'id' }).select('*').single();
+    if (skuUpsert.error) return showToast(`同步 SKU 失敗：${skuUpsert.error.message}`, 'error');
+    const skuData = skuUpsert.data as any;
+
+    const materialSkuPayload = {
+      id: dbMaterial?.id || skuId,
       ingredient_id: row.pack.ingredientId,
       process_spec_id: row.pack.processSpecId,
       pack_spec_id: row.pack.id,
@@ -1414,51 +1482,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     if (materialWrite.error && materialWrite.error.code !== '42P01' && materialWrite.error.code !== 'PGRST205') {
       return showToast(`保存 material_skus 失敗：${materialWrite.error.message}`, 'error');
     }
-
-    const sellablePayload = {
-      id: skuId,
-      code: skuCode,
-      name: displayName,
-      alias: existingSku?.alias || null,
-      ingredient_id: row.pack.ingredientId,
-      process_spec_id: row.pack.processSpecId,
-      pack_spec_id: row.pack.id,
-      product_id: productId,
-      sale_channel: opt.saleChannel,
-      catalog_target: target,
-      legacy_sku_filter: draft.legacySkuFilter || null,
-      sort_order: existingSku?.isActive ? 0 : skuRows.length,
-      is_active: true,
-    };
-    const skuUpsert = await supabase.from('sellable_skus').upsert(sellablePayload, { onConflict: 'id' }).select('*').single();
-    if (skuUpsert.error) return showToast(`同步 SKU 失敗：${skuUpsert.error.message}`, 'error');
-    const skuData = skuUpsert.data as any;
-
-    const productPayload = {
-      id: productId,
-      name: displayName,
-      categories: materialCategory ? [materialCategory] : [],
-      price: existingProduct?.price ?? 0,
-      member_price: existingProduct?.memberPrice ?? 0,
-      cost_price: effectiveCost,
-      stock: 0,
-      track_inventory: true,
-      tags: ['sellable_sku', 'material_flow', target],
-      image: existingProduct?.image || '📦',
-      ingredient_id: row.pack.ingredientId,
-      parent_ingredient_id: row.pack.ingredientId,
-      processing_type_id: process?.methodId || null,
-      pricing_mode: row.pack.pricingType,
-      processing_spec: process?.name || row.pack.name,
-      product_type: 'processed',
-      sale_channel: opt.saleChannel,
-      catalog_target: target,
-      legacy_sku_filter: draft.legacySkuFilter || null,
-      source_sellable_sku_id: skuId,
-      updated_at: new Date().toISOString(),
-    } as any;
-    const productWrite = await supabase.from('products').upsert(productPayload, { onConflict: 'id' });
-    if (productWrite.error) return showToast(`同步產品清單失敗：${productWrite.error.message}`, 'error');
 
     setSkuRows(prev => uniqueById([...prev.filter(s => s.id !== skuId), {
       id: skuData.id,
