@@ -157,11 +157,50 @@ const categoryBadge = (c: MethodCategory) => {
 const DEFAULT_MATERIAL_CATEGORIES = ['豬類', '牛類', '雞類', '家禽類', '海鮮類', '其他'] as const;
 const INGREDIENT_ACTIVITY_CFG_ID = 'material_flow_ingredient_activity';
 const INGREDIENT_DELETED_CFG_ID = 'material_flow_deleted_ingredient_ids';
+const AGENT_LOG_INGEST_URL = 'http://127.0.0.1:7528/ingest/e36b8d10-4f9e-4614-bb26-e2de6b171563';
+const AGENT_DEBUG_SESSION_ID = '2ae3a9';
 const CATALOG_TARGET_OPTIONS: { target: CatalogTarget; label: string; saleChannel: SaleChannel; skuPrefix: string }[] = [
   { target: 'ghfoods_wholesale', label: '進興批發', saleChannel: 'wholesale', skuPrefix: 'GHW' },
   { target: 'coolfood_wholesale', label: 'Coolfood批發', saleChannel: 'wholesale', skuPrefix: 'CFW' },
   { target: 'coolfood_retail', label: 'Coolfood零售', saleChannel: 'retail', skuPrefix: 'CFR' },
 ];
+
+const logAgentEvent = (payload: Record<string, unknown>) => {
+  if (!import.meta.env.DEV) return;
+  fetch(AGENT_LOG_INGEST_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Debug-Session-Id': AGENT_DEBUG_SESSION_ID,
+    },
+    body: JSON.stringify({ ...payload, sessionId: AGENT_DEBUG_SESSION_ID, timestamp: Date.now() }),
+  }).catch(() => {});
+};
+
+const processingTypeCodeCandidates = (rawCode?: string): string[] => {
+  const upper = String(rawCode || '').trim().toUpperCase();
+  if (!upper) return [];
+  const baseMap: Record<string, string[]> = {
+    WHOLE: ['whole'],
+    STEAK: ['steak'],
+    PREM_STEAK: ['steak'],
+    DICED: ['dice'],
+    STRIPS: ['strip'],
+    SLICED_HP: ['slice'],
+    SHREDDED: ['shred', 'slice'],
+    BULK_PACK: ['repack'],
+    VAC_PACK: ['repack'],
+    MAR: ['marinate'],
+  };
+  const candidates = [...(baseMap[upper] || []), upper.toLowerCase()];
+  if (upper.includes('SLICE')) candidates.push('slice');
+  if (upper.includes('DICE')) candidates.push('dice');
+  if (upper.includes('STRIP')) candidates.push('strip');
+  if (upper.includes('STEAK')) candidates.push('steak');
+  if (upper.includes('MAR')) candidates.push('marinate');
+  if (upper.includes('PACK')) candidates.push('repack');
+  return Array.from(new Set(candidates.map(c => c.trim().toLowerCase()).filter(Boolean)));
+};
 
 const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }) => {
   const [tab, setTab] = useState<StepTab>('raw');
@@ -180,6 +219,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   const [pricingOverrides, setPricingOverrides] = useState<Record<string, any>>({});
   const [packagingItems, setPackagingItems] = useState<PackagingItem[]>([]);
   const [materialCategories, setMaterialCategories] = useState<MaterialCategoryItem[]>([]);
+  const [processingTypeByCode, setProcessingTypeByCode] = useState<Record<string, string>>({});
 
   const [search, setSearch] = useState('');
   const [skuSearch, setSkuSearch] = useState('');
@@ -212,6 +252,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
 
   const ingredientMap = useMemo(() => new Map(ingredients.map(i => [i.id, i])), [ingredients]);
   const processMap = useMemo(() => new Map(processRows.map(r => [r.id, r])), [processRows]);
+  const processingTypeIdSet = useMemo(() => new Set(Object.values(processingTypeByCode)), [processingTypeByCode]);
   const activeMaterialCategoryOptions = useMemo(() => {
     const dynamic = materialCategories
       .filter(c => c.isActive !== false)
@@ -304,6 +345,24 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     setMaterialCategories(DEFAULT_MATERIAL_CATEGORIES.map((name, idx) => ({ id: `default-${idx}`, name, sortOrder: idx, isActive: true })));
   }, []);
 
+  const loadProcessingTypes = useCallback(async () => {
+    const res = await supabase
+      .from('processing_types')
+      .select('id,code');
+    if (res.error) {
+      setProcessingTypeByCode({});
+      return;
+    }
+    const byCode = (res.data || []).reduce((acc: Record<string, string>, row: any) => {
+      const code = String(row?.code || '').trim().toLowerCase();
+      const id = String(row?.id || '').trim();
+      if (!code || !id) return acc;
+      acc[code] = id;
+      return acc;
+    }, {});
+    setProcessingTypeByCode(byCode);
+  }, []);
+
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -321,9 +380,12 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       if (ingRes.error || processRes.error || packRes.error || cfgRes.error) {
         throw (ingRes.error || processRes.error || packRes.error || cfgRes.error);
       }
-      await loadMethods();
-      await loadPackagingItems();
-      await loadMaterialCategories();
+      await Promise.all([
+        loadMethods(),
+        loadProcessingTypes(),
+        loadPackagingItems(),
+        loadMaterialCategories(),
+      ]);
 
       const rawIngredients = (ingRes.data || []).map(mapIngredientRowToIngredient);
       setProcessRows(uniqueById((processRes.data || []).map((r: any) => ({
@@ -412,7 +474,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     } finally {
       setLoading(false);
     }
-  }, [loadMethods, loadPackagingItems, loadMaterialCategories, packagingItems.length, showToast]);
+  }, [loadMethods, loadProcessingTypes, loadPackagingItems, loadMaterialCategories, packagingItems.length, showToast]);
 
   const reloadProcessRowsForIngredient = useCallback(async (ingredientId: string) => {
     if (!ingredientId) return;
@@ -1371,7 +1433,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
 
   const saveRouterSubRow = async (row: SkuGridRow, target: CatalogTarget) => {
     // #region agent log
-    fetch('http://127.0.0.1:7528/ingest/e36b8d10-4f9e-4614-bb26-e2de6b171563',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ae3a9'},body:JSON.stringify({sessionId:'2ae3a9',runId:'tab4-save-pre-fix-1',hypothesisId:'H1',location:'MaterialFlowPanel.tsx:saveRouterSubRow:start',message:'saveRouterSubRow invoked',data:{packSpecId:row.pack.id,target,ingredientId:row.pack.ingredientId,processSpecId:row.pack.processSpecId},timestamp:Date.now()})}).catch(()=>{});
+    logAgentEvent({ runId: 'tab4-save-pre-fix-1', hypothesisId: 'H1', location: 'MaterialFlowPanel.tsx:saveRouterSubRow:start', message: 'saveRouterSubRow invoked', data: { packSpecId: row.pack.id, target, ingredientId: row.pack.ingredientId, processSpecId: row.pack.processSpecId } });
     // #endregion
     const ingredient = ingredientMap.get(row.pack.ingredientId);
     if (ingredient?.isActive === false) return showToast('停用母料不可儲存 SKU 成本', 'error');
@@ -1407,7 +1469,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     const dbSellable = dbSellableRes.data as any;
     const dbMaterial = dbMaterialRes.data as any;
     // #region agent log
-    fetch('http://127.0.0.1:7528/ingest/e36b8d10-4f9e-4614-bb26-e2de6b171563',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ae3a9'},body:JSON.stringify({sessionId:'2ae3a9',runId:'tab4-save-pre-fix-1',hypothesisId:'H2',location:'MaterialFlowPanel.tsx:saveRouterSubRow:lookup',message:'existing sku/material lookup result',data:{dbSellableError:dbSellableRes.error?.message||null,dbMaterialError:dbMaterialRes.error?.message||null,hasDbSellable:!!dbSellable,hasDbMaterial:!!dbMaterial,dbSellableProductId:dbSellable?.product_id||null,dbMaterialProductId:dbMaterial?.product_id||null},timestamp:Date.now()})}).catch(()=>{});
+    logAgentEvent({ runId: 'tab4-save-pre-fix-1', hypothesisId: 'H2', location: 'MaterialFlowPanel.tsx:saveRouterSubRow:lookup', message: 'existing sku/material lookup result', data: { dbSellableError: dbSellableRes.error?.message || null, dbMaterialError: dbMaterialRes.error?.message || null, hasDbSellable: !!dbSellable, hasDbMaterial: !!dbMaterial, dbSellableProductId: dbSellable?.product_id || null, dbMaterialProductId: dbMaterial?.product_id || null } });
     // #endregion
     const baseCost = calcTotalCost(row.pack);
     const effectiveCost = Number.isFinite(Number(draft.costOverride)) ? Number(draft.costOverride) : baseCost;
@@ -1415,6 +1477,13 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     const skuId = existingSku?.id || dbSellable?.id || dbMaterial?.canonical_sku_id || dbMaterial?.id || mkId('SKU');
     const productId = existingSku?.productId || dbSellable?.product_id || dbMaterial?.product_id || mkId('P');
     const existingProduct = products.find(p => p.id === productId);
+    const processMethod = (process?.methodId ? methods.find(m => m.id === process.methodId) : undefined) || methods.find(m => m.code === process?.code);
+    const rawProcessingCode = (processMethod?.code || process?.code || '').trim();
+    const existingProcessingTypeId = String(existingProduct?.processingTypeId || '').trim();
+    const safeExistingProcessingTypeId = existingProcessingTypeId && processingTypeIdSet.has(existingProcessingTypeId) ? existingProcessingTypeId : null;
+    const resolvedProcessingTypeId = safeExistingProcessingTypeId
+      || processingTypeCodeCandidates(rawProcessingCode).map(code => processingTypeByCode[code]).find(Boolean)
+      || null;
     const skuCode = existingSku?.code || dbSellable?.code || `${opt.skuPrefix}_${displayName.toUpperCase().replace(/[^A-Z0-9]/g, '_').slice(0, 24)}_${Date.now().toString().slice(-4)}`;
     const payload = { costOverride: draft.costOverride ?? null, target };
     const merged = { ...pricingOverrides, [key]: payload };
@@ -1436,7 +1505,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       images: (existingProduct?.images && existingProduct.images.length > 0) ? existingProduct.images : (existingProduct?.image ? [existingProduct.image] : []),
       ingredient_id: row.pack.ingredientId,
       parent_ingredient_id: row.pack.ingredientId,
-      processing_type_id: process?.methodId || null,
+      processing_type_id: resolvedProcessingTypeId,
       pricing_mode: row.pack.pricingType,
       processing_spec: process?.name || row.pack.name,
       product_type: 'processed',
@@ -1446,11 +1515,11 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       source_sellable_sku_id: skuId,
     } as any;
     // #region agent log
-    fetch('http://127.0.0.1:7528/ingest/e36b8d10-4f9e-4614-bb26-e2de6b171563',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ae3a9'},body:JSON.stringify({sessionId:'2ae3a9',runId:'tab4-save-pre-fix-1',hypothesisId:'H3',location:'MaterialFlowPanel.tsx:saveRouterSubRow:beforeProductUpsert',message:'about to upsert products',data:{productId,catalogTarget:target,hasUpdatedAt:Object.prototype.hasOwnProperty.call(productPayload,'updated_at'),costPrice:productPayload.cost_price,saleChannel:productPayload.sale_channel},timestamp:Date.now()})}).catch(()=>{});
+    logAgentEvent({ runId: 'tab4-save-pre-fix-1', hypothesisId: 'H3', location: 'MaterialFlowPanel.tsx:saveRouterSubRow:beforeProductUpsert', message: 'about to upsert products', data: { productId, catalogTarget: target, hasUpdatedAt: Object.prototype.hasOwnProperty.call(productPayload, 'updated_at'), costPrice: productPayload.cost_price, saleChannel: productPayload.sale_channel, rawProcessingCode, resolvedProcessingTypeId } });
     // #endregion
     const productWrite = await supabase.from('products').upsert(productPayload, { onConflict: 'id' });
     // #region agent log
-    fetch('http://127.0.0.1:7528/ingest/e36b8d10-4f9e-4614-bb26-e2de6b171563',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ae3a9'},body:JSON.stringify({sessionId:'2ae3a9',runId:'tab4-save-pre-fix-1',hypothesisId:'H3',location:'MaterialFlowPanel.tsx:saveRouterSubRow:afterProductUpsert',message:'products upsert result',data:{ok:!productWrite.error,errorCode:productWrite.error?.code||null,errorMessage:productWrite.error?.message||null},timestamp:Date.now()})}).catch(()=>{});
+    logAgentEvent({ runId: 'tab4-save-pre-fix-1', hypothesisId: 'H3', location: 'MaterialFlowPanel.tsx:saveRouterSubRow:afterProductUpsert', message: 'products upsert result', data: { ok: !productWrite.error, errorCode: productWrite.error?.code || null, errorMessage: productWrite.error?.message || null } });
     // #endregion
     if (productWrite.error) return showToast(`同步產品清單失敗：${productWrite.error.message}`, 'error');
 
@@ -1471,7 +1540,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     };
     const skuUpsert = await supabase.from('sellable_skus').upsert(sellablePayload, { onConflict: 'id' }).select('*').single();
     // #region agent log
-    fetch('http://127.0.0.1:7528/ingest/e36b8d10-4f9e-4614-bb26-e2de6b171563',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ae3a9'},body:JSON.stringify({sessionId:'2ae3a9',runId:'tab4-save-pre-fix-1',hypothesisId:'H4',location:'MaterialFlowPanel.tsx:saveRouterSubRow:afterSellableUpsert',message:'sellable_skus upsert result',data:{ok:!skuUpsert.error,errorCode:skuUpsert.error?.code||null,errorMessage:skuUpsert.error?.message||null,skuId},timestamp:Date.now()})}).catch(()=>{});
+    logAgentEvent({ runId: 'tab4-save-pre-fix-1', hypothesisId: 'H4', location: 'MaterialFlowPanel.tsx:saveRouterSubRow:afterSellableUpsert', message: 'sellable_skus upsert result', data: { ok: !skuUpsert.error, errorCode: skuUpsert.error?.code || null, errorMessage: skuUpsert.error?.message || null, skuId } });
     // #endregion
     if (skuUpsert.error) return showToast(`同步 SKU 失敗：${skuUpsert.error.message}`, 'error');
     const skuData = skuUpsert.data as any;
@@ -1494,7 +1563,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     } as any;
     const materialWrite = await supabase.from('material_skus').upsert(materialSkuPayload, { onConflict: 'id' });
     // #region agent log
-    fetch('http://127.0.0.1:7528/ingest/e36b8d10-4f9e-4614-bb26-e2de6b171563',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ae3a9'},body:JSON.stringify({sessionId:'2ae3a9',runId:'tab4-save-pre-fix-1',hypothesisId:'H5',location:'MaterialFlowPanel.tsx:saveRouterSubRow:afterMaterialUpsert',message:'material_skus upsert result',data:{ok:!(materialWrite.error && materialWrite.error.code !== '42P01' && materialWrite.error.code !== 'PGRST205'),errorCode:materialWrite.error?.code||null,errorMessage:materialWrite.error?.message||null,productId,materialSkuId:materialSkuPayload.id},timestamp:Date.now()})}).catch(()=>{});
+    logAgentEvent({ runId: 'tab4-save-pre-fix-1', hypothesisId: 'H5', location: 'MaterialFlowPanel.tsx:saveRouterSubRow:afterMaterialUpsert', message: 'material_skus upsert result', data: { ok: !(materialWrite.error && materialWrite.error.code !== '42P01' && materialWrite.error.code !== 'PGRST205'), errorCode: materialWrite.error?.code || null, errorMessage: materialWrite.error?.message || null, productId, materialSkuId: materialSkuPayload.id } });
     // #endregion
     if (materialWrite.error && materialWrite.error.code !== '42P01' && materialWrite.error.code !== 'PGRST205') {
       return showToast(`保存 material_skus 失敗：${materialWrite.error.message}`, 'error');
@@ -1534,6 +1603,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         catalogTarget: target,
         legacySkuFilter: draft.legacySkuFilter || undefined,
         sourceSellableSkuId: skuId,
+        processingTypeId: resolvedProcessingTypeId || undefined,
         pricingMode: row.pack.pricingType,
         processingSpec: process?.name || row.pack.name,
         productType: 'processed',
