@@ -52,6 +52,9 @@ export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
   trackInventory: row.track_inventory,
   tags: row.tags || [],
   image: row.image,
+  images: Array.isArray(row.images)
+    ? (row.images as string[]).filter(Boolean)
+    : (row.image ? [row.image] : []),
   description: row.description ?? undefined,
   gallery: row.gallery ?? undefined,
   recipes: row.recipes ?? undefined,
@@ -75,6 +78,10 @@ export const mapProductRowToProduct = (row: SupabaseProductRow): Product => ({
   catalogTarget: (['ghfoods_wholesale', 'coolfood_wholesale', 'coolfood_retail'].includes(row.catalog_target ?? '') ? row.catalog_target as CatalogTarget : undefined),
   legacySkuFilter: row.legacy_sku_filter ?? undefined,
   sourceSellableSkuId: row.source_sellable_sku_id ?? undefined,
+  manualPriceFactor: row.manual_price_factor ?? undefined,
+  onSale: row.on_sale ?? undefined,
+  saleBadge: row.sale_badge ?? undefined,
+  isActive: row.is_active ?? true,
   purchaseLimit: row.purchase_limit ?? undefined,
   productType: (['standalone', 'processed', 'raw_material', 'in_house', 'third_party'].includes(row.product_type ?? '') ? row.product_type as ProductType : 'standalone'),
   processingTypeId: row.processing_type_id ?? undefined,
@@ -98,7 +105,10 @@ export const mapProductToRow = (product: Product): SupabaseProductRow => ({
   stock: product.stock,
   track_inventory: product.trackInventory,
   tags: product.tags,
-  image: product.image,
+  image: product.image || (product.images?.[0] || '📦'),
+  images: (product.images && product.images.length > 0)
+    ? product.images
+    : (product.image ? [product.image] : []),
   description: product.description ?? null,
   gallery: product.gallery ?? null,
   recipes: product.recipes ?? null,
@@ -122,6 +132,10 @@ export const mapProductToRow = (product: Product): SupabaseProductRow => ({
   catalog_target: product.catalogTarget ?? null,
   legacy_sku_filter: product.legacySkuFilter ?? null,
   source_sellable_sku_id: product.sourceSellableSkuId ?? null,
+  manual_price_factor: product.manualPriceFactor ?? null,
+  on_sale: product.onSale ?? false,
+  sale_badge: product.saleBadge ?? null,
+  is_active: product.isActive ?? true,
   purchase_limit: product.purchaseLimit ?? null,
   product_type: product.productType ?? 'standalone',
   processing_type_id: product.processingTypeId ?? null,

@@ -250,6 +250,7 @@ export interface Product {
   trackInventory: boolean;
   tags: string[];
   image: string;
+  images?: string[]; // 多圖 URL 陣列（新）
   description?: string;
   descriptionEn?: string;
   gallery?: string[];
@@ -271,6 +272,10 @@ export interface Product {
   catalogTarget?: CatalogTarget; // 單一通路目標（進興批發 / Coolfood批發 / Coolfood零售）
   legacySkuFilter?: string; // 舊系統 SKU 文字（只作過濾/查找）
   sourceSellableSkuId?: string; // 對應 sellable_skus.id
+  manualPriceFactor?: number; // 手動改價倍率，空值視為 1.0
+  onSale?: boolean; // 前台促銷標記
+  saleBadge?: string; // 前台顯示折扣標籤，如 9折
+  isActive?: boolean; // 渠道商品啟用狀態
   purchaseLimit?: number;   // 每位客人每單限購數量，null = 不限
   productType?: ProductType; // standalone / processed / raw_material / in_house
   processingTypeId?: string; // FK → processing_types.id
@@ -429,6 +434,7 @@ export interface SupabaseProductRow {
   track_inventory: boolean;
   tags: string[];
   image: string;
+  images?: string[] | null;
   description?: string | null;
   gallery?: string[] | null;
   recipes?: Recipe[] | null;
@@ -452,6 +458,10 @@ export interface SupabaseProductRow {
   catalog_target?: string | null;
   legacy_sku_filter?: string | null;
   source_sellable_sku_id?: string | null;
+  manual_price_factor?: number | null;
+  on_sale?: boolean | null;
+  sale_badge?: string | null;
+  is_active?: boolean | null;
   purchase_limit?: number | null;
   product_type?: string | null;
   processing_type_id?: string | null;

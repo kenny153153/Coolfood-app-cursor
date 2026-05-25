@@ -45,6 +45,11 @@ DO $$ BEGIN
   ALTER TABLE public.products ADD COLUMN IF NOT EXISTS catalog_target TEXT;
   ALTER TABLE public.products ADD COLUMN IF NOT EXISTS legacy_sku_filter TEXT;
   ALTER TABLE public.products ADD COLUMN IF NOT EXISTS source_sellable_sku_id TEXT;
+  ALTER TABLE public.products ADD COLUMN IF NOT EXISTS images TEXT[] NOT NULL DEFAULT '{}';
+  ALTER TABLE public.products ADD COLUMN IF NOT EXISTS manual_price_factor NUMERIC;
+  ALTER TABLE public.products ADD COLUMN IF NOT EXISTS on_sale BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE public.products ADD COLUMN IF NOT EXISTS sale_badge TEXT;
+  ALTER TABLE public.products ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
 END $$;
 
 ALTER TABLE public.products
