@@ -1370,6 +1370,9 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   }, []);
 
   const saveRouterSubRow = async (row: SkuGridRow, target: CatalogTarget) => {
+    // #region agent log
+    fetch('http://127.0.0.1:7528/ingest/e36b8d10-4f9e-4614-bb26-e2de6b171563',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ae3a9'},body:JSON.stringify({sessionId:'2ae3a9',runId:'tab4-save-pre-fix-1',hypothesisId:'H1',location:'MaterialFlowPanel.tsx:saveRouterSubRow:start',message:'saveRouterSubRow invoked',data:{packSpecId:row.pack.id,target,ingredientId:row.pack.ingredientId,processSpecId:row.pack.processSpecId},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     const ingredient = ingredientMap.get(row.pack.ingredientId);
     if (ingredient?.isActive === false) return showToast('停用母料不可儲存 SKU 成本', 'error');
     const process = row.process || processMap.get(row.pack.processSpecId);
@@ -1403,6 +1406,9 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     }
     const dbSellable = dbSellableRes.data as any;
     const dbMaterial = dbMaterialRes.data as any;
+    // #region agent log
+    fetch('http://127.0.0.1:7528/ingest/e36b8d10-4f9e-4614-bb26-e2de6b171563',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ae3a9'},body:JSON.stringify({sessionId:'2ae3a9',runId:'tab4-save-pre-fix-1',hypothesisId:'H2',location:'MaterialFlowPanel.tsx:saveRouterSubRow:lookup',message:'existing sku/material lookup result',data:{dbSellableError:dbSellableRes.error?.message||null,dbMaterialError:dbMaterialRes.error?.message||null,hasDbSellable:!!dbSellable,hasDbMaterial:!!dbMaterial,dbSellableProductId:dbSellable?.product_id||null,dbMaterialProductId:dbMaterial?.product_id||null},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     const baseCost = calcTotalCost(row.pack);
     const effectiveCost = Number.isFinite(Number(draft.costOverride)) ? Number(draft.costOverride) : baseCost;
     const displayName = (draft.commercialName || buildSkuDisplayName(row)).trim();
@@ -1438,9 +1444,14 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       catalog_target: target,
       legacy_sku_filter: draft.legacySkuFilter || null,
       source_sellable_sku_id: skuId,
-      updated_at: new Date().toISOString(),
     } as any;
+    // #region agent log
+    fetch('http://127.0.0.1:7528/ingest/e36b8d10-4f9e-4614-bb26-e2de6b171563',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ae3a9'},body:JSON.stringify({sessionId:'2ae3a9',runId:'tab4-save-pre-fix-1',hypothesisId:'H3',location:'MaterialFlowPanel.tsx:saveRouterSubRow:beforeProductUpsert',message:'about to upsert products',data:{productId,catalogTarget:target,hasUpdatedAt:Object.prototype.hasOwnProperty.call(productPayload,'updated_at'),costPrice:productPayload.cost_price,saleChannel:productPayload.sale_channel},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     const productWrite = await supabase.from('products').upsert(productPayload, { onConflict: 'id' });
+    // #region agent log
+    fetch('http://127.0.0.1:7528/ingest/e36b8d10-4f9e-4614-bb26-e2de6b171563',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ae3a9'},body:JSON.stringify({sessionId:'2ae3a9',runId:'tab4-save-pre-fix-1',hypothesisId:'H3',location:'MaterialFlowPanel.tsx:saveRouterSubRow:afterProductUpsert',message:'products upsert result',data:{ok:!productWrite.error,errorCode:productWrite.error?.code||null,errorMessage:productWrite.error?.message||null},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     if (productWrite.error) return showToast(`同步產品清單失敗：${productWrite.error.message}`, 'error');
 
     const sellablePayload = {
@@ -1459,6 +1470,9 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       is_active: true,
     };
     const skuUpsert = await supabase.from('sellable_skus').upsert(sellablePayload, { onConflict: 'id' }).select('*').single();
+    // #region agent log
+    fetch('http://127.0.0.1:7528/ingest/e36b8d10-4f9e-4614-bb26-e2de6b171563',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ae3a9'},body:JSON.stringify({sessionId:'2ae3a9',runId:'tab4-save-pre-fix-1',hypothesisId:'H4',location:'MaterialFlowPanel.tsx:saveRouterSubRow:afterSellableUpsert',message:'sellable_skus upsert result',data:{ok:!skuUpsert.error,errorCode:skuUpsert.error?.code||null,errorMessage:skuUpsert.error?.message||null,skuId},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     if (skuUpsert.error) return showToast(`同步 SKU 失敗：${skuUpsert.error.message}`, 'error');
     const skuData = skuUpsert.data as any;
 
@@ -1479,6 +1493,9 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       updated_at: new Date().toISOString(),
     } as any;
     const materialWrite = await supabase.from('material_skus').upsert(materialSkuPayload, { onConflict: 'id' });
+    // #region agent log
+    fetch('http://127.0.0.1:7528/ingest/e36b8d10-4f9e-4614-bb26-e2de6b171563',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2ae3a9'},body:JSON.stringify({sessionId:'2ae3a9',runId:'tab4-save-pre-fix-1',hypothesisId:'H5',location:'MaterialFlowPanel.tsx:saveRouterSubRow:afterMaterialUpsert',message:'material_skus upsert result',data:{ok:!(materialWrite.error && materialWrite.error.code !== '42P01' && materialWrite.error.code !== 'PGRST205'),errorCode:materialWrite.error?.code||null,errorMessage:materialWrite.error?.message||null,productId,materialSkuId:materialSkuPayload.id},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     if (materialWrite.error && materialWrite.error.code !== '42P01' && materialWrite.error.code !== 'PGRST205') {
       return showToast(`保存 material_skus 失敗：${materialWrite.error.message}`, 'error');
     }
