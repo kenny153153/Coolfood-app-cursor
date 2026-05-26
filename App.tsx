@@ -4480,6 +4480,13 @@ const App: React.FC = () => {
     return [];
   }, [isMediaUrl]);
 
+  const getCatalogRowSource = useCallback((p: Product): 'tab4' | 'legacy' => {
+    const hasTab4SkuLink = !!String(p.sourceSellableSkuId || '').trim();
+    const hasMaterialFlowTag = (p.tags || []).some(tag => String(tag || '').trim().toLowerCase() === 'material_flow');
+    const hasCatalogTarget = !!p.catalogTarget;
+    return (hasTab4SkuLink || hasMaterialFlowTag || hasCatalogTarget) ? 'tab4' : 'legacy';
+  }, []);
+
   const setDraftField = useCallback((productId: string, patch: Partial<InventoryRowDraft>) => {
     setInventoryRowDrafts(prev => {
       const current = prev[productId];
@@ -4818,6 +4825,7 @@ const App: React.FC = () => {
                   <tr>
                     <th className="px-4 py-3 text-[10px] uppercase text-slate-400 font-black">商品圖片</th>
                     <th className="px-4 py-3 text-[10px] uppercase text-slate-400 font-black">SKU Filter</th>
+                    <th className="px-4 py-3 text-[10px] uppercase text-slate-400 font-black">來源</th>
                     <th className="px-4 py-3 text-[10px] uppercase text-slate-400 font-black">產品商名</th>
                     <th className="px-4 py-3 text-[10px] uppercase text-slate-400 font-black text-center">存貨量</th>
                     <th className="px-4 py-3 text-[10px] uppercase text-slate-400 font-black text-right">總成本</th>
@@ -4840,6 +4848,7 @@ const App: React.FC = () => {
                     const profit = finalPrice - totalCost;
                     const analytics = sales30dByProduct[p.id] || { revenue: 0, qty: 0 };
                     const images = getProductImages(p);
+                    const source = getCatalogRowSource(p);
                     const targetLabel = p.catalogTarget === 'ghfoods_wholesale'
                       ? '進興批發'
                       : p.catalogTarget === 'coolfood_wholesale'
@@ -4875,6 +4884,11 @@ const App: React.FC = () => {
                           ) : (
                             <span className="font-mono text-xs text-slate-700">{p.legacySkuFilter || '-'}</span>
                           )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-black border ${source === 'tab4' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-50 text-slate-600 border-slate-200'}`}>
+                            {source === 'tab4' ? '[tab4]' : '[舊]'}
+                          </span>
                         </td>
                         <td className="px-4 py-3">
                           {editing ? (
