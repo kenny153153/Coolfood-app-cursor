@@ -2114,9 +2114,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                                 <td className="px-2 py-1.5 text-right">
                                   <div className="inline-flex items-center gap-1">
                                     <button disabled={selectedIngredientInactive} onClick={() => void savePackRow({ ...r, packagingFee: fee })} className={`px-2 py-1 rounded text-[10px] font-black ${selectedIngredientInactive ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white'}`}>💾 儲存規格</button>
-                                    {!isWholeProcess && (
-                                      <button onClick={() => void deletePackRow(r.id)} className="px-2 py-1 rounded border border-rose-200 text-rose-600 text-[10px] font-black">🗑️ 刪除</button>
-                                    )}
+                                    <button onClick={() => void deletePackRow(r.id)} className="px-2 py-1 rounded border border-rose-200 text-rose-600 text-[10px] font-black">🗑️ 刪除</button>
                                   </div>
                                 </td>
                               </tr>
@@ -2178,9 +2176,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                                 <td className="px-2 py-1.5 text-right">
                                   <div className="inline-flex items-center gap-1">
                                     <button disabled={selectedIngredientInactive} onClick={() => void savePackDraftRow(d)} className={`px-2 py-1 rounded text-[10px] font-black ${selectedIngredientInactive ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white'}`}>💾 儲存規格</button>
-                                    {!isWholeProcess && (
-                                      <button onClick={() => setPackDraftRows(prev => prev.filter(x => x.tempId !== d.tempId))} className="px-2 py-1 rounded border border-rose-200 text-rose-600 text-[10px] font-black">🗑️ 刪除</button>
-                                    )}
+                                    <button onClick={() => setPackDraftRows(prev => prev.filter(x => x.tempId !== d.tempId))} className="px-2 py-1 rounded border border-rose-200 text-rose-600 text-[10px] font-black">🗑️ 刪除</button>
                                   </div>
                                 </td>
                               </tr>
