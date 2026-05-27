@@ -1,0 +1,8 @@
+row_id,product_new_name,ingredient_code,ingredient_name,processing_method_code,processing_name,yield_rate,pricing_mode,target_channel,spec_weight,spec_unit,pack_label,packaging_fee,catalog_targets,commercial_name,legacy_sku_filter,cost_override,marketing_collections,manual_price_factor,is_active,notes
+1,美國安格斯免治牛肉 400G,ING_BEEF_ANGUS,安格斯牛肉,MAR,免治,0.9,fixed_pack,both,400,g,400g/包,1.5,coolfood_wholesale|coolfood_retail,美國安格斯免治牛肉 400G,OLD-SKU-8899,,未分組,1,TRUE,
+2,,,,,,,,,,,,,,,,,,,,
+3,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,
+,,,,,iii,,,,,,,,,,,,,,,

@@ -1082,6 +1082,27 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     showToast('加工方式已儲存', 'success');
   };
 
+  const deleteProcessRow = async (row: ProcessRow) => {
+    if (row.isDefaultPiece || row.code === 'WHOLE') {
+      return showToast('基準列（WHOLE）不可刪除', 'error');
+    }
+    const linkedPack = await supabase
+      .from('material_pack_specs')
+      .select('id', { count: 'exact', head: true })
+      .eq('process_spec_id', row.id)
+      .eq('is_active', true);
+    if (linkedPack.error) return showToast(`檢查關聯包裝失敗：${linkedPack.error.message}`, 'error');
+    if ((linkedPack.count || 0) > 0) return showToast('此加工已有包裝規格使用，請先刪除 Tab3 關聯規格', 'error');
+
+    const { error } = await supabase
+      .from('material_process_specs')
+      .update({ is_active: false })
+      .eq('id', row.id);
+    if (error) return showToast(`刪除加工失敗：${error.message}`, 'error');
+    setProcessRows(prev => prev.map(r => r.id === row.id ? { ...r, isActive: false } : r));
+    showToast('加工方式已刪除', 'success');
+  };
+
   const packagingFeeByCodes = useCallback((codes: string[]) => {
     return round2(codes.reduce((sum, code) => sum + (packagingItems.find(item => item.code === code)?.defaultPrice || 0), 0));
   }, [packagingItems]);
@@ -1947,7 +1968,10 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
                           {r.isDefaultPiece ? (
                             <span className="text-[10px] font-black text-slate-400">基準列</span>
                           ) : (
-                            <button disabled={invalidYield || selectedIngredientInactive} onClick={() => void saveProcessRow(r)} className={`px-2 py-1 rounded text-[10px] font-black ${invalidYield || selectedIngredientInactive ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white'}`}>💾 確定儲存加工</button>
+                            <div className="inline-flex items-center justify-end gap-1">
+                              <button disabled={invalidYield || selectedIngredientInactive} onClick={() => void saveProcessRow(r)} className={`px-2 py-1 rounded text-[10px] font-black ${invalidYield || selectedIngredientInactive ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white'}`}>💾 確定儲存加工</button>
+                              <button disabled={selectedIngredientInactive} onClick={() => void deleteProcessRow(r)} className={`px-2 py-1 rounded border text-[10px] font-black ${selectedIngredientInactive ? 'border-slate-200 text-slate-300 cursor-not-allowed' : 'border-rose-200 text-rose-600'}`}>🗑️ 刪除</button>
+                            </div>
                           )}
                         </td>
                       </tr>

@@ -1,0 +1,18 @@
+dict_type,code,value,description
+pricing_mode,fixed_pack,定額按包計價,對應 Tab3 pricing_mode=fixed_pack
+pricing_mode,by_piece,抄碼按件計價,對應 Tab3 pricing_mode=by_piece
+target_channel,wholesale,批發,Tab3 target_channel
+target_channel,retail,零售,Tab3 target_channel
+target_channel,both,批發+零售,Tab3 target_channel
+catalog_target,coolfood_wholesale,Coolfood批發,Tab4 分流目標
+catalog_target,coolfood_retail,Coolfood零售,Tab4 分流目標
+spec_unit,g,克,Tab3 spec_unit
+spec_unit,kg,公斤,Tab3 spec_unit
+spec_unit,lb,磅,Tab3 spec_unit
+spec_unit,catty,斤,Tab3 spec_unit
+processing_category,original_or_cutting,原裝/切割,Tab2 processing_category
+processing_category,repacking,分裝,Tab2 processing_category
+processing_category,marinating,醃製,Tab2 processing_category
+processing_category,others,其他,Tab2 processing_category
+bool,true,啟用,布林值
+bool,false,停用,布林值
