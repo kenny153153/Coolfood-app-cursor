@@ -93,9 +93,12 @@ interface InventoryRowDraft {
   collectionIds: string[];
 }
 
+type StorefrontCatalogMode = 'categories_only' | 'collections_plus_categories' | 'collections_only';
+
 const MARKETING_COLLECTION_CONFIG_ID = 'catalog_marketing_collections_v1';
 const MARKETING_ASSIGNMENTS_CONFIG_ID = 'catalog_marketing_assignments_v1';
 const CATALOG_MARGIN_CONFIG_ID = 'catalog_global_margin_factor_v1';
+const STOREFRONT_CATALOG_MODE_CONFIG_ID = 'catalog_storefront_mode_v1';
 
 /** Format address for display using new required fields. */
 const formatAddressLine = (addr: UserAddress): string => {
@@ -889,6 +892,7 @@ const App: React.FC = () => {
   const [marketingCollections, setMarketingCollections] = useState<MarketingCollection[]>([]);
   const [marketingAssignments, setMarketingAssignments] = useState<Record<string, MarketingAssignment>>({});
   const [catalogGlobalMarginFactor, setCatalogGlobalMarginFactor] = useState<number>(0.88);
+  const [storefrontCatalogMode, setStorefrontCatalogMode] = useState<StorefrontCatalogMode>('categories_only');
   const [inventoryEditingRows, setInventoryEditingRows] = useState<Set<string>>(new Set());
   const [inventoryRowDrafts, setInventoryRowDrafts] = useState<Record<string, InventoryRowDraft>>({});
   const [newMarketingCollectionName, setNewMarketingCollectionName] = useState('');
@@ -4182,11 +4186,13 @@ const App: React.FC = () => {
     nextCollections: MarketingCollection[],
     nextAssignments: Record<string, MarketingAssignment>,
     nextMargin: number,
+    nextMode: StorefrontCatalogMode,
   ) => {
     const payload = [
       { id: MARKETING_COLLECTION_CONFIG_ID, value: nextCollections },
       { id: MARKETING_ASSIGNMENTS_CONFIG_ID, value: nextAssignments },
       { id: CATALOG_MARGIN_CONFIG_ID, value: nextMargin },
+      { id: STOREFRONT_CATALOG_MODE_CONFIG_ID, value: nextMode },
     ];
     const { error } = await supabase.from('site_config').upsert(payload);
     if (error) showToast(`儲存產品/分類設定失敗：${error.message}`, 'error');
@@ -4194,12 +4200,11 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!isAdminRoute || !adminUser) return;
     const loadCatalogMeta = async () => {
       const { data, error } = await supabase
         .from('site_config')
         .select('id,value')
-        .in('id', [MARKETING_COLLECTION_CONFIG_ID, MARKETING_ASSIGNMENTS_CONFIG_ID, CATALOG_MARGIN_CONFIG_ID]);
+        .in('id', [MARKETING_COLLECTION_CONFIG_ID, MARKETING_ASSIGNMENTS_CONFIG_ID, CATALOG_MARGIN_CONFIG_ID, STOREFRONT_CATALOG_MODE_CONFIG_ID]);
       if (error) return;
       const map = new Map((data || []).map((r: any) => [r.id, r.value]));
       const loadedCollections = Array.isArray(map.get(MARKETING_COLLECTION_CONFIG_ID))
@@ -4209,6 +4214,11 @@ const App: React.FC = () => {
         ? (map.get(MARKETING_ASSIGNMENTS_CONFIG_ID) as Record<string, MarketingAssignment>)
         : {};
       const loadedMargin = Number(map.get(CATALOG_MARGIN_CONFIG_ID));
+      const loadedModeRaw = String(map.get(STOREFRONT_CATALOG_MODE_CONFIG_ID) || '').trim();
+      const loadedMode: StorefrontCatalogMode =
+        loadedModeRaw === 'collections_only' || loadedModeRaw === 'collections_plus_categories' || loadedModeRaw === 'categories_only'
+          ? loadedModeRaw
+          : 'categories_only';
       setMarketingCollections(
         loadedCollections.length > 0
           ? loadedCollections.sort((a, b) => (a.sortOrder - b.sortOrder) || a.name.localeCompare(b.name, 'zh-Hant'))
@@ -4216,9 +4226,10 @@ const App: React.FC = () => {
       );
       setMarketingAssignments(loadedAssignments);
       if (Number.isFinite(loadedMargin) && loadedMargin > 0) setCatalogGlobalMarginFactor(loadedMargin);
+      setStorefrontCatalogMode(loadedMode);
     };
     void loadCatalogMeta();
-  }, [isAdminRoute, adminUser]);
+  }, []);
 
   useEffect(() => {
     if (!(isAdminRoute && inventorySubTab === 'products')) return;
@@ -4396,10 +4407,10 @@ const App: React.FC = () => {
     } : x));
 
     setMarketingAssignments(nextAssignments);
-    await saveCatalogMetaConfig(marketingCollections, nextAssignments, catalogGlobalMarginFactor);
+    await saveCatalogMetaConfig(marketingCollections, nextAssignments, catalogGlobalMarginFactor, storefrontCatalogMode);
     cancelEditCatalogRow(p.id);
     showToast('產品已儲存');
-  }, [inventoryRowDrafts, marketingAssignments, catalogGlobalMarginFactor, saveCatalogMetaConfig, marketingCollections, cancelEditCatalogRow]);
+  }, [inventoryRowDrafts, marketingAssignments, catalogGlobalMarginFactor, storefrontCatalogMode, saveCatalogMetaConfig, marketingCollections, cancelEditCatalogRow]);
 
   const toggleCatalogAvailability = useCallback(async (p: Product) => {
     const nextActive = !(p.isActive !== false);
@@ -4443,13 +4454,19 @@ const App: React.FC = () => {
       return;
     }
     setProducts(prev => prev.filter(x => x.id !== p.id));
+    const nextAssignments = (() => {
+      const next: Record<string, MarketingAssignment> = { ...marketingAssignments };
+      delete next[p.id];
+      return next;
+    })();
     setMarketingAssignments(prev => {
       const next = { ...prev };
       delete next[p.id];
       return next;
     });
+    await saveCatalogMetaConfig(marketingCollections, nextAssignments, catalogGlobalMarginFactor, storefrontCatalogMode);
     showToast('已移出渠道');
-  }, []);
+  }, [marketingAssignments, marketingCollections, catalogGlobalMarginFactor, storefrontCatalogMode, saveCatalogMetaConfig]);
 
   const addMarketingCollection = useCallback(async () => {
     const name = newMarketingCollectionName.trim();
@@ -4463,15 +4480,15 @@ const App: React.FC = () => {
     const next = [...marketingCollections, item];
     setMarketingCollections(next);
     setNewMarketingCollectionName('');
-    await saveCatalogMetaConfig(next, marketingAssignments, catalogGlobalMarginFactor);
+    await saveCatalogMetaConfig(next, marketingAssignments, catalogGlobalMarginFactor, storefrontCatalogMode);
     showToast('行銷分類已新增');
-  }, [newMarketingCollectionName, marketingCollections, marketingAssignments, catalogGlobalMarginFactor, saveCatalogMetaConfig]);
+  }, [newMarketingCollectionName, marketingCollections, marketingAssignments, catalogGlobalMarginFactor, storefrontCatalogMode, saveCatalogMetaConfig]);
 
   const updateMarketingCollection = useCallback(async (id: string, patch: Partial<MarketingCollection>) => {
     const next = marketingCollections.map(c => c.id === id ? { ...c, ...patch } : c);
     setMarketingCollections(next);
-    await saveCatalogMetaConfig(next, marketingAssignments, catalogGlobalMarginFactor);
-  }, [marketingCollections, marketingAssignments, catalogGlobalMarginFactor, saveCatalogMetaConfig]);
+    await saveCatalogMetaConfig(next, marketingAssignments, catalogGlobalMarginFactor, storefrontCatalogMode);
+  }, [marketingCollections, marketingAssignments, catalogGlobalMarginFactor, storefrontCatalogMode, saveCatalogMetaConfig]);
 
   const getProductImages = useCallback((p: Product) => {
     const arr = Array.isArray(p.images) ? p.images.filter(Boolean) : [];
@@ -4580,21 +4597,57 @@ const App: React.FC = () => {
     });
   };
 
+  const storefrontContext = useMemo(() => {
+    if (!isWholesaleRoute) {
+      return { channel: 'retail' as const, target: 'coolfood_retail' as CatalogTarget };
+    }
+    return isGHFoods
+      ? { channel: 'wholesale' as const, target: 'ghfoods_wholesale' as CatalogTarget }
+      : { channel: 'wholesale' as const, target: 'coolfood_wholesale' as CatalogTarget };
+  }, [isWholesaleRoute, isGHFoods]);
+
+  const isProductVisibleInStorefront = useCallback((p: Product, ctx: { channel: 'retail' | 'wholesale'; target: CatalogTarget }) => {
+    if (p.isActive === false) return false;
+    const ch = p.saleChannel || 'retail';
+    const channelOk = ctx.channel === 'wholesale' ? (ch === 'wholesale' || ch === 'both') : (ch === 'retail' || ch === 'both');
+    if (!channelOk) return false;
+    if (p.catalogTarget && p.catalogTarget !== ctx.target) return false;
+    return true;
+  }, []);
+
+  const storefrontEligibleProducts = useMemo(
+    () => products.filter(p => isProductVisibleInStorefront(p, storefrontContext)),
+    [products, isProductVisibleInStorefront, storefrontContext]
+  );
+
   const filteredStoreProducts = useMemo(() => {
-    const channelFiltered = products.filter(p => {
-      const ch = p.saleChannel || 'retail';
-      if (isWholesaleRoute) return ch === 'wholesale' || ch === 'both';
-      return ch === 'retail' || ch === 'both';
-    });
-    if (!storeSearch.trim()) return channelFiltered;
+    if (!storeSearch.trim()) return storefrontEligibleProducts;
     const q = storeSearch.toLowerCase();
-    return channelFiltered.filter(p =>
+    return storefrontEligibleProducts.filter(p =>
       p.name.toLowerCase().includes(q) ||
       (p.description || '').toLowerCase().includes(q) ||
       p.tags.some(t => t.toLowerCase().includes(q)) ||
       (p.origin || '').toLowerCase().includes(q)
     );
-  }, [products, storeSearch, isWholesaleRoute]);
+  }, [storefrontEligibleProducts, storeSearch]);
+
+  const storefrontCollectionSections = useMemo(() => {
+    const activeCollections = marketingCollectionsSorted.filter(c => c.isActive !== false && c.id !== 'mc-default');
+    return activeCollections.map(col => ({
+      id: col.id,
+      name: col.name,
+      rows: filteredStoreProducts.filter(p => (marketingAssignments[p.id]?.collectionIds || []).includes(col.id)),
+    })).filter(block => block.rows.length > 0);
+  }, [marketingCollectionsSorted, marketingAssignments, filteredStoreProducts]);
+
+  const storefrontCategorySections = useMemo(() => {
+    return categories.map(cat => ({
+      id: cat.id,
+      name: cat.name,
+      icon: cat.icon,
+      rows: filteredStoreProducts.filter(p => p.categories.includes(cat.id)),
+    }));
+  }, [categories, filteredStoreProducts]);
 
   const filteredStoreRecipes = useMemo(() => {
     let filtered = recipeCategoryFilter.length > 0
@@ -4784,7 +4837,7 @@ const App: React.FC = () => {
                   />
                   <button
                     onClick={async () => {
-                      await saveCatalogMetaConfig(marketingCollections, marketingAssignments, catalogGlobalMarginFactor);
+                      await saveCatalogMetaConfig(marketingCollections, marketingAssignments, catalogGlobalMarginFactor, storefrontCatalogMode);
                       showToast('全局 margin 已儲存');
                     }}
                     className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-black"
@@ -4809,6 +4862,23 @@ const App: React.FC = () => {
                       <label className="inline-flex items-center gap-1 text-slate-500"><input type="checkbox" checked={c.isActive !== false} onChange={e => void updateMarketingCollection(c.id, { isActive: e.target.checked })} />啟用</label>
                     </div>
                   ))}
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <span className="text-[10px] font-black text-slate-400 uppercase">前台分組模式</span>
+                  <select
+                    value={storefrontCatalogMode}
+                    onChange={async (e) => {
+                      const nextMode = e.target.value as StorefrontCatalogMode;
+                      setStorefrontCatalogMode(nextMode);
+                      await saveCatalogMetaConfig(marketingCollections, marketingAssignments, catalogGlobalMarginFactor, nextMode);
+                      showToast('前台分組模式已儲存');
+                    }}
+                    className="p-2 border border-slate-200 rounded-lg text-xs font-black bg-white"
+                  >
+                    <option value="categories_only">只顯示品類</option>
+                    <option value="collections_plus_categories">行銷分類 + 品類</option>
+                    <option value="collections_only">只顯示行銷分類</option>
+                  </select>
                 </div>
               </div>
             </div>
@@ -10121,7 +10191,14 @@ const App: React.FC = () => {
     );
   };
 
-  const renderStoreView = () => (
+  const renderStoreView = () => {
+    const showCollections = storefrontCatalogMode === 'collections_only' || storefrontCatalogMode === 'collections_plus_categories';
+    const showCategories = storefrontCatalogMode === 'categories_only' || storefrontCatalogMode === 'collections_plus_categories';
+    const storefrontNavItems = [
+      ...(showCollections ? storefrontCollectionSections.map(section => ({ id: `mc:${section.id}`, icon: '⭐', name: section.name, isCollection: true })) : []),
+      ...(showCategories ? storefrontCategorySections.map(section => ({ id: `cat:${section.id}`, icon: section.icon, name: section.name, isCollection: false })) : []),
+    ];
+    return (
     <div className="flex flex-col h-screen overflow-hidden bg-white animate-fade-in font-sans">
       <header className="bg-white/95 backdrop-blur-md sticky top-0 z-40 px-4 py-3 border-b border-slate-100 flex items-center justify-between">
         <div className="flex items-center gap-2"><div className={`w-9 h-9 ${isWholesaleRoute ? 'bg-orange-600' : 'bg-blue-600'} rounded-lg flex items-center justify-center text-white shadow-lg overflow-hidden`}>{isMediaUrl(siteConfig.logoUrl) ? <img src={siteConfig.logoUrl} alt={siteConfig.logoText} className="w-full h-full object-contain p-0.5" /> : <span>{siteConfig.logoIcon}</span>}</div><h1 className="font-bold text-lg text-slate-900 tracking-tight">{siteConfig.logoText}</h1>{isWholesaleRoute && <span className="px-2 py-0.5 bg-orange-100 text-orange-700 rounded-full text-[10px] font-black">批發</span>}</div>
@@ -10175,10 +10252,10 @@ const App: React.FC = () => {
             <span className="text-xl">📖</span><span className="text-[9px] font-bold text-center leading-tight">{t.recipes.recipes}</span>
           </button>
           <div className="w-10 border-t border-slate-100 my-0.5" />
-          {categories.map(cat => (
-            <button key={cat.id} onClick={() => { setStoreMode('shop'); scrollToCategory(cat.id); }} className={`flex flex-col items-center gap-0.5 w-full py-4 transition-all relative ${storeMode === 'shop' && activeCategory === cat.id ? `${textAccentClass} bg-blue-50/50` : 'text-slate-400'}`}>
-              {storeMode === 'shop' && activeCategory === cat.id && <div className={`absolute left-0 h-8 w-1 ${accentClass} rounded-r-full`} />}
-              <span className="text-xl">{cat.icon}</span><span className="text-[9px] font-bold text-center leading-tight uppercase">{cat.name}</span>
+          {storefrontNavItems.map(item => (
+            <button key={item.id} onClick={() => { setStoreMode('shop'); scrollToCategory(item.id); }} className={`flex flex-col items-center gap-0.5 w-full py-4 transition-all relative ${storeMode === 'shop' && activeCategory === item.id ? `${textAccentClass} bg-blue-50/50` : 'text-slate-400'}`}>
+              {storeMode === 'shop' && activeCategory === item.id && <div className={`absolute left-0 h-8 w-1 ${accentClass} rounded-r-full`} />}
+              <span className="text-xl">{item.icon}</span><span className="text-[9px] font-bold text-center leading-tight uppercase">{item.name}</span>
             </button>
           ))}
         </aside>
@@ -10302,19 +10379,19 @@ const App: React.FC = () => {
                 )}
               </div>
             )}
-            {categories.length === 0 && (
+            {storefrontNavItems.length === 0 && (
               <div className="bg-slate-50 border border-slate-100 rounded-3xl p-8 text-center text-slate-400 font-bold">
                 {t.store.noCategories}
               </div>
             )}
-            {categories.map(cat => (
-              <div key={cat.id} ref={el => { catRefs.current[cat.id] = el; }}>
-                <h3 className="font-bold text-slate-900 flex items-center gap-2 mb-2 text-sm sticky top-[0px] bg-white py-2 z-10 border-b border-slate-50"><span className="text-lg">{cat.icon}</span> {cat.name}</h3>
+            {showCollections && storefrontCollectionSections.map(section => (
+              <div key={`mc:${section.id}`} ref={el => { catRefs.current[`mc:${section.id}`] = el; }}>
+                <h3 className="font-bold text-slate-900 flex items-center gap-2 mb-2 text-sm sticky top-[0px] bg-white py-2 z-10 border-b border-slate-50"><span className="text-lg">⭐</span> {section.name}</h3>
                 <div className="divide-y divide-slate-100 bg-white rounded-2xl overflow-hidden shadow-sm">
-                  {filteredStoreProducts.filter(p => p.categories.includes(cat.id)).length === 0 && (
+                  {section.rows.length === 0 && (
                     <div className="p-6 text-center text-slate-400 font-bold">{storeSearch ? '搜尋無結果' : t.store.noCategoryProducts}</div>
                   )}
-                  {filteredStoreProducts.filter(p => p.categories.includes(cat.id)).map(p => {
+                  {section.rows.map(p => {
                     const itemInCart = cart.find(i => i.id === p.id);
                     const qty = itemInCart?.qty || 0;
                     const isOfferMet = p.bulkDiscount && qty >= p.bulkDiscount.threshold;
@@ -10396,6 +10473,94 @@ const App: React.FC = () => {
                 </div>
               </div>
             ))}
+            {showCategories && storefrontCategorySections.map(section => (
+              <div key={`cat:${section.id}`} ref={el => { catRefs.current[`cat:${section.id}`] = el; }}>
+                <h3 className="font-bold text-slate-900 flex items-center gap-2 mb-2 text-sm sticky top-[0px] bg-white py-2 z-10 border-b border-slate-50"><span className="text-lg">{section.icon}</span> {section.name}</h3>
+                <div className="divide-y divide-slate-100 bg-white rounded-2xl overflow-hidden shadow-sm">
+                  {section.rows.length === 0 && (
+                    <div className="p-6 text-center text-slate-400 font-bold">{storeSearch ? '搜尋無結果' : t.store.noCategoryProducts}</div>
+                  )}
+                  {section.rows.map(p => {
+                    const itemInCart = cart.find(i => i.id === p.id);
+                    const qty = itemInCart?.qty || 0;
+                    const isOfferMet = p.bulkDiscount && qty >= p.bulkDiscount.threshold;
+                    const productRecipes = getRecipesForProduct(p.id);
+                    const hasRecipes = productRecipes.length > 0;
+                    const isExpanded = recipeProductExpanded === p.id;
+                    return (
+                      <div key={p.id} className="relative">
+                        <div onClick={() => setSelectedProduct(p)} className="flex gap-4 py-4 px-3 hover:bg-slate-50 transition-all cursor-pointer group">
+                          <div className="w-24 h-24 bg-slate-50 rounded-xl flex items-center justify-center text-5xl relative overflow-hidden flex-shrink-0 border border-slate-100 group-hover:shadow-inner transition-all">
+                             {isMediaUrl(p.image) ? <img src={p.image} loading="lazy" className="w-full h-full object-cover" alt={p.imageAlt || pName(p)} /> : <span className="text-5xl">{p.image}</span>}
+                             {hasRecipes && (
+                               <button onClick={(e) => { e.stopPropagation(); setRecipeProductExpanded(prev => prev === p.id ? null : p.id); }} className="absolute bottom-1 right-1 w-7 h-7 bg-amber-500 rounded-full flex items-center justify-center text-white shadow-md active:scale-90 transition-transform z-10">
+                                 <BookOpen size={13}/>
+                               </button>
+                             )}
+                          </div>
+                          <div className="flex-1 flex flex-col justify-between py-0.5 min-w-0">
+                             <div className="flex justify-between items-start">
+                                <div className="flex-1 min-w-0"><h4 className="font-bold text-slate-900 text-[15px] leading-tight group-hover:text-blue-600 transition-colors flex items-center gap-2">{pName(p)}</h4>
+                                  {p.tags && p.tags.length > 0 && (<div className="flex flex-wrap gap-1 mt-1.5">{p.tags.map(tag => (<span key={tag} className="px-1.5 py-0.5 bg-blue-50 text-blue-600 border border-blue-100 rounded text-[9px] font-bold uppercase tracking-tight">{tag}</span>))}</div>)}
+                                  {p.bulkDiscount && (<p className="text-[10px] font-black text-rose-500 uppercase tracking-tight mt-1 animate-pulse">{p.bulkDiscount.threshold}件+ 即減 {p.bulkDiscount.value}{p.bulkDiscount.type === 'percent' ? '%' : '元'}</p>)}
+                                  {p.purchaseLimit && (<p className="text-[10px] font-black text-orange-500 mt-1">每單只限買 {p.purchaseLimit} 件</p>)}
+                                </div>
+                             </div>
+                             <div className="flex items-end justify-between mt-2">
+                                <div className="flex items-center gap-2">
+                                  {hideWholesalePrice ? (
+                                    <p className="text-xs font-bold text-amber-600">登入查看批發價</p>
+                                  ) : (() => {
+                                    const yourPrice = getPrice(p);
+                                    const showOriginal = yourPrice < p.price;
+                                    return (<>
+                                      <p className={`text-base font-bold ${showOriginal ? 'text-slate-300 text-xs line-through' : 'text-slate-900'}`}>${formatMoney(p.price)}</p>
+                                      {showOriginal && <p className="text-base font-bold text-rose-500 animate-fade-in">${formatMoney(yourPrice)}</p>}
+                                    </>);
+                                  })()}
+                                </div>
+                                {hideWholesalePrice ? (
+                                  <button onClick={(e) => { e.stopPropagation(); setView('profile'); }} className="px-3 py-1.5 bg-amber-50 text-amber-600 rounded-full border border-amber-100 text-xs font-bold">登入</button>
+                                ) : (
+                                <div className={`flex items-center rounded-full p-1 border transition-all ${isOfferMet ? 'bg-amber-400 border-amber-500 scale-105 shadow-md ring-2 ring-amber-200' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                  {qty > 0 && (
+                                    <><button onClick={(e) => updateCart(p, -1, e)} className={`w-8 h-8 flex items-center justify-center transition-colors active:scale-75 ${isOfferMet ? 'text-white' : 'text-slate-300'}`}><Minus size={16}/></button><span className={`mx-2 text-sm font-black w-4 text-center ${isOfferMet ? 'text-white' : 'text-slate-900'}`}>{qty}</span></>
+                                  )}
+                                  <button onClick={(e) => updateCart(p, 1, e)} className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${isOfferMet ? 'bg-white text-amber-500' : accentClass + ' text-white shadow-lg'} active:scale-90 animate-pop-pulse`}><Plus size={16}/></button>
+                                </div>
+                                )}
+                             </div>
+                          </div>
+                        </div>
+                        {hasRecipes && isExpanded && (
+                          <div className="px-3 pb-3 animate-fade-in">
+                            <div className="bg-amber-50/80 rounded-xl border border-amber-100/60 p-3 space-y-2">
+                              <p className="text-[9px] font-black text-amber-600 uppercase tracking-widest flex items-center gap-1"><BookOpen size={10} /> {t.recipes.recommendedRecipes}</p>
+                              {productRecipes.map(r => (
+                                <button key={r.id} onClick={() => setSelectedRecipe(r)} className="w-full flex items-center gap-2.5 p-2 bg-white rounded-lg border border-amber-100/50 hover:bg-amber-50 transition-all text-left">
+                                  {r.mediaUrl && isMediaUrl(r.mediaUrl) ? (
+                                    <img src={r.mediaUrl} alt={r.title} className="w-9 h-9 rounded-lg object-cover flex-shrink-0" />
+                                  ) : (
+                                    <div className="w-9 h-9 bg-amber-100 rounded-lg flex items-center justify-center flex-shrink-0"><BookOpen size={14} className="text-amber-500" /></div>
+                                  )}
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-xs font-bold text-slate-800 truncate">{r.title}</p>
+                                    <div className="flex gap-1 mt-0.5">
+                                      {r.cookingTime > 0 && <span className="text-[8px] text-amber-600 font-bold"><Clock size={7} className="inline" /> {r.cookingTime}{t.recipes.minutes}</span>}
+                                    </div>
+                                  </div>
+                                  <ChevronRight size={12} className="text-slate-300 flex-shrink-0" />
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
           )}
         </main>
@@ -10413,6 +10578,7 @@ const App: React.FC = () => {
       )}
     </div>
   );
+  };
 
   // ── Setup route: only accessible when no admin exists ──
   if (isSetupRoute) {
@@ -10446,7 +10612,7 @@ const App: React.FC = () => {
   if (isGHFoods && !isAdminRoute) {
     return (
       <GHFoodsStorefront
-        products={products}
+        products={storefrontEligibleProducts}
         categories={categories}
         cart={cart}
         setCart={setCart}
