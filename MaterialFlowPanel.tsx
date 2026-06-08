@@ -140,7 +140,7 @@ interface MasterDraftRow {
   specUnit: WeightUnit;
   packLabel: string;
   packagingFee: number;
-  catalogTargets: string;
+  catalogTargets: CatalogTarget[];
   commercialName: string;
   legacySkuFilter: string;
   costOverride?: number;
@@ -158,6 +158,12 @@ interface MasterRow {
   status: 'missing' | 'error' | 'ready';
   errorStage?: 'tab1' | 'tab2' | 'tab3' | 'tab4';
   errorMessage?: string;
+}
+
+interface MasterIngredientGroup {
+  category: string;
+  ingredient: Ingredient;
+  rows: MasterRow[];
 }
 
 
@@ -721,17 +727,23 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     return map;
   }, [skuRows, subRowKey]);
 
-  const toCatalogTargetsString = useCallback((targets: CatalogTarget[]) => {
-    return Array.from(new Set((targets || []).filter(Boolean))).join('|');
+  const normalizeCatalogTargets = useCallback((value: string | CatalogTarget[]): CatalogTarget[] => {
+    const valid: CatalogTarget[] = ['ghfoods_wholesale', 'coolfood_wholesale', 'coolfood_retail'];
+    const raw = Array.isArray(value)
+      ? value.map(v => String(v).trim())
+      : String(value || '')
+        .split('|')
+        .map(v => v.trim())
+        .filter(Boolean);
+    return Array.from(new Set(raw.filter((v): v is CatalogTarget => valid.includes(v as CatalogTarget))));
   }, []);
 
-  const normalizeCatalogTargets = useCallback((value: string): CatalogTarget[] => {
-    const valid: CatalogTarget[] = ['ghfoods_wholesale', 'coolfood_wholesale', 'coolfood_retail'];
-    const raw = String(value || '')
-      .split('|')
-      .map(v => v.trim())
-      .filter(Boolean);
-    return Array.from(new Set(raw.filter((v): v is CatalogTarget => valid.includes(v as CatalogTarget))));
+  const targetChannelFromTargets = useCallback((targets: CatalogTarget[]): SaleChannel => {
+    const hasRetail = targets.includes('coolfood_retail');
+    const hasWholesale = targets.includes('ghfoods_wholesale') || targets.includes('coolfood_wholesale');
+    if (hasRetail && hasWholesale) return 'both';
+    if (hasRetail) return 'retail';
+    return 'wholesale';
   }, []);
 
   const makeMasterDraftBase = useCallback((ingredient: Ingredient, process?: ProcessRow, pack?: PackRow, skuRow?: SkuGridRow): MasterDraftRow => {
@@ -763,13 +775,13 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       specUnit: pack?.specUnit || 'lb',
       packLabel: pack?.packLabel || '1lb/包',
       packagingFee: pack?.packagingFee || 0,
-      catalogTargets: toCatalogTargetsString(targets),
+      catalogTargets: targets,
       commercialName: existingProduct?.name || existingSku?.name || (skuRow ? buildSkuDisplayName(skuRow) : ingredient.name),
       legacySkuFilter: existingSku?.legacySkuFilter || existingProduct?.legacySkuFilter || '',
       costOverride: Number.isFinite(Number(savedOverride?.costOverride)) ? Number(savedOverride.costOverride) : undefined,
       isActive: ingredient.isActive !== false,
     };
-  }, [buildSkuDisplayName, defaultTargetsFromChannel, pricingOverrides, products, skuByPackTarget, skuRows, subRowKey, toCatalogTargetsString]);
+  }, [buildSkuDisplayName, defaultTargetsFromChannel, pricingOverrides, products, skuByPackTarget, skuRows, subRowKey]);
 
   const isYieldValid = useCallback((yieldRate: number, isDefaultPiece?: boolean) => {
     if (isDefaultPiece) return true;
@@ -849,7 +861,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
           status = 'error';
           errorStage = 'tab3';
           errorMessage = '規格重量需大於 0';
-        } else if (normalizeCatalogTargets(draftBase.catalogTargets).length === 0) {
+        } else if (draftBase.catalogTargets.length === 0) {
           status = 'missing';
           errorStage = 'tab4';
           errorMessage = '缺少 catalog_targets';
@@ -876,17 +888,31 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   }, [channelFilter, ingredients, isYieldValid, makeMasterDraftBase, materialCategoryFilter, masterStatusFilter, normalizeCatalogTargets, packRows, processRows, search, skuGridRows, typeFilter]);
 
   const groupedMasterRows = useMemo(() => {
-    const map = new Map<string, MasterRow[]>();
+    const byCategory = new Map<string, Map<string, MasterIngredientGroup>>();
     masterRows.forEach((row) => {
-      const list = map.get(row.category) || [];
-      list.push(row);
-      map.set(row.category, list);
+      const category = row.category || '未分類';
+      const ingredientId = row.ingredient.id;
+      if (!byCategory.has(category)) byCategory.set(category, new Map<string, MasterIngredientGroup>());
+      const byIngredient = byCategory.get(category)!;
+      if (!byIngredient.has(ingredientId)) {
+        byIngredient.set(ingredientId, { category, ingredient: row.ingredient, rows: [] });
+      }
+      byIngredient.get(ingredientId)!.rows.push(row);
     });
-    return Array.from(map.entries())
+    return Array.from(byCategory.entries())
       .sort((a, b) => a[0].localeCompare(b[0], 'zh-Hant'))
-      .map(([category, rows]) => ({
+      .map(([category, ingredientMap]) => ({
         category,
-        rows: rows.sort((a, b) => a.ingredient.name.localeCompare(b.ingredient.name, 'zh-Hant') || a.key.localeCompare(b.key)),
+        groups: Array.from(ingredientMap.values())
+          .sort((a, b) => a.ingredient.name.localeCompare(b.ingredient.name, 'zh-Hant'))
+          .map(group => ({
+            ...group,
+            rows: group.rows.sort((a, b) => {
+              const an = `${a.process?.name || ''} ${a.pack?.name || ''}`;
+              const bn = `${b.process?.name || ''} ${b.pack?.name || ''}`;
+              return an.localeCompare(bn, 'zh-Hant') || a.key.localeCompare(b.key);
+            }),
+          })),
       }));
   }, [masterRows]);
 
@@ -912,7 +938,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         specUnit: 'lb' as WeightUnit,
         packLabel: '1lb/包',
         packagingFee: 0,
-        catalogTargets: 'coolfood_wholesale',
+        catalogTargets: ['coolfood_wholesale'],
         commercialName: '',
         legacySkuFilter: '',
         isActive: true,
@@ -2300,6 +2326,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     const methodCode = (draft.processingMethodCode || 'WHOLE').trim().toUpperCase();
     const method = methods.find(m => m.code.toUpperCase() === methodCode);
     const targets = normalizeCatalogTargets(draft.catalogTargets);
+    const resolvedTargetChannel = targetChannelFromTargets(targets);
     if (!draft.ingredientName.trim()) return showToast('母料名稱不可為空', 'error');
     if (!isYieldValid(draft.yieldRate, methodCode === 'WHOLE')) return showToast('Yield 必須介乎 0.5 至 1.0', 'error');
     if ((draft.specWeight || 0) <= 0) return showToast('規格重量需大於 0', 'error');
@@ -2343,7 +2370,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         code: row.pack?.code || 'BULK',
         name: row.pack?.name || (draft.pricingMode === 'by_piece' ? '散買/原件' : `${draft.specWeight}${draft.specUnit}`),
         pricing_mode: draft.pricingMode,
-        target_channel: draft.targetChannel,
+        target_channel: resolvedTargetChannel,
         spec_weight: Number(draft.specWeight) || 1,
         spec_unit: draft.specUnit,
         pack_label: draft.packLabel || null,
@@ -2369,7 +2396,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
             code: packPayload.code,
             name: String(packPayload.name || ''),
             pricingType: draft.pricingMode,
-            channel: draft.targetChannel,
+            channel: resolvedTargetChannel,
             specWeight: Number(draft.specWeight) || 1,
             specUnit: draft.specUnit,
             packLabel: draft.packLabel || '',
@@ -2405,7 +2432,45 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     } finally {
       setMasterSavingKey(prev => (prev === row.key ? null : prev));
     }
-  }, [buildSkuDisplayName, convertWeight, getMasterDraft, isYieldValid, loadAll, methods, normalizeCatalogTargets, saveRouterSubRow, showToast]);
+  }, [buildSkuDisplayName, convertWeight, getMasterDraft, isYieldValid, loadAll, methods, normalizeCatalogTargets, saveRouterSubRow, showToast, targetChannelFromTargets]);
+
+  const toggleMasterCatalogTarget = useCallback((rowKey: string, target: CatalogTarget, checked: boolean) => {
+    const row = masterRows.find(r => r.key === rowKey);
+    if (!row) return;
+    const draft = getMasterDraft(row);
+    const current = normalizeCatalogTargets(draft.catalogTargets);
+    const next = checked ? Array.from(new Set([...current, target])) : current.filter(t => t !== target);
+    setMasterDraftField(rowKey, 'catalogTargets', next);
+  }, [getMasterDraft, masterRows, normalizeCatalogTargets, setMasterDraftField]);
+
+  const deleteMasterRow = useCallback(async (row: MasterRow) => {
+    try {
+      if (row.pack?.id) {
+        const skuRes = await supabase.from('sellable_skus').select('id,product_id').eq('pack_spec_id', row.pack.id);
+        if (skuRes.error) return showToast(`檢查關聯 SKU 失敗：${skuRes.error.message}`, 'error');
+        const productIds = (skuRes.data || []).map((x: any) => String(x.product_id || '')).filter(Boolean);
+        if (productIds.length > 0) {
+          return showToast('已有產品/分流資料，請先刪除產品後再刪除此列。', 'error');
+        }
+        await deletePackRow(row.pack.id);
+        return;
+      }
+      if (row.process?.id) {
+        await deleteProcessRow(row.process);
+        return;
+      }
+      const relatedProductIds = skuRows
+        .filter(s => s.ingredientId === row.ingredient.id && s.isActive)
+        .map(s => s.productId)
+        .filter(Boolean);
+      if (relatedProductIds.length > 0) {
+        return showToast('已有產品/分流資料，請先刪除產品後再刪除此列。', 'error');
+      }
+      await deleteIngredient(row.ingredient);
+    } catch (error: any) {
+      showToast(`刪除失敗：${error?.message || '未知錯誤'}`, 'error');
+    }
+  }, [deleteIngredient, deletePackRow, deleteProcessRow, showToast, skuRows]);
 
   return (
     <div className="space-y-4 pb-20">
@@ -2499,111 +2564,146 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
             <div key={group.category} className="bg-white border border-slate-100 rounded-2xl p-3 overflow-auto">
               <div className="flex items-center justify-between mb-2">
                 <h4 className="text-sm font-black text-slate-900">分類：{group.category}</h4>
-                <span className="text-[11px] font-bold text-slate-500">{group.rows.length} 行</span>
+                <span className="text-[11px] font-bold text-slate-500">{group.groups.reduce((sum, g) => sum + g.rows.length, 0)} 行</span>
               </div>
-              <table className="w-full text-[11px]">
-                <thead>
-                  <tr className="bg-slate-50 text-slate-500">
-                    <th className="px-2 py-2 text-left">狀態</th>
-                    <th className="px-2 py-2 text-left">母料</th>
-                    <th className="px-2 py-2 text-left">成本</th>
-                    <th className="px-2 py-2 text-center">單位</th>
-                    <th className="px-2 py-2 text-left">加工</th>
-                    <th className="px-2 py-2 text-right">Yield</th>
-                    <th className="px-2 py-2 text-left">包裝</th>
-                    <th className="px-2 py-2 text-left">渠道/規格</th>
-                    <th className="px-2 py-2 text-left">Tab4</th>
-                    <th className="px-2 py-2 text-left">錯誤</th>
-                    <th className="px-2 py-2 text-right">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {group.rows.map(row => {
-                    const draft = getMasterDraft(row);
-                    const saving = masterSavingKey === row.key;
-                    const statusClass = row.status === 'ready'
-                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                      : row.status === 'missing'
-                        ? 'bg-amber-50 text-amber-700 border-amber-200'
-                        : 'bg-rose-50 text-rose-700 border-rose-200';
-                    return (
-                      <tr key={row.key} className="border-t border-slate-100">
-                        <td className="px-2 py-1.5 align-top">
-                          <span className={`inline-block px-2 py-0.5 rounded-full border font-black ${statusClass}`}>
-                            {row.status === 'ready' ? '可發布' : row.status === 'missing' ? '缺資料' : '有錯誤'}
-                          </span>
-                        </td>
-                        <td className="px-2 py-1.5 align-top min-w-[240px]">
-                          <div className="p-2 rounded-lg bg-blue-50 border border-blue-100">
-                            <div className="text-[10px] font-black text-blue-700">{draft.ingredientCode}</div>
-                            <input
-                              value={draft.ingredientName}
-                              onChange={e => setMasterDraftField(row.key, 'ingredientName', e.target.value)}
-                              className="w-full mt-1 p-1.5 border border-slate-200 rounded font-black text-slate-800"
-                            />
-                          </div>
-                        </td>
-                        <td className="px-2 py-1.5 align-top">
-                          <input type="number" value={draft.baseCostPerLb} onChange={e => setMasterDraftField(row.key, 'baseCostPerLb', Number(e.target.value) || 0)} className="w-24 p-1.5 border border-slate-200 rounded font-bold text-right" />
-                        </td>
-                        <td className="px-2 py-1.5 align-top">
-                          <select value={draft.unit} onChange={e => setMasterDraftField(row.key, 'unit', e.target.value)} className="p-1.5 border border-slate-200 rounded font-bold">
-                            {RAW_UNIT_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
-                          </select>
-                        </td>
-                        <td className="px-2 py-1.5 align-top min-w-[180px]">
-                          <input value={draft.processingMethodCode} onChange={e => setMasterDraftField(row.key, 'processingMethodCode', e.target.value.toUpperCase())} className="w-full p-1.5 border border-slate-200 rounded font-bold mb-1" />
-                          <input value={draft.processingName} onChange={e => setMasterDraftField(row.key, 'processingName', e.target.value)} className="w-full p-1.5 border border-slate-200 rounded font-bold" />
-                        </td>
-                        <td className="px-2 py-1.5 align-top">
-                          <input type="number" step="0.01" value={draft.yieldRate} onChange={e => setMasterDraftField(row.key, 'yieldRate', Number(e.target.value) || 0)} className="w-20 p-1.5 border border-slate-200 rounded font-bold text-right" />
-                        </td>
-                        <td className="px-2 py-1.5 align-top min-w-[180px]">
-                          <select value={draft.pricingMode} onChange={e => setMasterDraftField(row.key, 'pricingMode', e.target.value as PricingType)} className="p-1.5 border border-slate-200 rounded font-bold mb-1 w-full">
-                            <option value="by_piece">by_piece</option>
-                            <option value="fixed_pack">fixed_pack</option>
-                          </select>
-                          <input value={draft.packLabel} onChange={e => setMasterDraftField(row.key, 'packLabel', e.target.value)} className="w-full p-1.5 border border-slate-200 rounded font-bold" />
-                        </td>
-                        <td className="px-2 py-1.5 align-top min-w-[180px]">
-                          <select value={draft.targetChannel} onChange={e => setMasterDraftField(row.key, 'targetChannel', e.target.value as SaleChannel)} className="p-1.5 border border-slate-200 rounded font-bold mb-1 w-full">
-                            <option value="wholesale">wholesale</option>
-                            <option value="retail">retail</option>
-                            <option value="both">both</option>
-                          </select>
-                          <div className="flex gap-1">
-                            <input type="number" value={draft.specWeight} onChange={e => setMasterDraftField(row.key, 'specWeight', Number(e.target.value) || 0)} className="w-16 p-1.5 border border-slate-200 rounded font-bold text-right" />
-                            <select value={draft.specUnit} onChange={e => setMasterDraftField(row.key, 'specUnit', e.target.value as WeightUnit)} className="p-1.5 border border-slate-200 rounded font-bold">
-                              <option value="g">g</option><option value="kg">kg</option><option value="lb">lb</option><option value="catty">catty</option>
-                            </select>
-                          </div>
-                        </td>
-                        <td className="px-2 py-1.5 align-top min-w-[220px]">
-                          <input value={draft.catalogTargets} onChange={e => setMasterDraftField(row.key, 'catalogTargets', e.target.value)} className="w-full p-1.5 border border-slate-200 rounded font-bold mb-1" />
-                          <input value={draft.commercialName} onChange={e => setMasterDraftField(row.key, 'commercialName', e.target.value)} className="w-full p-1.5 border border-slate-200 rounded font-bold mb-1" />
-                          <div className="flex gap-1">
-                            <input value={draft.legacySkuFilter} onChange={e => setMasterDraftField(row.key, 'legacySkuFilter', e.target.value)} placeholder="legacy filter" className="w-full p-1.5 border border-slate-200 rounded font-bold" />
-                            <input type="number" value={draft.costOverride ?? ''} onChange={e => setMasterDraftField(row.key, 'costOverride', e.target.value === '' ? undefined : Number(e.target.value))} placeholder="override" className="w-20 p-1.5 border border-slate-200 rounded font-bold text-right" />
-                          </div>
-                        </td>
-                        <td className="px-2 py-1.5 align-top text-[10px]">
-                          {row.errorStage ? <div className="font-black text-rose-700">{row.errorStage}</div> : <div className="text-slate-400">-</div>}
-                          {row.errorMessage ? <div className="text-rose-600">{row.errorMessage}</div> : <div className="text-slate-400">-</div>}
-                        </td>
-                        <td className="px-2 py-1.5 align-top text-right">
-                          <button
-                            disabled={saving}
-                            onClick={() => void saveMasterRow(row)}
-                            className={`px-2 py-1 rounded text-[10px] font-black ${saving ? 'bg-slate-200 text-slate-400' : 'bg-slate-900 text-white'}`}
-                          >
-                            {saving ? '儲存中...' : '儲存整行'}
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <div className="space-y-3">
+                {group.groups.map(ingGroup => (
+                  <div key={ingGroup.ingredient.id} className="border border-slate-200 rounded-xl overflow-hidden">
+                    <div className="bg-blue-50 border-b border-blue-100 px-3 py-2 flex items-center justify-between">
+                      <div>
+                        <div className="text-sm font-black text-slate-900">{ingGroup.ingredient.name}</div>
+                        <div className="text-[10px] font-bold text-blue-700">{ingGroup.ingredient.id}</div>
+                      </div>
+                      <div className="text-[11px] font-bold text-slate-500">{ingGroup.rows.length} 個子列</div>
+                    </div>
+                    <table className="w-full text-[11px]">
+                      <thead>
+                        <tr className="bg-slate-50 text-slate-500">
+                          <th className="px-2 py-2 text-left">狀態</th>
+                          <th className="px-2 py-2 text-left">母料資料</th>
+                          <th className="px-2 py-2 text-left">加工方式</th>
+                          <th className="px-2 py-2 text-right">Yield</th>
+                          <th className="px-2 py-2 text-left">包裝</th>
+                          <th className="px-2 py-2 text-left">Tab4 分流</th>
+                          <th className="px-2 py-2 text-left">錯誤</th>
+                          <th className="px-2 py-2 text-right">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ingGroup.rows.map(row => {
+                          const draft = getMasterDraft(row);
+                          const saving = masterSavingKey === row.key;
+                          const statusClass = row.status === 'ready'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : row.status === 'missing'
+                              ? 'bg-amber-50 text-amber-700 border-amber-200'
+                              : 'bg-rose-50 text-rose-700 border-rose-200';
+                          const selectedTargets = normalizeCatalogTargets(draft.catalogTargets);
+                          return (
+                            <tr key={row.key} className="border-t border-slate-100">
+                              <td className="px-2 py-1.5 align-top">
+                                <span className={`inline-block px-2 py-0.5 rounded-full border font-black ${statusClass}`}>
+                                  {row.status === 'ready' ? '可發布' : row.status === 'missing' ? '缺資料' : '有錯誤'}
+                                </span>
+                              </td>
+                              <td className="px-2 py-1.5 align-top min-w-[220px]">
+                                <div className="flex gap-1 mb-1">
+                                  <input
+                                    value={draft.ingredientName}
+                                    onChange={e => setMasterDraftField(row.key, 'ingredientName', e.target.value)}
+                                    className="w-full p-1.5 border border-slate-200 rounded font-bold"
+                                  />
+                                  <input type="number" value={draft.baseCostPerLb} onChange={e => setMasterDraftField(row.key, 'baseCostPerLb', Number(e.target.value) || 0)} className="w-20 p-1.5 border border-slate-200 rounded font-bold text-right" />
+                                </div>
+                                <select value={draft.unit} onChange={e => setMasterDraftField(row.key, 'unit', e.target.value)} className="p-1.5 border border-slate-200 rounded font-bold">
+                                  {RAW_UNIT_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
+                                </select>
+                              </td>
+                              <td className="px-2 py-1.5 align-top min-w-[200px]">
+                                <select
+                                  value={draft.processingMethodCode}
+                                  onChange={e => {
+                                    const code = e.target.value.toUpperCase();
+                                    const method = methods.find(m => m.code.toUpperCase() === code);
+                                    setMasterDraftField(row.key, 'processingMethodCode', code);
+                                    if (method?.name) setMasterDraftField(row.key, 'processingName', method.name);
+                                  }}
+                                  className="w-full p-1.5 border border-slate-200 rounded font-bold mb-1"
+                                >
+                                  {methods.filter(m => m.isActive !== false).map(m => <option key={m.id} value={m.code.toUpperCase()}>{m.code.toUpperCase()} - {m.name}</option>)}
+                                </select>
+                                <input value={draft.processingName} onChange={e => setMasterDraftField(row.key, 'processingName', e.target.value)} className="w-full p-1.5 border border-slate-200 rounded font-bold" />
+                              </td>
+                              <td className="px-2 py-1.5 align-top">
+                                <input type="number" step="0.01" value={draft.yieldRate} onChange={e => setMasterDraftField(row.key, 'yieldRate', Number(e.target.value) || 0)} className="w-20 p-1.5 border border-slate-200 rounded font-bold text-right" />
+                              </td>
+                              <td className="px-2 py-1.5 align-top min-w-[220px]">
+                                <div className="mb-1">
+                                  <select value={draft.pricingMode} onChange={e => setMasterDraftField(row.key, 'pricingMode', e.target.value as PricingType)} className="p-1.5 border border-slate-200 rounded font-bold w-full">
+                                    <option value="by_piece">抄碼</option>
+                                    <option value="fixed_pack">定額</option>
+                                  </select>
+                                </div>
+                                <div className="flex gap-1 mb-1">
+                                  <input type="number" value={draft.specWeight} onChange={e => setMasterDraftField(row.key, 'specWeight', Number(e.target.value) || 0)} className="w-16 p-1.5 border border-slate-200 rounded font-bold text-right" />
+                                  <select value={draft.specUnit} onChange={e => setMasterDraftField(row.key, 'specUnit', e.target.value as WeightUnit)} className="p-1.5 border border-slate-200 rounded font-bold">
+                                    <option value="g">g</option><option value="kg">kg</option><option value="lb">lb</option><option value="catty">catty</option>
+                                  </select>
+                                </div>
+                                <div className="flex gap-1">
+                                  <input value={draft.packLabel} onChange={e => setMasterDraftField(row.key, 'packLabel', e.target.value)} className="w-full p-1.5 border border-slate-200 rounded font-bold" />
+                                  <input type="number" value={draft.packagingFee} onChange={e => setMasterDraftField(row.key, 'packagingFee', Number(e.target.value) || 0)} className="w-20 p-1.5 border border-slate-200 rounded font-bold text-right" />
+                                </div>
+                              </td>
+                              <td className="px-2 py-1.5 align-top min-w-[260px]">
+                                <div className="grid grid-cols-1 gap-1 mb-2">
+                                  {CATALOG_TARGET_OPTIONS.map(opt => (
+                                    <label key={opt.target} className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-700">
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedTargets.includes(opt.target)}
+                                        onChange={e => toggleMasterCatalogTarget(row.key, opt.target, e.target.checked)}
+                                      />
+                                      {opt.label}
+                                    </label>
+                                  ))}
+                                </div>
+                                <input value={draft.commercialName} onChange={e => setMasterDraftField(row.key, 'commercialName', e.target.value)} className="w-full p-1.5 border border-slate-200 rounded font-bold mb-1" />
+                                <div className="flex gap-1">
+                                  <input value={draft.legacySkuFilter} onChange={e => setMasterDraftField(row.key, 'legacySkuFilter', e.target.value)} placeholder="legacy filter" className="w-full p-1.5 border border-slate-200 rounded font-bold" />
+                                  <input type="number" value={draft.costOverride ?? ''} onChange={e => setMasterDraftField(row.key, 'costOverride', e.target.value === '' ? undefined : Number(e.target.value))} placeholder="override" className="w-20 p-1.5 border border-slate-200 rounded font-bold text-right" />
+                                </div>
+                              </td>
+                              <td className="px-2 py-1.5 align-top text-[10px]">
+                                {row.errorStage ? <div className="font-black text-rose-700">{row.errorStage}</div> : <div className="text-slate-400">-</div>}
+                                {row.errorMessage ? <div className="text-rose-600">{row.errorMessage}</div> : <div className="text-slate-400">-</div>}
+                              </td>
+                              <td className="px-2 py-1.5 align-top text-right">
+                                <div className="flex items-center justify-end gap-1">
+                                  <button
+                                    disabled={saving}
+                                    onClick={() => void saveMasterRow(row)}
+                                    className={`px-2 py-1 rounded text-[10px] font-black ${saving ? 'bg-slate-200 text-slate-400' : 'bg-slate-900 text-white'}`}
+                                  >
+                                    {saving ? '儲存中...' : '儲存'}
+                                  </button>
+                                  <button
+                                    disabled={saving}
+                                    onClick={() => void deleteMasterRow(row)}
+                                    className="px-2 py-1 rounded text-[10px] font-black border border-rose-200 text-rose-600"
+                                  >
+                                    刪除
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+              </div>
             </div>
           ))}
           {groupedMasterRows.length === 0 && (
