@@ -771,6 +771,11 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     };
   }, [buildSkuDisplayName, defaultTargetsFromChannel, pricingOverrides, products, skuByPackTarget, skuRows, subRowKey, toCatalogTargetsString]);
 
+  const isYieldValid = useCallback((yieldRate: number, isDefaultPiece?: boolean) => {
+    if (isDefaultPiece) return true;
+    return Number.isFinite(yieldRate) && yieldRate >= 0.5 && yieldRate <= 1;
+  }, []);
+
   const masterRows = useMemo<MasterRow[]>(() => {
     const rows: MasterRow[] = [];
     const packByIngredient = new Map<string, SkuGridRow[]>();
@@ -946,11 +951,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     }
     return round2(basePerLb / y);
   }, [ingredientMap]);
-
-  const isYieldValid = useCallback((yieldRate: number, isDefaultPiece?: boolean) => {
-    if (isDefaultPiece) return true;
-    return Number.isFinite(yieldRate) && yieldRate >= 0.5 && yieldRate <= 1;
-  }, []);
 
   const calcTotalCost = useCallback((pack: PackRow) => {
     const processedLb = processedCostPerLb(pack.ingredientId, pack.processSpecId);
