@@ -12,11 +12,12 @@ interface Props {
   setProducts: React.Dispatch<React.SetStateAction<Product[]>>;
 }
 
-type StepTab = 'raw' | 'process' | 'pack' | 'sku';
+type StepTab = 'master' | 'raw' | 'process' | 'pack' | 'sku';
 type PricingType = 'fixed_pack' | 'by_piece';
 type MethodCategory = 'original_or_cutting' | 'repacking' | 'marinating' | 'others';
 type ChannelFilter = 'all' | 'wholesale' | 'retail';
 type TypeFilter = 'all' | 'fixed_pack' | 'by_piece';
+type MasterStatusFilter = 'all' | 'missing' | 'error' | 'ready';
 
 interface GlobalMethod {
   id: string;
@@ -123,6 +124,40 @@ interface RouterDraftRowState {
   costOverride?: number;
   legacySkuFilter: string;
   commercialName: string;
+}
+
+interface MasterDraftRow {
+  ingredientCode: string;
+  ingredientName: string;
+  baseCostPerLb: number;
+  unit: string;
+  processingMethodCode: string;
+  processingName: string;
+  yieldRate: number;
+  pricingMode: PricingType;
+  targetChannel: SaleChannel;
+  specWeight: number;
+  specUnit: WeightUnit;
+  packLabel: string;
+  packagingFee: number;
+  catalogTargets: string;
+  commercialName: string;
+  legacySkuFilter: string;
+  costOverride?: number;
+  isActive: boolean;
+}
+
+interface MasterRow {
+  key: string;
+  category: string;
+  ingredient: Ingredient;
+  process?: ProcessRow;
+  pack?: PackRow;
+  skuRow?: SkuGridRow;
+  draftBase: MasterDraftRow;
+  status: 'missing' | 'error' | 'ready';
+  errorStage?: 'tab1' | 'tab2' | 'tab3' | 'tab4';
+  errorMessage?: string;
 }
 
 
@@ -252,6 +287,9 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   const [supportsPackagingItemCodes, setSupportsPackagingItemCodes] = useState(true);
   const [csvUploading, setCsvUploading] = useState(false);
   const csvInputRef = useRef<HTMLInputElement | null>(null);
+  const [masterStatusFilter, setMasterStatusFilter] = useState<MasterStatusFilter>('all');
+  const [masterDrafts, setMasterDrafts] = useState<Record<string, MasterDraftRow>>({});
+  const [masterSavingKey, setMasterSavingKey] = useState<string | null>(null);
 
   const ingredientMap = useMemo(() => new Map(ingredients.map(i => [i.id, i])), [ingredients]);
   const processMap = useMemo(() => new Map(processRows.map(r => [r.id, r])), [processRows]);
@@ -663,6 +701,221 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       return display.includes(q) || skuCode.includes(q);
     });
   }, [skuGridRows, skuSearch, buildSkuDisplayName]);
+
+  const defaultTargetsFromChannel = useCallback((channel: SaleChannel): CatalogTarget[] => {
+    if (channel === 'retail') return ['coolfood_retail'];
+    if (channel === 'wholesale') return ['ghfoods_wholesale', 'coolfood_wholesale'];
+    return ['ghfoods_wholesale', 'coolfood_wholesale', 'coolfood_retail'];
+  }, []);
+
+  const subRowKey = useCallback((packId: string, target: CatalogTarget) => `${packId}::${target}`, []);
+
+  const skuByPackTarget = useMemo(() => {
+    const map = new Map<string, SkuRow>();
+    skuRows
+      .filter(s => s.isActive)
+      .forEach((s) => {
+        if (!s.catalogTarget) return;
+        map.set(subRowKey(s.packSpecId, s.catalogTarget), s);
+      });
+    return map;
+  }, [skuRows, subRowKey]);
+
+  const toCatalogTargetsString = useCallback((targets: CatalogTarget[]) => {
+    return Array.from(new Set((targets || []).filter(Boolean))).join('|');
+  }, []);
+
+  const normalizeCatalogTargets = useCallback((value: string): CatalogTarget[] => {
+    const valid: CatalogTarget[] = ['ghfoods_wholesale', 'coolfood_wholesale', 'coolfood_retail'];
+    const raw = String(value || '')
+      .split('|')
+      .map(v => v.trim())
+      .filter(Boolean);
+    return Array.from(new Set(raw.filter((v): v is CatalogTarget => valid.includes(v as CatalogTarget))));
+  }, []);
+
+  const makeMasterDraftBase = useCallback((ingredient: Ingredient, process?: ProcessRow, pack?: PackRow, skuRow?: SkuGridRow): MasterDraftRow => {
+    const defaultTargets = pack ? defaultTargetsFromChannel(pack.channel) : ['coolfood_wholesale'];
+    const existingTargets = pack
+      ? Array.from(new Set(
+        skuRows
+          .filter(s => s.packSpecId === pack.id && s.isActive && !!s.catalogTarget)
+          .map(s => s.catalogTarget as CatalogTarget)
+      ))
+      : [];
+    const targets = existingTargets.length > 0 ? existingTargets : defaultTargets;
+    const firstTarget = targets[0];
+    const key = pack && firstTarget ? subRowKey(pack.id, firstTarget) : '';
+    const existingSku = pack && firstTarget ? skuByPackTarget.get(key) : undefined;
+    const existingProduct = existingSku ? products.find(p => p.id === existingSku.productId) : undefined;
+    const savedOverride = key ? pricingOverrides[key] : undefined;
+    return {
+      ingredientCode: ingredient.id,
+      ingredientName: ingredient.name,
+      baseCostPerLb: ingredient.baseCostPerLb || 0,
+      unit: ingredient.unit || 'lb',
+      processingMethodCode: (process?.code || 'WHOLE').toUpperCase(),
+      processingName: process?.name || '原件/原箱 (Whole Block/Case)',
+      yieldRate: process?.isDefaultPiece ? 1 : (process?.yieldRate || 1),
+      pricingMode: pack?.pricingType || 'by_piece',
+      targetChannel: pack?.channel || 'wholesale',
+      specWeight: pack?.specWeight || 1,
+      specUnit: pack?.specUnit || 'lb',
+      packLabel: pack?.packLabel || '1lb/包',
+      packagingFee: pack?.packagingFee || 0,
+      catalogTargets: toCatalogTargetsString(targets),
+      commercialName: existingProduct?.name || existingSku?.name || (skuRow ? buildSkuDisplayName(skuRow) : ingredient.name),
+      legacySkuFilter: existingSku?.legacySkuFilter || existingProduct?.legacySkuFilter || '',
+      costOverride: Number.isFinite(Number(savedOverride?.costOverride)) ? Number(savedOverride.costOverride) : undefined,
+      isActive: ingredient.isActive !== false,
+    };
+  }, [buildSkuDisplayName, defaultTargetsFromChannel, pricingOverrides, products, skuByPackTarget, skuRows, subRowKey, toCatalogTargetsString]);
+
+  const masterRows = useMemo<MasterRow[]>(() => {
+    const rows: MasterRow[] = [];
+    const packByIngredient = new Map<string, SkuGridRow[]>();
+    skuGridRows.forEach((row) => {
+      const list = packByIngredient.get(row.pack.ingredientId) || [];
+      list.push(row);
+      packByIngredient.set(row.pack.ingredientId, list);
+    });
+    const filteredIngredients = ingredients
+      .filter(i => materialCategoryFilter === 'all' ? true : (i.category || '未分類') === materialCategoryFilter)
+      .sort((a, b) => ((a.category || '未分類').localeCompare((b.category || '未分類'), 'zh-Hant')) || a.name.localeCompare(b.name, 'zh-Hant'));
+    filteredIngredients.forEach((ingredient) => {
+      const list = (packByIngredient.get(ingredient.id) || []).filter((row) => {
+        if (!row.pack.isActive) return false;
+        if (channelFilter !== 'all' && !(row.pack.channel === channelFilter || row.pack.channel === 'both')) return false;
+        if (typeFilter !== 'all' && row.pack.pricingType !== typeFilter) return false;
+        if (!search.trim()) return true;
+        const q = search.trim().toLowerCase();
+        return (
+          ingredient.name.toLowerCase().includes(q) ||
+          row.pack.name.toLowerCase().includes(q) ||
+          (row.process?.name || '').toLowerCase().includes(q) ||
+          row.pack.code.toLowerCase().includes(q)
+        );
+      });
+      if (list.length === 0) {
+        const fallbackProcess = processRows.find(p => p.ingredientId === ingredient.id && p.isActive);
+        const draftBase = makeMasterDraftBase(ingredient, fallbackProcess);
+        let status: MasterRow['status'] = 'ready';
+        let errorStage: MasterRow['errorStage'] | undefined;
+        let errorMessage: string | undefined;
+        if (!draftBase.ingredientName.trim() || !draftBase.ingredientCode.trim()) {
+          status = 'missing';
+          errorStage = 'tab1';
+          errorMessage = '缺少母料名稱或編碼';
+        } else if (!isYieldValid(draftBase.yieldRate, draftBase.processingMethodCode === 'WHOLE')) {
+          status = 'error';
+          errorStage = 'tab2';
+          errorMessage = 'Yield 必須介乎 0.5 至 1.0';
+        }
+        rows.push({
+          key: `MASTER-${ingredient.id}-NO-PACK`,
+          category: ingredient.category || '未分類',
+          ingredient,
+          process: fallbackProcess,
+          draftBase,
+          status,
+          errorStage,
+          errorMessage,
+        });
+        return;
+      }
+      list.forEach((skuRow) => {
+        const draftBase = makeMasterDraftBase(ingredient, skuRow.process, skuRow.pack, skuRow);
+        let status: MasterRow['status'] = 'ready';
+        let errorStage: MasterRow['errorStage'] | undefined;
+        let errorMessage: string | undefined;
+        if (!draftBase.ingredientName.trim() || !draftBase.ingredientCode.trim()) {
+          status = 'missing';
+          errorStage = 'tab1';
+          errorMessage = '缺少母料名稱或編碼';
+        } else if (!draftBase.processingMethodCode.trim()) {
+          status = 'missing';
+          errorStage = 'tab2';
+          errorMessage = '缺少加工方式';
+        } else if (!isYieldValid(draftBase.yieldRate, draftBase.processingMethodCode === 'WHOLE')) {
+          status = 'error';
+          errorStage = 'tab2';
+          errorMessage = 'Yield 必須介乎 0.5 至 1.0';
+        } else if ((draftBase.specWeight || 0) <= 0) {
+          status = 'error';
+          errorStage = 'tab3';
+          errorMessage = '規格重量需大於 0';
+        } else if (normalizeCatalogTargets(draftBase.catalogTargets).length === 0) {
+          status = 'missing';
+          errorStage = 'tab4';
+          errorMessage = '缺少 catalog_targets';
+        }
+        rows.push({
+          key: `MASTER-${skuRow.pack.id}`,
+          category: ingredient.category || '未分類',
+          ingredient,
+          process: skuRow.process,
+          pack: skuRow.pack,
+          skuRow,
+          draftBase,
+          status,
+          errorStage,
+          errorMessage,
+        });
+      });
+    });
+    const byStatus = rows.filter((row) => {
+      if (masterStatusFilter === 'all') return true;
+      return row.status === masterStatusFilter;
+    });
+    return byStatus;
+  }, [channelFilter, ingredients, isYieldValid, makeMasterDraftBase, materialCategoryFilter, masterStatusFilter, normalizeCatalogTargets, packRows, processRows, search, skuGridRows, typeFilter]);
+
+  const groupedMasterRows = useMemo(() => {
+    const map = new Map<string, MasterRow[]>();
+    masterRows.forEach((row) => {
+      const list = map.get(row.category) || [];
+      list.push(row);
+      map.set(row.category, list);
+    });
+    return Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0], 'zh-Hant'))
+      .map(([category, rows]) => ({
+        category,
+        rows: rows.sort((a, b) => a.ingredient.name.localeCompare(b.ingredient.name, 'zh-Hant') || a.key.localeCompare(b.key)),
+      }));
+  }, [masterRows]);
+
+  const getMasterDraft = useCallback((row: MasterRow): MasterDraftRow => {
+    return masterDrafts[row.key] || row.draftBase;
+  }, [masterDrafts]);
+
+  const setMasterDraftField = useCallback(<K extends keyof MasterDraftRow>(key: string, field: K, value: MasterDraftRow[K]) => {
+    setMasterDrafts(prev => {
+      const base = prev[key];
+      const rowBase = masterRows.find(r => r.key === key)?.draftBase;
+      const nextRow = { ...(base || rowBase || {
+        ingredientCode: '',
+        ingredientName: '',
+        baseCostPerLb: 0,
+        unit: 'lb',
+        processingMethodCode: 'WHOLE',
+        processingName: '原件/原箱 (Whole Block/Case)',
+        yieldRate: 1,
+        pricingMode: 'by_piece' as PricingType,
+        targetChannel: 'wholesale' as SaleChannel,
+        specWeight: 1,
+        specUnit: 'lb' as WeightUnit,
+        packLabel: '1lb/包',
+        packagingFee: 0,
+        catalogTargets: 'coolfood_wholesale',
+        commercialName: '',
+        legacySkuFilter: '',
+        isActive: true,
+      }), [field]: value };
+      return { ...prev, [key]: nextRow };
+    });
+  }, [masterRows]);
+
 
 
   const processedCostPerLb = useCallback((ingredientId: string, processId: string) => {
@@ -1803,25 +2056,6 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     showToast('包裝規格已刪除', 'success');
   };
 
-  const defaultTargetsFromChannel = useCallback((channel: SaleChannel): CatalogTarget[] => {
-    if (channel === 'retail') return ['coolfood_retail'];
-    if (channel === 'wholesale') return ['ghfoods_wholesale', 'coolfood_wholesale'];
-    return ['ghfoods_wholesale', 'coolfood_wholesale', 'coolfood_retail'];
-  }, []);
-
-  const subRowKey = useCallback((packId: string, target: CatalogTarget) => `${packId}::${target}`, []);
-
-  const skuByPackTarget = useMemo(() => {
-    const map = new Map<string, SkuRow>();
-    skuRows
-      .filter(s => s.isActive)
-      .forEach((s) => {
-        if (!s.catalogTarget) return;
-        map.set(subRowKey(s.packSpecId, s.catalogTarget), s);
-      });
-    return map;
-  }, [skuRows, subRowKey]);
-
   const buildInternalSkuId = useCallback((packId: string, target: CatalogTarget, existingId?: string) => {
     if (existingId) return existingId;
     const opt = CATALOG_TARGET_OPTIONS.find(x => x.target === target);
@@ -1876,7 +2110,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     });
   }, []);
 
-  const saveRouterSubRow = async (row: SkuGridRow, target: CatalogTarget) => {
+  const saveRouterSubRow = async (row: SkuGridRow, target: CatalogTarget, injectedDraft?: RouterDraftRowState) => {
     // #region agent log
     logAgentEvent({ runId: 'tab4-save-pre-fix-1', hypothesisId: 'H1', location: 'MaterialFlowPanel.tsx:saveRouterSubRow:start', message: 'saveRouterSubRow invoked', data: { packSpecId: row.pack.id, target, ingredientId: row.pack.ingredientId, processSpecId: row.pack.processSpecId } });
     // #endregion
@@ -1885,7 +2119,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     const process = row.process || processMap.get(row.pack.processSpecId);
     const materialCategory = (ingredient?.category || '').trim();
     const key = subRowKey(row.pack.id, target);
-    const draft = routerDraftRows[key];
+    const draft = injectedDraft || routerDraftRows[key];
     if (!draft) return;
     const opt = CATALOG_TARGET_OPTIONS.find(x => x.target === target);
     if (!opt) return;
@@ -2061,6 +2295,118 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     showToast(`已推送到 ${opt.label} 產品/分類`, 'success');
   };
 
+  const saveMasterRow = useCallback(async (row: MasterRow) => {
+    const draft = getMasterDraft(row);
+    const methodCode = (draft.processingMethodCode || 'WHOLE').trim().toUpperCase();
+    const method = methods.find(m => m.code.toUpperCase() === methodCode);
+    const targets = normalizeCatalogTargets(draft.catalogTargets);
+    if (!draft.ingredientName.trim()) return showToast('母料名稱不可為空', 'error');
+    if (!isYieldValid(draft.yieldRate, methodCode === 'WHOLE')) return showToast('Yield 必須介乎 0.5 至 1.0', 'error');
+    if ((draft.specWeight || 0) <= 0) return showToast('規格重量需大於 0', 'error');
+
+    setMasterSavingKey(row.key);
+    try {
+      const ingredientId = row.ingredient.id;
+      const ingredientWrite = await supabase.from('ingredients').update({
+        name: draft.ingredientName.trim(),
+        base_cost_per_lb: Number(draft.baseCostPerLb) || 0,
+        unit: draft.unit || 'lb',
+        is_active: draft.isActive,
+      }).eq('id', ingredientId);
+      if (ingredientWrite.error) throw new Error(`Tab1 保存失敗：${ingredientWrite.error.message}`);
+
+      const processId = row.process?.id || mkId('PS');
+      const processPayload = {
+        id: processId,
+        ingredient_id: ingredientId,
+        processing_method_id: method?.id || null,
+        processing_category: method?.category || (methodCode === 'WHOLE' ? 'original_or_cutting' : 'others'),
+        code: methodCode,
+        name: draft.processingName || (method?.name || methodCode),
+        yield_rate: methodCode === 'WHOLE' ? 1 : Number(draft.yieldRate) || 1,
+        pack_quantity: null,
+        pack_unit: null,
+        is_default_piece: methodCode === 'WHOLE',
+        sort_order: 0,
+        is_active: draft.isActive,
+      };
+      const processWrite = row.process?.id
+        ? await supabase.from('material_process_specs').update(processPayload).eq('id', processId)
+        : await supabase.from('material_process_specs').insert(processPayload);
+      if (processWrite.error) throw new Error(`Tab2 保存失敗：${processWrite.error.message}`);
+
+      const packId = row.pack?.id || mkId('PK');
+      const packPayload = {
+        id: packId,
+        ingredient_id: ingredientId,
+        process_spec_id: processId,
+        code: row.pack?.code || 'BULK',
+        name: row.pack?.name || (draft.pricingMode === 'by_piece' ? '散買/原件' : `${draft.specWeight}${draft.specUnit}`),
+        pricing_mode: draft.pricingMode,
+        target_channel: draft.targetChannel,
+        spec_weight: Number(draft.specWeight) || 1,
+        spec_unit: draft.specUnit,
+        pack_label: draft.packLabel || null,
+        packaging_fee: Number(draft.packagingFee) || 0,
+        pack_weight_lb: draft.pricingMode === 'fixed_pack' ? convertWeight(Number(draft.specWeight) || 1, draft.specUnit, 'lb') : null,
+        pack_quantity: null,
+        pack_unit: null,
+        is_active: draft.isActive,
+        sort_order: 0,
+      };
+      const packWrite = row.pack?.id
+        ? await supabase.from('material_pack_specs').update(packPayload).eq('id', packId)
+        : await supabase.from('material_pack_specs').insert(packPayload);
+      if (packWrite.error) throw new Error(`Tab3 保存失敗：${packWrite.error.message}`);
+
+      if (targets.length > 0) {
+        const skuRow: SkuGridRow = row.skuRow || {
+          rowId: packId,
+          pack: {
+            id: packId,
+            ingredientId,
+            processSpecId: processId,
+            code: packPayload.code,
+            name: String(packPayload.name || ''),
+            pricingType: draft.pricingMode,
+            channel: draft.targetChannel,
+            specWeight: Number(draft.specWeight) || 1,
+            specUnit: draft.specUnit,
+            packLabel: draft.packLabel || '',
+            packagingFee: Number(draft.packagingFee) || 0,
+            isActive: draft.isActive,
+          },
+          process: {
+            id: processId,
+            ingredientId,
+            methodId: method?.id,
+            code: methodCode,
+            name: draft.processingName || (method?.name || methodCode),
+            category: (method?.category || (methodCode === 'WHOLE' ? 'original_or_cutting' : 'others')) as MethodCategory,
+            yieldRate: methodCode === 'WHOLE' ? 1 : Number(draft.yieldRate) || 1,
+            isDefaultPiece: methodCode === 'WHOLE',
+            isActive: draft.isActive,
+          },
+        };
+        for (const target of targets) {
+          const injectedDraft: RouterDraftRowState = {
+            costOverride: Number.isFinite(Number(draft.costOverride)) ? Number(draft.costOverride) : undefined,
+            legacySkuFilter: draft.legacySkuFilter || '',
+            commercialName: draft.commercialName || buildSkuDisplayName(skuRow),
+          };
+          await saveRouterSubRow(skuRow, target, injectedDraft);
+        }
+      }
+
+      showToast('Tab0 行已保存並同步', 'success');
+      await loadAll();
+    } catch (error: any) {
+      showToast(String(error?.message || '保存失敗'), 'error');
+    } finally {
+      setMasterSavingKey(prev => (prev === row.key ? null : prev));
+    }
+  }, [buildSkuDisplayName, convertWeight, getMasterDraft, isYieldValid, loadAll, methods, normalizeCatalogTargets, saveRouterSubRow, showToast]);
+
   return (
     <div className="space-y-4 pb-20">
       <div className="bg-white border border-slate-100 rounded-2xl p-4 flex items-center gap-3">
@@ -2073,6 +2419,7 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
       </div>
 
       <div className="flex flex-wrap gap-2">
+        <button onClick={() => setTab('master')} className={`px-7 py-3.5 rounded-xl text-lg font-bold flex items-center gap-2 ${tab === 'master' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Grid3X3 size={16} />0. 總表</button>
         <button onClick={() => setTab('raw')} className={`px-7 py-3.5 rounded-xl text-lg font-bold flex items-center gap-2 ${tab === 'raw' ? 'bg-blue-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Layers size={16} />1. 母料</button>
         <button onClick={() => setTab('process')} className={`px-7 py-3.5 rounded-xl text-lg font-bold flex items-center gap-2 ${tab === 'process' ? 'bg-violet-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Scissors size={16} />2. 加工</button>
         <button onClick={() => setTab('pack')} className={`px-7 py-3.5 rounded-xl text-lg font-bold flex items-center gap-2 ${tab === 'pack' ? 'bg-amber-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Package size={16} />3. 包裝</button>
@@ -2095,6 +2442,24 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
         </select>
         {(['all', 'wholesale', 'retail'] as ChannelFilter[]).map(v => <button key={v} onClick={() => setChannelFilter(v)} className={`px-3 py-2 rounded-lg text-[11px] font-black ${channelFilter === v ? 'bg-slate-900 text-white' : 'bg-slate-50 border border-slate-200 text-slate-500'}`}>{v === 'all' ? '全部' : v === 'wholesale' ? '批發' : '零售'}</button>)}
         {(['all', 'fixed_pack', 'by_piece'] as TypeFilter[]).map(v => <button key={v} onClick={() => setTypeFilter(v)} className={`px-3 py-2 rounded-lg text-[11px] font-black ${typeFilter === v ? 'bg-indigo-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-500'}`}>{v === 'all' ? '全部類型' : v === 'fixed_pack' ? '定額' : '抄碼'}</button>)}
+        {tab === 'master' && (
+          <div className="ml-auto flex items-center gap-2">
+            {([
+              ['all', '全部'],
+              ['missing', '缺資料'],
+              ['error', '有錯誤'],
+              ['ready', '可發布'],
+            ] as [MasterStatusFilter, string][]).map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => setMasterStatusFilter(value)}
+                className={`px-3 py-2 rounded-lg text-[11px] font-black ${masterStatusFilter === value ? 'bg-rose-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
         {tab === 'raw' && (
           <div className="ml-auto flex items-center gap-2">
             <button onClick={() => setShowUnitGuide(prev => !prev)} className={`px-3 py-2 rounded-lg border text-[11px] font-black flex items-center gap-1 ${showUnitGuide ? 'bg-blue-50 border-blue-200 text-blue-700' : 'border-slate-200 text-slate-600'}`}>
@@ -2127,6 +2492,127 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
           </div>
         )}
       </div>
+
+      {tab === 'master' && (
+        <div className="space-y-3">
+          {groupedMasterRows.map(group => (
+            <div key={group.category} className="bg-white border border-slate-100 rounded-2xl p-3 overflow-auto">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-sm font-black text-slate-900">分類：{group.category}</h4>
+                <span className="text-[11px] font-bold text-slate-500">{group.rows.length} 行</span>
+              </div>
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="bg-slate-50 text-slate-500">
+                    <th className="px-2 py-2 text-left">狀態</th>
+                    <th className="px-2 py-2 text-left">母料</th>
+                    <th className="px-2 py-2 text-left">成本</th>
+                    <th className="px-2 py-2 text-center">單位</th>
+                    <th className="px-2 py-2 text-left">加工</th>
+                    <th className="px-2 py-2 text-right">Yield</th>
+                    <th className="px-2 py-2 text-left">包裝</th>
+                    <th className="px-2 py-2 text-left">渠道/規格</th>
+                    <th className="px-2 py-2 text-left">Tab4</th>
+                    <th className="px-2 py-2 text-left">錯誤</th>
+                    <th className="px-2 py-2 text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {group.rows.map(row => {
+                    const draft = getMasterDraft(row);
+                    const saving = masterSavingKey === row.key;
+                    const statusClass = row.status === 'ready'
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                      : row.status === 'missing'
+                        ? 'bg-amber-50 text-amber-700 border-amber-200'
+                        : 'bg-rose-50 text-rose-700 border-rose-200';
+                    return (
+                      <tr key={row.key} className="border-t border-slate-100">
+                        <td className="px-2 py-1.5 align-top">
+                          <span className={`inline-block px-2 py-0.5 rounded-full border font-black ${statusClass}`}>
+                            {row.status === 'ready' ? '可發布' : row.status === 'missing' ? '缺資料' : '有錯誤'}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5 align-top min-w-[240px]">
+                          <div className="p-2 rounded-lg bg-blue-50 border border-blue-100">
+                            <div className="text-[10px] font-black text-blue-700">{draft.ingredientCode}</div>
+                            <input
+                              value={draft.ingredientName}
+                              onChange={e => setMasterDraftField(row.key, 'ingredientName', e.target.value)}
+                              className="w-full mt-1 p-1.5 border border-slate-200 rounded font-black text-slate-800"
+                            />
+                          </div>
+                        </td>
+                        <td className="px-2 py-1.5 align-top">
+                          <input type="number" value={draft.baseCostPerLb} onChange={e => setMasterDraftField(row.key, 'baseCostPerLb', Number(e.target.value) || 0)} className="w-24 p-1.5 border border-slate-200 rounded font-bold text-right" />
+                        </td>
+                        <td className="px-2 py-1.5 align-top">
+                          <select value={draft.unit} onChange={e => setMasterDraftField(row.key, 'unit', e.target.value)} className="p-1.5 border border-slate-200 rounded font-bold">
+                            {RAW_UNIT_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
+                          </select>
+                        </td>
+                        <td className="px-2 py-1.5 align-top min-w-[180px]">
+                          <input value={draft.processingMethodCode} onChange={e => setMasterDraftField(row.key, 'processingMethodCode', e.target.value.toUpperCase())} className="w-full p-1.5 border border-slate-200 rounded font-bold mb-1" />
+                          <input value={draft.processingName} onChange={e => setMasterDraftField(row.key, 'processingName', e.target.value)} className="w-full p-1.5 border border-slate-200 rounded font-bold" />
+                        </td>
+                        <td className="px-2 py-1.5 align-top">
+                          <input type="number" step="0.01" value={draft.yieldRate} onChange={e => setMasterDraftField(row.key, 'yieldRate', Number(e.target.value) || 0)} className="w-20 p-1.5 border border-slate-200 rounded font-bold text-right" />
+                        </td>
+                        <td className="px-2 py-1.5 align-top min-w-[180px]">
+                          <select value={draft.pricingMode} onChange={e => setMasterDraftField(row.key, 'pricingMode', e.target.value as PricingType)} className="p-1.5 border border-slate-200 rounded font-bold mb-1 w-full">
+                            <option value="by_piece">by_piece</option>
+                            <option value="fixed_pack">fixed_pack</option>
+                          </select>
+                          <input value={draft.packLabel} onChange={e => setMasterDraftField(row.key, 'packLabel', e.target.value)} className="w-full p-1.5 border border-slate-200 rounded font-bold" />
+                        </td>
+                        <td className="px-2 py-1.5 align-top min-w-[180px]">
+                          <select value={draft.targetChannel} onChange={e => setMasterDraftField(row.key, 'targetChannel', e.target.value as SaleChannel)} className="p-1.5 border border-slate-200 rounded font-bold mb-1 w-full">
+                            <option value="wholesale">wholesale</option>
+                            <option value="retail">retail</option>
+                            <option value="both">both</option>
+                          </select>
+                          <div className="flex gap-1">
+                            <input type="number" value={draft.specWeight} onChange={e => setMasterDraftField(row.key, 'specWeight', Number(e.target.value) || 0)} className="w-16 p-1.5 border border-slate-200 rounded font-bold text-right" />
+                            <select value={draft.specUnit} onChange={e => setMasterDraftField(row.key, 'specUnit', e.target.value as WeightUnit)} className="p-1.5 border border-slate-200 rounded font-bold">
+                              <option value="g">g</option><option value="kg">kg</option><option value="lb">lb</option><option value="catty">catty</option>
+                            </select>
+                          </div>
+                        </td>
+                        <td className="px-2 py-1.5 align-top min-w-[220px]">
+                          <input value={draft.catalogTargets} onChange={e => setMasterDraftField(row.key, 'catalogTargets', e.target.value)} className="w-full p-1.5 border border-slate-200 rounded font-bold mb-1" />
+                          <input value={draft.commercialName} onChange={e => setMasterDraftField(row.key, 'commercialName', e.target.value)} className="w-full p-1.5 border border-slate-200 rounded font-bold mb-1" />
+                          <div className="flex gap-1">
+                            <input value={draft.legacySkuFilter} onChange={e => setMasterDraftField(row.key, 'legacySkuFilter', e.target.value)} placeholder="legacy filter" className="w-full p-1.5 border border-slate-200 rounded font-bold" />
+                            <input type="number" value={draft.costOverride ?? ''} onChange={e => setMasterDraftField(row.key, 'costOverride', e.target.value === '' ? undefined : Number(e.target.value))} placeholder="override" className="w-20 p-1.5 border border-slate-200 rounded font-bold text-right" />
+                          </div>
+                        </td>
+                        <td className="px-2 py-1.5 align-top text-[10px]">
+                          {row.errorStage ? <div className="font-black text-rose-700">{row.errorStage}</div> : <div className="text-slate-400">-</div>}
+                          {row.errorMessage ? <div className="text-rose-600">{row.errorMessage}</div> : <div className="text-slate-400">-</div>}
+                        </td>
+                        <td className="px-2 py-1.5 align-top text-right">
+                          <button
+                            disabled={saving}
+                            onClick={() => void saveMasterRow(row)}
+                            className={`px-2 py-1 rounded text-[10px] font-black ${saving ? 'bg-slate-200 text-slate-400' : 'bg-slate-900 text-white'}`}
+                          >
+                            {saving ? '儲存中...' : '儲存整行'}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ))}
+          {groupedMasterRows.length === 0 && (
+            <div className="bg-white border border-slate-100 rounded-2xl p-8 text-center text-sm font-bold text-slate-500">
+              沒有符合條件的 Tab0 資料。
+            </div>
+          )}
+        </div>
+      )}
 
       {tab === 'raw' && showUnitGuide && (
         <div className="bg-white border border-blue-100 rounded-2xl p-3">
