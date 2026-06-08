@@ -4,6 +4,7 @@ import { supabase } from './supabaseClient';
 import type { CatalogTarget, CostItem, Ingredient, Product, SaleChannel } from './types';
 import { mapIngredientRowToIngredient } from './supabaseMappers';
 import { convertCost, convertWeight, normalizeWeightUnit, type WeightUnit } from './utils/unitConverter';
+import ExcelJS from 'exceljs';
 
 interface Props {
   showToast: (msg: string, type?: 'success' | 'error') => void;
@@ -768,6 +769,195 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     URL.revokeObjectURL(url);
     showToast('批量匯入模板已下載（CSV）', 'success');
   }, [showToast]);
+
+  const downloadBulkExcelWithCurrentData = useCallback(async () => {
+    try {
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet('批量匯入(現況)');
+      const guideSheet = workbook.addWorksheet('欄位說明');
+
+      const headers = [
+        'row_id',
+        'ingredient_code',
+        'ingredient_name',
+        'base_cost_per_lb',
+        'unit',
+        'processing_method_code',
+        'processing_name',
+        'yield_rate',
+        'pricing_mode',
+        'target_channel',
+        'spec_weight',
+        'spec_unit',
+        'pack_label',
+        'packaging_fee',
+        'is_active',
+        'notes',
+      ];
+      const headerZh = [
+        '序號',
+        '母料編碼(ID)',
+        '母料名稱',
+        '成本(每磅)',
+        '母料單位',
+        '加工方式代碼',
+        '加工名稱',
+        '出成率',
+        '計價模式',
+        '銷售渠道',
+        '規格重量',
+        '規格單位',
+        '包裝標籤',
+        '包裝費',
+        '是否啟用',
+        '備註',
+      ];
+
+      sheet.addRow(headers);
+      sheet.addRow(headerZh);
+
+      const processByIngredient = processRows.reduce<Record<string, ProcessRow[]>>((acc, row) => {
+        if (!acc[row.ingredientId]) acc[row.ingredientId] = [];
+        acc[row.ingredientId].push(row);
+        return acc;
+      }, {});
+      const packByProcess = packRows.reduce<Record<string, PackRow[]>>((acc, row) => {
+        if (!acc[row.processSpecId]) acc[row.processSpecId] = [];
+        acc[row.processSpecId].push(row);
+        return acc;
+      }, {});
+
+      let rowId = 1;
+      ingredients
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'))
+        .forEach((ing) => {
+          const procList = (processByIngredient[ing.id] || []).filter(p => p.isActive !== false);
+          if (procList.length === 0) {
+            sheet.addRow([
+              rowId++,
+              ing.id,
+              ing.name,
+              ing.baseCostPerLb ?? 0,
+              ing.unit || 'lb',
+              'WHOLE',
+              '原件/原箱 (Whole Block/Case)',
+              1,
+              'by_piece',
+              'wholesale',
+              1,
+              'lb',
+              '1lb/包',
+              0,
+              ing.isActive !== false ? 'true' : 'false',
+              '',
+            ]);
+            return;
+          }
+          procList.forEach((proc) => {
+            const packList = (packByProcess[proc.id] || []).filter(p => p.isActive !== false);
+            if (packList.length === 0) {
+              sheet.addRow([
+                rowId++,
+                ing.id,
+                ing.name,
+                ing.baseCostPerLb ?? 0,
+                ing.unit || 'lb',
+                proc.code || 'WHOLE',
+                proc.name || '原件/原箱 (Whole Block/Case)',
+                proc.isDefaultPiece ? 1 : (proc.yieldRate || 1),
+                'by_piece',
+                'wholesale',
+                1,
+                'lb',
+                '1lb/包',
+                0,
+                ing.isActive !== false ? 'true' : 'false',
+                '',
+              ]);
+              return;
+            }
+            packList.forEach((pack) => {
+              sheet.addRow([
+                rowId++,
+                ing.id,
+                ing.name,
+                ing.baseCostPerLb ?? 0,
+                ing.unit || 'lb',
+                proc.code || 'WHOLE',
+                proc.name || '原件/原箱 (Whole Block/Case)',
+                proc.isDefaultPiece ? 1 : (proc.yieldRate || 1),
+                pack.pricingType || 'by_piece',
+                pack.channel || 'wholesale',
+                pack.specWeight || 1,
+                pack.specUnit || 'lb',
+                pack.packLabel || '',
+                pack.packagingFee || 0,
+                ing.isActive !== false ? 'true' : 'false',
+                '',
+              ]);
+            });
+          });
+        });
+
+      sheet.views = [{ state: 'frozen', ySplit: 2 }];
+      sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2563EB' } };
+      sheet.getRow(2).font = { bold: true, color: { argb: 'FF334155' } };
+      sheet.getRow(2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+      sheet.columns = [
+        { width: 8 }, { width: 22 }, { width: 30 }, { width: 14 },
+        { width: 12 }, { width: 20 }, { width: 30 }, { width: 12 },
+        { width: 14 }, { width: 14 }, { width: 12 }, { width: 12 },
+        { width: 16 }, { width: 12 }, { width: 10 }, { width: 24 },
+      ];
+
+      const lastRow = Math.max(sheet.rowCount, 2000);
+      const methodCodes = Array.from(new Set(methods.map(m => m.code.toUpperCase()).filter(Boolean)));
+      const unitOptions = 'lb,kg,g,catty,pack,box';
+      const specUnitOptions = 'lb,kg,g,catty';
+      const pricingModeOptions = 'by_piece,fixed_pack';
+      const channelOptions = 'wholesale,retail,both';
+      const boolOptions = 'true,false';
+      const methodOptions = (methodCodes.length > 0 ? methodCodes : ['WHOLE']).join(',');
+
+      sheet.dataValidations.add(`E3:E${lastRow}`, { type: 'list', allowBlank: true, formulae: [`"${unitOptions}"`] });
+      sheet.dataValidations.add(`F3:F${lastRow}`, { type: 'list', allowBlank: true, formulae: [`"${methodOptions}"`] });
+      sheet.dataValidations.add(`I3:I${lastRow}`, { type: 'list', allowBlank: true, formulae: [`"${pricingModeOptions}"`] });
+      sheet.dataValidations.add(`J3:J${lastRow}`, { type: 'list', allowBlank: true, formulae: [`"${channelOptions}"`] });
+      sheet.dataValidations.add(`L3:L${lastRow}`, { type: 'list', allowBlank: true, formulae: [`"${specUnitOptions}"`] });
+      sheet.dataValidations.add(`O3:O${lastRow}`, { type: 'list', allowBlank: true, formulae: [`"${boolOptions}"`] });
+
+      guideSheet.columns = [{ width: 24 }, { width: 72 }];
+      guideSheet.addRows([
+        ['欄位', '說明'],
+        ['ingredient_name', '必填。母料名稱。'],
+        ['ingredient_code', '建議填現有 ID；留空時系統會用「母料名稱去空格」作 ID。'],
+        ['base_cost_per_lb', '成本（每磅）數字。'],
+        ['unit', '下拉選單：lb / kg / g / catty / pack / box。'],
+        ['processing_method_code', '下拉選單（來自現有加工方式），通常用 WHOLE。'],
+        ['yield_rate', '出成率（0.5 ~ 1）；WHOLE 會自動視為 1。'],
+        ['pricing_mode', '下拉選單：by_piece（抄碼）/ fixed_pack（定額）。'],
+        ['target_channel', '下拉選單：wholesale / retail / both。'],
+        ['spec_weight + spec_unit', '包裝規格重量與單位。'],
+        ['is_active', '下拉選單：true / false。'],
+        ['操作流程', '下載此檔 -> 修改資料 -> 存檔（xlsx）備份 -> 另存 CSV -> 在材料頁按「上傳批量匯入 CSV」。'],
+      ]);
+      guideSheet.getRow(1).font = { bold: true };
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `material_flow_current_snapshot_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast(`現況 Excel 已下載（共 ${Math.max(0, sheet.rowCount - 2)} 行）`, 'success');
+    } catch (error: any) {
+      showToast(`下載現況 Excel 失敗：${error?.message || '未知錯誤'}`, 'error');
+    }
+  }, [ingredients, methods, packRows, processRows, showToast]);
 
   const handleBulkCsvUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1918,6 +2108,9 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
             </button>
             <button onClick={downloadBulkImportTemplate} className="px-3 py-2 rounded-lg border border-slate-200 text-[11px] font-black text-slate-600 flex items-center gap-1">
               <Download size={12} />下載匯入模板
+            </button>
+            <button onClick={() => void downloadBulkExcelWithCurrentData()} className="px-3 py-2 rounded-lg border border-slate-200 text-[11px] font-black text-slate-600 flex items-center gap-1">
+              <Download size={12} />下載現況 Excel（可下拉）
             </button>
             <button onClick={() => csvInputRef.current?.click()} disabled={csvUploading} className="px-3 py-2 rounded-lg border border-slate-200 text-[11px] font-black text-slate-600 disabled:opacity-50 flex items-center gap-1">
               {csvUploading ? <RefreshCw size={12} className="animate-spin" /> : <Upload size={12} />}
