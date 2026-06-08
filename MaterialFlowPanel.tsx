@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Grid3X3, Layers, Package, Pencil, Plus, RefreshCw, Save, Scissors, Search, Settings2, Trash2, Upload } from 'lucide-react';
+import { Check, Download, Grid3X3, Layers, Package, Pencil, Plus, RefreshCw, Save, Scissors, Search, Settings2, Trash2, Upload } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import type { CatalogTarget, CostItem, Ingredient, Product, SaleChannel } from './types';
 import { mapIngredientRowToIngredient } from './supabaseMappers';
@@ -249,6 +249,8 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
   const savedIndicatorTimerRef = useRef<number | null>(null);
   const baselineEnsuringRef = useRef<Record<string, boolean>>({});
   const [supportsPackagingItemCodes, setSupportsPackagingItemCodes] = useState(true);
+  const [csvUploading, setCsvUploading] = useState(false);
+  const csvInputRef = useRef<HTMLInputElement | null>(null);
 
   const ingredientMap = useMemo(() => new Map(ingredients.map(i => [i.id, i])), [ingredients]);
   const processMap = useMemo(() => new Map(processRows.map(r => [r.id, r])), [processRows]);
@@ -703,6 +705,238 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
     const costPerG = convertCost(processedLb, 'lb', 'g');
     return round2((costPerG * weightG) + (pack.packagingFee || 0));
   }, [processedCostPerLb]);
+
+  const parseCsvLine = useCallback((line: string): string[] => {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (inQuotes) {
+        if (ch === '"' && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else if (ch === '"') {
+          inQuotes = false;
+        } else {
+          current += ch;
+        }
+      } else if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ',') {
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  }, []);
+
+  const normalizeHeaderKey = useCallback((v: string) => (
+    String(v || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\uFEFF/g, '')
+      .replace(/[\s_-]+/g, '')
+  ), []);
+
+  const parseBoolLike = useCallback((v: string | undefined, defaultValue = true) => {
+    const s = String(v || '').trim().toLowerCase();
+    if (!s) return defaultValue;
+    if (['true', '1', 'yes', 'y', '是', '啟用', '启用'].includes(s)) return true;
+    if (['false', '0', 'no', 'n', '否', '停用', '禁用'].includes(s)) return false;
+    return defaultValue;
+  }, []);
+
+  const downloadBulkImportTemplate = useCallback(() => {
+    const lines = [
+      '# 材料批量匯入模板（可用 Excel 開啟，編輯後另存 CSV 再上傳）',
+      '# 必填：ingredient_name；其餘留空會用預設值',
+      '# 預設：WHOLE + 出成率1 + by_piece + wholesale + 1lb/包 + 包裝費0',
+      'row_id,ingredient_code,ingredient_name,base_cost_per_lb,unit,processing_method_code,processing_name,yield_rate,pricing_mode,target_channel,spec_weight,spec_unit,pack_label,packaging_fee,is_active,notes',
+      '1,雞中翼35g,雞中翼35g+,12.8,lb,WHOLE,原件/原箱 (Whole Block/Case),1,by_piece,wholesale,1,lb,1lb/包,0,true,示例',
+      '2,煙鴨胸,煙鴨胸(10KG / 箱),11,lb,WHOLE,原件/原箱 (Whole Block/Case),1,by_piece,wholesale,1,lb,1lb/包,0,true,示例',
+    ];
+    const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `material_flow_bulk_import_template_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('批量匯入模板已下載（CSV）', 'success');
+  }, [showToast]);
+
+  const handleBulkCsvUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCsvUploading(true);
+    try {
+      const text = await file.text();
+      const allLines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const lines = allLines.filter(line => !line.startsWith('#'));
+      if (lines.length < 2) {
+        showToast('CSV 需包含表頭與至少一行資料', 'error');
+        return;
+      }
+
+      const headers = parseCsvLine(lines[0]).map(normalizeHeaderKey);
+      const idx = (aliases: string[]) => {
+        const normalizedAliases = aliases.map(normalizeHeaderKey);
+        return headers.findIndex(h => normalizedAliases.includes(h));
+      };
+      const getCol = (cols: string[], aliases: string[]) => {
+        const i = idx(aliases);
+        return i >= 0 ? (cols[i] || '').trim() : '';
+      };
+
+      let success = 0;
+      const errors: string[] = [];
+      const methodMap = new Map(methods.map(m => [m.code.toUpperCase(), m]));
+      const allowedUnits = new Set(['g', 'kg', 'lb', 'catty', 'pack', 'box']);
+      const allowedSpecUnits = new Set(['g', 'kg', 'lb', 'catty']);
+
+      for (let i = 1; i < lines.length; i++) {
+        const rowNo = i + 1;
+        const cols = parseCsvLine(lines[i]);
+        const ingredientName = getCol(cols, ['ingredient_name', '母料名稱', '名稱']);
+        if (!ingredientName) {
+          errors.push(`第 ${rowNo} 行：缺少 ingredient_name/母料名稱`);
+          continue;
+        }
+        const ingredientId = getCol(cols, ['ingredient_code', 'ingredient_id', '母料編碼', '母料id']) || ingredientName.replace(/\s+/g, '');
+        const unitRaw = getCol(cols, ['unit', '單位']).toLowerCase();
+        const unit = allowedUnits.has(unitRaw) ? unitRaw : 'lb';
+        const baseCost = Number(getCol(cols, ['base_cost_per_lb', '成本', '每磅成本'])) || 0;
+        const isActive = parseBoolLike(getCol(cols, ['is_active', '啟用']), true);
+
+        const ingUpsert = await supabase
+          .from('ingredients')
+          .upsert({
+            id: ingredientId,
+            name: ingredientName,
+            unit,
+            base_cost_per_lb: baseCost,
+            notes: getCol(cols, ['notes', '備註']) || null,
+            is_active: isActive,
+            material_type: 'meat',
+          }, { onConflict: 'id' })
+          .select('*')
+          .single();
+        if (ingUpsert.error) {
+          errors.push(`第 ${rowNo} 行：母料寫入失敗 (${ingUpsert.error.message})`);
+          continue;
+        }
+
+        const methodCode = (getCol(cols, ['processing_method_code', '加工方式代碼', '加工代碼']) || 'WHOLE').toUpperCase();
+        const method = methodMap.get(methodCode);
+        const processName = getCol(cols, ['processing_name', '加工名稱']) || (methodCode === 'WHOLE' ? '原件/原箱 (Whole Block/Case)' : method?.name || methodCode);
+        const yieldRateRaw = Number(getCol(cols, ['yield_rate', '出成率']));
+        const yieldRate = methodCode === 'WHOLE'
+          ? 1
+          : (Number.isFinite(yieldRateRaw) && yieldRateRaw >= 0.5 && yieldRateRaw <= 1 ? yieldRateRaw : 1);
+        const processCategory = method?.category || (methodCode === 'WHOLE' ? 'original_or_cutting' : 'others');
+
+        const psFind = await supabase
+          .from('material_process_specs')
+          .select('id')
+          .eq('ingredient_id', ingredientId)
+          .eq('code', methodCode)
+          .is('pack_quantity', null)
+          .is('pack_unit', null)
+          .limit(1);
+        if (psFind.error) {
+          errors.push(`第 ${rowNo} 行：查詢加工規格失敗 (${psFind.error.message})`);
+          continue;
+        }
+        const processId = psFind.data?.[0]?.id || mkId('PS');
+        const psPayload = {
+          id: processId,
+          ingredient_id: ingredientId,
+          processing_method_id: method?.id || null,
+          processing_category: processCategory,
+          code: methodCode,
+          name: processName,
+          yield_rate: yieldRate,
+          pack_quantity: null,
+          pack_unit: null,
+          is_default_piece: methodCode === 'WHOLE',
+          sort_order: 0,
+          is_active: isActive,
+        } as const;
+        const psWrite = psFind.data?.[0]?.id
+          ? await supabase.from('material_process_specs').update(psPayload).eq('id', processId)
+          : await supabase.from('material_process_specs').insert(psPayload);
+        if (psWrite.error) {
+          errors.push(`第 ${rowNo} 行：加工規格寫入失敗 (${psWrite.error.message})`);
+          continue;
+        }
+
+        const pricingModeRaw = getCol(cols, ['pricing_mode', '計價模式']);
+        const pricingMode: PricingType = pricingModeRaw === 'fixed_pack' ? 'fixed_pack' : 'by_piece';
+        const channelRaw = getCol(cols, ['target_channel', '銷售渠道', '渠道']);
+        const targetChannel: SaleChannel = channelRaw === 'retail' || channelRaw === 'both' ? channelRaw : 'wholesale';
+        const specWeightRaw = Number(getCol(cols, ['spec_weight', '規格重量']));
+        const specWeight = Number.isFinite(specWeightRaw) && specWeightRaw > 0 ? specWeightRaw : 1;
+        const specUnitRaw = getCol(cols, ['spec_unit', '規格單位']).toLowerCase();
+        const specUnit = (allowedSpecUnits.has(specUnitRaw) ? specUnitRaw : 'lb') as WeightUnit;
+        const packLabel = getCol(cols, ['pack_label', '包裝標籤']) || `${specWeight}${specUnit}/包`;
+        const packagingFee = Number(getCol(cols, ['packaging_fee', '包裝費'])) || 0;
+        const packCode = getCol(cols, ['pack_code', '包裝代碼']) || 'BULK';
+        const packName = getCol(cols, ['pack_name', '包裝名稱']) || (pricingMode === 'by_piece' ? '散買/原件' : `${specWeight}${specUnit} 規格`);
+
+        const pkFind = await supabase
+          .from('material_pack_specs')
+          .select('id')
+          .eq('process_spec_id', processId)
+          .eq('code', packCode)
+          .limit(1);
+        if (pkFind.error) {
+          errors.push(`第 ${rowNo} 行：查詢包裝規格失敗 (${pkFind.error.message})`);
+          continue;
+        }
+        const packId = pkFind.data?.[0]?.id || mkId('PK');
+        const pkPayload = {
+          id: packId,
+          ingredient_id: ingredientId,
+          process_spec_id: processId,
+          code: packCode,
+          name: packName,
+          pricing_mode: pricingMode,
+          target_channel: targetChannel,
+          spec_weight: specWeight,
+          spec_unit: specUnit,
+          pack_label: packLabel,
+          packaging_fee: packagingFee,
+          pack_weight_lb: pricingMode === 'fixed_pack' ? convertWeight(specWeight, specUnit, 'lb') : null,
+          pack_quantity: null,
+          pack_unit: null,
+          is_active: isActive,
+          sort_order: 0,
+        } as const;
+        const pkWrite = pkFind.data?.[0]?.id
+          ? await supabase.from('material_pack_specs').update(pkPayload).eq('id', packId)
+          : await supabase.from('material_pack_specs').insert(pkPayload);
+        if (pkWrite.error) {
+          errors.push(`第 ${rowNo} 行：包裝規格寫入失敗 (${pkWrite.error.message})`);
+          continue;
+        }
+
+        success += 1;
+      }
+
+      await loadAll();
+      if (errors.length > 0) showToast(errors.slice(0, 3).join('\n'), 'error');
+      showToast(`批量匯入完成：成功 ${success} 行${errors.length > 0 ? `，失敗 ${errors.length} 行` : ''}`, errors.length > 0 ? 'error' : 'success');
+    } catch (err: any) {
+      showToast(`CSV 匯入失敗：${err?.message || '未知錯誤'}`, 'error');
+    } finally {
+      setCsvUploading(false);
+      if (csvInputRef.current) csvInputRef.current.value = '';
+    }
+  }, [convertWeight, loadAll, methods, normalizeHeaderKey, parseBoolLike, parseCsvLine, showToast]);
 
   const addIngredient = async () => {
     if (!newIngredient.name.trim()) return showToast('請輸入母料名稱', 'error');
@@ -1682,9 +1916,14 @@ const MaterialFlowPanel: React.FC<Props> = ({ showToast, products, setProducts }
             <button onClick={() => setShowMaterialCategoryDrawer(true)} className="px-3 py-2 rounded-lg border border-slate-200 text-[11px] font-black text-slate-600 flex items-center gap-1">
               <Settings2 size={12} />⚙️ 管理母料分類
             </button>
-            <button onClick={() => showToast('批量匯入入口已啟用', 'success')} className="px-3 py-2 rounded-lg border border-slate-200 text-[11px] font-black text-slate-600 flex items-center gap-1">
-              <Upload size={12} />批量匯入
+            <button onClick={downloadBulkImportTemplate} className="px-3 py-2 rounded-lg border border-slate-200 text-[11px] font-black text-slate-600 flex items-center gap-1">
+              <Download size={12} />下載匯入模板
             </button>
+            <button onClick={() => csvInputRef.current?.click()} disabled={csvUploading} className="px-3 py-2 rounded-lg border border-slate-200 text-[11px] font-black text-slate-600 disabled:opacity-50 flex items-center gap-1">
+              {csvUploading ? <RefreshCw size={12} className="animate-spin" /> : <Upload size={12} />}
+              {csvUploading ? '匯入中...' : '上傳批量匯入 CSV'}
+            </button>
+            <input ref={csvInputRef} type="file" accept=".csv" className="hidden" onChange={handleBulkCsvUpload} />
           </div>
         )}
         {tab === 'pack' && (
